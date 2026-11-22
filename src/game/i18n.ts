@@ -169,6 +169,21 @@ const EN_DICT: Record<string, string> = {
   '手电电量已补充': 'Flashlight battery recharged',
   '天黑前搜集木材、燃油与废铁，返回庇护所加固门窗。':
     'Scavenge wood, fuel & scrap before nightfall, then fortify the Hideout.',
+  '破雾撤离': 'Escaped the Fog',
+  '信号中继电台穿透了黑林浓雾，你在灰白黎明中找到了逃出生天的路。':
+    'The radio relay pierced the Blackwood fog. At gray dawn, you found the way out.',
+  '继续无尽求生': 'Continue Endless Survival',
+  '中继零件': 'Relay Parts',
+  '闪避': 'Dodge',
+  '松开': 'Drop',
+  '按 E 拖拽家具': 'Press E to Drag Furniture',
+  '按 E 松开家具': 'Press E to Drop Furniture',
+  '按 E 拾取信号中继零件': 'Press E to Take Relay Part',
+  '挡路的家具被怪物撞碎了！': 'Barricading furniture smashed apart!',
+  '中继就绪 (3/3) · 守至破晓撤离': 'Relay Ready (3/3) · Survive Until Dawn',
+  '收集信号零件 0/3 · 探索地标': 'Find Relay Parts 0/3 · Explore Landmarks',
+  '收集信号零件 1/3 · 探索地标': 'Find Relay Parts 1/3 · Explore Landmarks',
+  '收集信号零件 2/3 · 探索地标': 'Find Relay Parts 2/3 · Explore Landmarks',
 };
 
 const STORAGE_KEY = 'blackwood_lang_v1';

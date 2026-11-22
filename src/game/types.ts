@@ -1,6 +1,6 @@
 // Shared types for Blackwood Ember (Steam-grade Eastern European Painterly Horror)
 
-export type GameMode = 'title' | 'play' | 'hold' | 'dead';
+export type GameMode = 'title' | 'play' | 'hold' | 'dead' | 'victory';
 export type TimePhase = 'day' | 'dusk' | 'night';
 export type WeatherKind = 'mist' | 'drizzle' | 'storm';
 
@@ -17,6 +17,29 @@ export interface Inventory {
   bandages: number;
   traps: number;
   weaponTier: 1 | 2; // 1 = Spiked Board, 2 = Rusted Axe
+  relayParts: number; // 已拾取但尚未安装的信号中继零件数
+}
+
+/** 可拖拽重型家具防线实体（单源真相：同时参与碰撞与遮挡） */
+export interface MovableFurniture {
+  id: string;
+  kind: 'sofa' | 'cabinet' | 'table';
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  hp: number;
+  maxHp: number;
+  hitFlash: number;
+}
+
+/** 远方地标可搜集的信号中继零件节点 */
+export interface RelayNode {
+  id: string;
+  zone: string;
+  x: number;
+  y: number;
+  collected: boolean;
 }
 
 export interface WeatherState {
@@ -54,6 +77,7 @@ export interface RainDrop {
   len: number;
   speed: number;
   alpha: number;
+  layer: 0 | 1; // 0 = 中景细密雨丝，1 = 近景粗快受光雨线
 }
 
 export interface RainRipple {
@@ -168,10 +192,12 @@ export interface Enemy {
   maxHp: number;
   speed: number;
   damage: number;
-  state: 'prowl' | 'chase' | 'attack_barricade' | 'snared' | 'flee_dawn';
+  state: 'prowl' | 'stalk' | 'chase' | 'attack_barricade' | 'snared' | 'flee_dawn';
   attackCd: number;
   hitFlash: number;
   snareTimer: number;
+  stalkTimer: number; // 门窗外窥伺试探计时器（秒）
+  stalkRippleCd: number; // 窥伺期刮擦门板声波间隔
   stepTimer: number;
   walkPhase: number;
   clawPhase: number;
@@ -200,7 +226,7 @@ export interface Particle {
   life: number;
   maxLife: number;
   color: string;
-  kind: 'ember' | 'blood' | 'wood' | 'spark' | 'smoke' | 'spore' | 'dust';
+  kind: 'ember' | 'blood' | 'wood' | 'spark' | 'smoke' | 'spore' | 'dust' | 'splash';
 }
 
 export interface Footprint {
@@ -269,6 +295,13 @@ export interface HudSnapshot {
   dangerLevel: number;
   discoveredZones: string[];
   journal: JournalEntry[];
+  relayParts: number;
+  relayInstalled: number;
+  relayCollectedZones: string[];
+  draggingFurniture: boolean;
+  objectiveText: string;
+  endlessMode: boolean;
+  chargeRatio: number;
   backend: 'webgl2' | 'canvas2d';
   fps: number;
   entities: number;
@@ -282,4 +315,5 @@ export interface PilotInput {
   attack: boolean;
   interact: boolean;
   toggleLight: boolean;
+  dodge?: boolean;
 }

@@ -79,6 +79,8 @@ export default function App() {
 
   const layersRef = useRef<LayerId[]>(layers);
   layersRef.current = layers;
+  // 记录由代码主动调用 window.history.back() 触发的 popstate 次数，避免嵌套弹层被重复弹出
+  const ignorePopStateRef = useRef(0);
 
   useEffect(() => {
     const u1 = I18n.subscribe(() => setLang(I18n.lang));
@@ -98,7 +100,7 @@ export default function App() {
   const syncEngineHold = useCallback((nextLayers: LayerId[]) => {
     const rt = runtimeRef.current;
     if (!rt) return;
-    if (rt.engine.mode === 'title' || rt.engine.mode === 'dead') return;
+    if (rt.engine.mode === 'title' || rt.engine.mode === 'dead' || rt.engine.mode === 'victory') return;
     if (nextLayers.length > 0 && rt.engine.mode === 'play') {
       rt.engine.setMode('hold');
     } else if (nextLayers.length === 0 && rt.engine.mode === 'hold') {
@@ -108,41 +110,43 @@ export default function App() {
 
   const pushLayer = useCallback(
     (id: LayerId) => {
-      setLayers((prev) => {
-        if (prev[prev.length - 1] === id) return prev;
-        const next = [...prev.filter((l) => l !== id), id];
-        syncEngineHold(next);
-        try {
-          window.history.pushState({ blackwoodLayer: id }, '');
-        } catch {
-          // ignore sandbox history errors
-        }
-        return next;
-      });
+      const prev = layersRef.current;
+      if (prev[prev.length - 1] === id) return;
+      const next = [...prev.filter((l) => l !== id), id];
+      layersRef.current = next;
+      setLayers(next);
+      syncEngineHold(next);
+      try {
+        window.history.pushState({ blackwoodLayer: id }, '');
+      } catch {
+        // 忽略沙盒环境 history 异常
+      }
     },
     [syncEngineHold]
   );
 
   const popLayer = useCallback(
     (fromPopState = false) => {
-      setLayers((prev) => {
-        if (prev.length === 0) return prev;
-        const next = prev.slice(0, -1);
-        syncEngineHold(next);
-        if (!fromPopState && window.history.state?.blackwoodLayer) {
-          try {
-            window.history.back();
-          } catch {
-            // ignore
-          }
+      const prev = layersRef.current;
+      if (prev.length === 0) return;
+      const next = prev.slice(0, -1);
+      layersRef.current = next;
+      setLayers(next);
+      syncEngineHold(next);
+      if (!fromPopState && window.history.state?.blackwoodLayer) {
+        ignorePopStateRef.current += 1;
+        try {
+          window.history.back();
+        } catch {
+          ignorePopStateRef.current = Math.max(0, ignorePopStateRef.current - 1);
         }
-        return next;
-      });
+      }
     },
     [syncEngineHold]
   );
 
   const clearLayers = useCallback(() => {
+    layersRef.current = [];
     setLayers([]);
     syncEngineHold([]);
   }, [syncEngineHold]);
@@ -225,6 +229,9 @@ export default function App() {
         rt.engine.toggleFlashlight();
       } else if (e.code === 'KeyE' && !e.repeat) {
         rt.engine.triggerInstantInteract();
+      } else if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        rt.engine.triggerDodge();
       } else if (e.code === 'Digit1') {
         rt.engine.useQuickSlot(1);
       } else if (e.code === 'Digit2') {
@@ -252,14 +259,17 @@ export default function App() {
       AudioFX.unlock();
       if (e.button === 0) {
         rt.engine.mouseDownLeft = true;
-        rt.engine.triggerAttack();
+        rt.engine.beginAttackCharge();
       } else if (e.button === 2) {
         rt.engine.throwFlare();
       }
     };
 
     const onMouseUp = (e: MouseEvent) => {
-      if (e.button === 0) rt.engine.mouseDownLeft = false;
+      if (e.button === 0) {
+        rt.engine.mouseDownLeft = false;
+        rt.engine.releaseAttackCharge();
+      }
     };
 
     const onContextMenu = (e: MouseEvent) => {
@@ -267,6 +277,10 @@ export default function App() {
     };
 
     const onPopState = () => {
+      if (ignorePopStateRef.current > 0) {
+        ignorePopStateRef.current -= 1;
+        return;
+      }
       if (layersRef.current.length > 0) {
         popLayer(true);
       }
@@ -511,11 +525,14 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-xs text-[#a19888] gap-4">
-              <span className="truncate">
+            <div className="flex items-center justify-between text-xs text-[#a19888] gap-3">
+              <span className="hidden sm:inline">
                 {lang === 'zh'
                   ? 'WASD 移动 · 鼠标照明 · 长按 E 搜刮与加固 · 左键挥击 · 右键照明弹 · J 翻阅日志'
                   : 'WASD Move · Mouse Light · Hold E Loot & Barricade · LMB Swing · RMB Flare · J Journal'}
+              </span>
+              <span className="sm:hidden">
+                {lang === 'zh' ? '双摇杆移动照明 · 右侧搜刮攻击' : 'Twin-Stick Move & Aim'}
               </span>
               <span className="font-mono-num whitespace-nowrap shrink-0">
                 {I18n.lang === 'zh' ? '中文' : 'EN'} · {t(Quality.preset.label)}
@@ -537,33 +554,35 @@ export default function App() {
           }}
         >
           {/* Top Bar */}
-          <div className="flex items-start justify-between gap-4">
-            <div className={`pointer-events-auto flex flex-col gap-1.5 rounded px-3.5 py-2.5 ${hudCls}`}>
-              <div className="flex items-center gap-2 text-sm font-medium text-[#f0e6d2] whitespace-nowrap">
+          <div className="flex items-start justify-between gap-2 sm:gap-4">
+            <div
+              className={`pointer-events-auto min-w-0 flex-1 sm:flex-initial sm:min-w-[260px] flex flex-col gap-1.5 rounded px-2.5 py-2 sm:px-3.5 sm:py-2.5 ${hudCls}`}
+            >
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 sm:gap-2 text-xs sm:text-sm font-medium text-[#f0e6d2]">
                 {phaseIcon}
-                <span className="font-mono-num">{t('第 {n} 天', { n: hud.day })}</span>
+                <span className="font-mono-num whitespace-nowrap">{t('第 {n} 天', { n: hud.day })}</span>
                 <span className="text-[#8a8070]" aria-hidden="true">·</span>
                 <span
                   className={
                     hud.phase === 'night'
-                      ? 'text-[#cf6c5d]'
+                      ? 'text-[#cf6c5d] whitespace-nowrap'
                       : hud.phase === 'dusk'
-                      ? 'text-[#e09d5e]'
-                      : 'text-[#e0d4be]'
+                      ? 'text-[#e09d5e] whitespace-nowrap'
+                      : 'text-[#e0d4be] whitespace-nowrap'
                   }
                 >
                   {phaseLabel}
                 </span>
-                <span className="text-[#8a8070]" aria-hidden="true">·</span>
-                <span className="flex items-center gap-1 text-xs text-[#b8c4c2]">
+                <span className="text-[#8a8070] hidden sm:inline" aria-hidden="true">·</span>
+                <span className="flex items-center gap-1 text-xs text-[#b8c4c2] whitespace-nowrap">
                   <WeatherInkIcon kind={hud.weather} className="w-3.5 h-3.5" />
                   <span>{weatherLabel}</span>
                 </span>
-                <span className="text-[#8a8070]" aria-hidden="true">·</span>
-                <span className="text-[#c5b9a3] text-xs">{t(hud.zoneName)}</span>
+                <span className="text-[#8a8070] hidden sm:inline" aria-hidden="true">·</span>
+                <span className="text-[#c5b9a3] text-xs whitespace-nowrap">{t(hud.zoneName)}</span>
               </div>
 
-              <div className="w-60 h-1 bg-[#1e1d19] rounded-xs overflow-hidden">
+              <div className="w-full sm:w-60 h-1 bg-[#1e1d19] rounded-xs overflow-hidden">
                 <div
                   className={`h-full transition-transform duration-150 origin-left ${
                     hud.phase === 'night'
@@ -576,7 +595,7 @@ export default function App() {
                 />
               </div>
 
-              <div className="flex items-center gap-2 text-xs text-[#b8ae9c] font-mono-num">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] sm:text-xs text-[#b8ae9c] font-mono-num">
                 <Flame
                   className={`w-3.5 h-3.5 ${
                     hud.generatorOn && hud.generatorFuel > 0
@@ -602,15 +621,19 @@ export default function App() {
                   <span className="text-[#c95347]">· {t('发电机熄火')}</span>
                 )}
               </div>
+
+              <div className="text-[11px] text-[#d8be8a]/90 leading-snug">
+                {t(hud.objectiveText)}
+              </div>
             </div>
 
             {/* Right Utility Actions (Journal, Craft, Pause, Dev) */}
-            <div className="pointer-events-auto flex items-center gap-2">
+            <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
               {isDev && (
                 <button
                   type="button"
                   onClick={() => pushLayer('dev')}
-                  className={`min-h-[44px] px-3 rounded text-xs font-medium text-[#e6c98e] hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${hudCls}`}
+                  className={`min-h-[44px] px-2.5 sm:px-3 rounded text-xs font-medium text-[#e6c98e] hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${hudCls}`}
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" />
                   <span className="font-mono-num">
@@ -622,7 +645,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => pushLayer('journal')}
-                className={`min-h-[44px] px-3.5 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${hudCls}`}
+                aria-label={t('日志')}
+                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3.5 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
               >
                 <BookOpen className="w-4 h-4 text-[#c8a974]" />
                 <span className="hidden sm:inline">{t('日志')}</span>
@@ -632,10 +656,11 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => pushLayer('craft')}
-                className={`min-h-[44px] px-3.5 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${hudCls}`}
+                aria-label={t('制作')}
+                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3.5 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
               >
                 <Hammer className="w-4 h-4 text-[#d1a464]" />
-                <span>{t('制作')}</span>
+                <span className="hidden sm:inline">{t('制作')}</span>
                 <span className="hidden md:inline text-[#8a8070] font-mono-num">C</span>
               </button>
 
@@ -643,7 +668,7 @@ export default function App() {
                 type="button"
                 onClick={() => pushLayer('pause')}
                 aria-label={t('暂停')}
-                className={`min-w-[44px] min-h-[44px] px-3 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
+                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
               >
                 <Pause className="w-4 h-4" />
                 <span className="hidden sm:inline">{t('暂停')}</span>
@@ -730,9 +755,9 @@ export default function App() {
               </div>
             </div>
 
-            <div className="pointer-events-auto flex flex-col items-end gap-2">
+            <div className="pointer-events-auto flex flex-col items-stretch sm:items-end gap-2">
               {/* Hand-Drawn Ink Icon Resource Ledger */}
-              <div className={`rounded px-3 py-1.5 flex flex-wrap items-center gap-x-3.5 gap-y-1 text-xs ${hudCls}`}>
+              <div className={`rounded px-2.5 sm:px-3 py-1.5 flex flex-wrap items-center gap-x-3 sm:gap-x-3.5 gap-y-1 text-xs ${hudCls}`}>
                 {RESOURCE_META.map((item) => (
                   <div key={item.key} className="flex items-center gap-1.5 whitespace-nowrap">
                     <span style={{ color: item.color }} aria-hidden="true">
@@ -747,62 +772,67 @@ export default function App() {
               </div>
 
               {/* Quickbar with Ink Icons */}
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center justify-between sm:justify-end gap-1.5">
                 <button
                   type="button"
                   onClick={() => runtimeRef.current?.engine.toggleFlashlight()}
-                  className={`min-h-[44px] px-3 rounded text-xs flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 border ${
+                  aria-label={t('手电')}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 border ${
                     hud.flashlightOn
                       ? 'bg-[#2c2417]/92 border-[#d8b463]/70 text-[#f5e3b6]'
                       : `${hudCls} text-[#9b9384]`
                   }`}
                 >
-                  <span className="font-mono-num text-[10px] opacity-70">F</span>
+                  <span className="hidden sm:inline font-mono-num text-[10px] opacity-70">F</span>
                   <Flashlight className="w-3.5 h-3.5" />
-                  <span>{t('手电')}</span>
+                  <span className="hidden sm:inline">{t('手电')}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => runtimeRef.current?.engine.useQuickSlot(1)}
-                  className={`min-h-[44px] px-3 rounded text-xs text-[#efe6d5] hover:border-[#df8158]/70 flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
+                  aria-label={t('照明弹')}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#efe6d5] hover:border-[#df8158]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
                 >
-                  <span className="font-mono-num text-[10px] text-[#8a8070]">1</span>
+                  <span className="hidden sm:inline font-mono-num text-[10px] text-[#8a8070]">1</span>
                   <FlareInkIcon className="w-3.5 h-3.5 text-[#df8158]" />
-                  <span>{t('照明弹')}</span>
+                  <span className="hidden sm:inline">{t('照明弹')}</span>
                   <span className="font-mono-num text-[#df8158]">{hud.inv.flares}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => runtimeRef.current?.engine.useQuickSlot(2)}
-                  className={`min-h-[44px] px-3 rounded text-xs text-[#efe6d5] hover:border-[#8dbb88]/70 flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
+                  aria-label={t('草药绷带')}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#efe6d5] hover:border-[#8dbb88]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
                 >
-                  <span className="font-mono-num text-[10px] text-[#8a8070]">2</span>
+                  <span className="hidden sm:inline font-mono-num text-[10px] text-[#8a8070]">2</span>
                   <BandageInkIcon className="w-3.5 h-3.5 text-[#8dbb88]" />
-                  <span>{t('草药绷带')}</span>
+                  <span className="hidden sm:inline">{t('草药绷带')}</span>
                   <span className="font-mono-num text-[#8dbb88]">{hud.inv.bandages}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => runtimeRef.current?.engine.useQuickSlot(3)}
-                  className={`min-h-[44px] px-3 rounded text-xs text-[#efe6d5] hover:border-[#a4b0b6]/70 flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
+                  aria-label={t('捕兽夹')}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#efe6d5] hover:border-[#a4b0b6]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
                 >
-                  <span className="font-mono-num text-[10px] text-[#8a8070]">3</span>
+                  <span className="hidden sm:inline font-mono-num text-[10px] text-[#8a8070]">3</span>
                   <TrapInkIcon className="w-3.5 h-3.5 text-[#b4bec2]" />
-                  <span>{t('捕兽夹')}</span>
+                  <span className="hidden sm:inline">{t('捕兽夹')}</span>
                   <span className="font-mono-num text-[#d4cbb8]">{hud.inv.traps}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => runtimeRef.current?.engine.useQuickSlot(4)}
-                  className={`min-h-[44px] px-3 rounded text-xs text-[#efe6d5] hover:border-[#e2cb77]/70 flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
+                  aria-label={t('电池')}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#efe6d5] hover:border-[#e2cb77]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
                 >
-                  <span className="font-mono-num text-[10px] text-[#8a8070]">4</span>
+                  <span className="hidden sm:inline font-mono-num text-[10px] text-[#8a8070]">4</span>
                   <ResourceInkIcon kind="battery" className="w-3.5 h-3.5 text-[#e2cb77]" />
-                  <span>{t('电池')}</span>
+                  <span className="hidden sm:inline">{t('电池')}</span>
                   <span className="font-mono-num text-[#e2cb77]">{hud.inv.battery}</span>
                 </button>
               </div>
@@ -819,34 +849,52 @@ export default function App() {
             onTouchMove={onMoveTouchMove}
             onTouchEnd={onMoveTouchEnd}
             onTouchCancel={onMoveTouchEnd}
-            className="pointer-events-auto fixed left-6 bottom-32 w-28 h-28 rounded-full border border-[#b8ae9c]/25 bg-black/25 flex items-center justify-center"
+            className="pointer-events-auto fixed left-4 bottom-36 sm:bottom-24 md:left-6 md:bottom-28 w-24 h-24 sm:w-28 sm:h-28 rounded-full border border-[#b8ae9c]/25 bg-black/25 flex items-center justify-center"
           >
             <div
-              className="w-11 h-11 rounded-full bg-[#b8ae9c]/35 border border-[#e7e2d8]/45"
+              className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-[#b8ae9c]/35 border border-[#e7e2d8]/45"
               style={{ transform: `translate(${moveKnob.x}px, ${moveKnob.y}px)` }}
             />
           </div>
 
-          <div className="pointer-events-auto fixed right-6 bottom-32 flex items-end gap-3">
-            <div className="flex flex-col gap-2">
+          <div className="pointer-events-auto fixed right-4 bottom-36 sm:bottom-24 md:right-6 md:bottom-28 flex items-end gap-2.5">
+            <div className="flex flex-col gap-2 items-end">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onTouchStart={() => runtimeRef.current?.engine.triggerDodge()}
+                  className="min-w-[48px] min-h-[48px] rounded-full bg-[#1b2220]/90 border border-[#84b8a6]/55 text-xs font-medium text-[#dceee8] whitespace-nowrap"
+                >
+                  {t('闪避')}
+                </button>
+                <button
+                  type="button"
+                  onTouchStart={() => {
+                    if (!runtimeRef.current) return;
+                    runtimeRef.current.engine.touchInteract = true;
+                    runtimeRef.current.engine.triggerInstantInteract();
+                  }}
+                  onTouchEnd={() => {
+                    if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
+                  }}
+                  className="min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/88 border border-[#d8b463]/55 text-xs font-medium text-[#efe8da] whitespace-nowrap"
+                >
+                  {hud.draggingFurniture ? t('松开') : t('搜刮')}
+                </button>
+              </div>
               <button
                 type="button"
                 onTouchStart={() => {
                   if (!runtimeRef.current) return;
-                  runtimeRef.current.engine.touchInteract = true;
-                  runtimeRef.current.engine.triggerInstantInteract();
+                  runtimeRef.current.engine.mouseDownLeft = true;
+                  runtimeRef.current.engine.beginAttackCharge();
                 }}
                 onTouchEnd={() => {
-                  if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
+                  if (!runtimeRef.current) return;
+                  runtimeRef.current.engine.mouseDownLeft = false;
+                  runtimeRef.current.engine.releaseAttackCharge();
                 }}
-                className="min-w-[54px] min-h-[54px] rounded-full bg-[#1a1814]/88 border border-[#d8b463]/55 text-xs font-medium text-[#efe8da]"
-              >
-                {t('搜刮')}
-              </button>
-              <button
-                type="button"
-                onTouchStart={() => runtimeRef.current?.engine.triggerAttack()}
-                className="min-w-[54px] min-h-[54px] rounded-full bg-[#6d241f]/88 border border-[#d67a70]/60 text-xs font-medium text-[#f5e1de]"
+                className="min-w-[52px] min-h-[52px] rounded-full bg-[#6d241f]/88 border border-[#d67a70]/60 text-xs font-medium text-[#f5e1de] whitespace-nowrap"
               >
                 {t('攻击')}
               </button>
@@ -857,10 +905,10 @@ export default function App() {
               onTouchMove={onAimTouchMove}
               onTouchEnd={onAimTouchEnd}
               onTouchCancel={onAimTouchEnd}
-              className="w-28 h-28 rounded-full border border-[#b8ae9c]/25 bg-black/25 flex items-center justify-center"
+              className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border border-[#b8ae9c]/25 bg-black/25 flex items-center justify-center"
             >
               <div
-                className="w-11 h-11 rounded-full bg-[#d8b463]/35 border border-[#e5b968]/55"
+                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-[#d8b463]/35 border border-[#e5b968]/55"
                 style={{ transform: `translate(${aimKnob.x}px, ${aimKnob.y}px)` }}
               />
             </div>
@@ -1011,25 +1059,60 @@ export default function App() {
                         </text>
                       </g>
 
-                      {/* 4 Outer Landmarks */}
+                      {/* 4 Outer Landmarks + 3 信号中继零件地标收集状态 */}
                       {LANDMARK_MAP_NODES.map((node) => {
                         const found = hud.discoveredZones.includes(node.name);
+                        const hasRelay =
+                          node.name === '坠毁货车' ||
+                          node.name === '废弃锯木厂' ||
+                          node.name === '枯林祭坛';
+                        const relayCollected = hud.relayCollectedZones.includes(node.name);
                         return (
                           <g key={node.name} transform={`translate(${node.x}, ${node.y})`}>
+                            {hasRelay && !relayCollected && (
+                              <circle
+                                r="9.5"
+                                fill="none"
+                                stroke="#cf5d47"
+                                strokeWidth="1.2"
+                                strokeDasharray="3 2"
+                                className="animate-pulse"
+                              />
+                            )}
                             <circle
                               r="4.5"
-                              fill={found ? '#b87b3b' : 'transparent'}
-                              stroke={found ? '#f0d8a8' : 'rgba(168,154,132,0.45)'}
+                              fill={
+                                relayCollected ? '#4c947d' : found ? '#b87b3b' : 'transparent'
+                              }
+                              stroke={
+                                relayCollected
+                                  ? '#a5ebd4'
+                                  : found
+                                  ? '#f0d8a8'
+                                  : hasRelay
+                                  ? '#d89b5a'
+                                  : 'rgba(168,154,132,0.45)'
+                              }
                               strokeWidth="1.3"
-                              strokeDasharray={found ? undefined : '2 2'}
+                              strokeDasharray={found || relayCollected ? undefined : '2 2'}
                             />
+                            {relayCollected && (
+                              <path
+                                d="M-2.2 0.2 L-0.4 2.1 L2.8 -2.1"
+                                fill="none"
+                                stroke="#f4fff9"
+                                strokeWidth="1.4"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            )}
                             <text
-                              y="15"
-                              fill={found ? '#e8dbc2' : 'rgba(168,154,132,0.55)'}
+                              y="16"
+                              fill={found || relayCollected ? '#e8dbc2' : 'rgba(168,154,132,0.62)'}
                               fontSize="8.5"
                               textAnchor="middle"
                             >
-                              {found ? t(node.name) : '?'}
+                              {found || relayCollected ? t(node.name) : hasRelay ? `${t(node.name)}*` : '?'}
                             </text>
                           </g>
                         );
@@ -1227,10 +1310,10 @@ export default function App() {
               {topLayer === 'controls' && (
                 <div className="space-y-3 text-sm">
                   {[
-                    ['移动与冲刺', 'WASD / 方向键移动，按住 Shift 消耗体力冲刺'],
+                    ['移动与闪避', 'WASD / 方向键移动，Shift 冲刺，Space 消耗体力向移动/反方向急退闪避'],
                     ['照明与视线', '鼠标控制视线锥光方向，按 F 开关手电节省电量'],
-                    ['搜集与加固', '靠近物资箱长按 E 搜刮；靠近庇护所门窗或发电机按 E 加固/加油'],
-                    ['近战与道具', '左键蓄力挥击，右键投掷照明弹，1-4 快捷道具，C 制作，J 翻阅羊皮日志'],
+                    ['搜集、家具与防线', '长按 E 搜刮物资箱；按 E 拖拽/松开屋内家具堵门、加固门窗、装零件或加油'],
+                    ['蓄力重击与道具', '左键轻点快劈、长按蓄力爆发重击，右键投掷照明弹，1-4 快捷道具，C 制作，J 翻阅日志'],
                   ].map(([title, desc]) => (
                     <div key={title} className={`p-3 rounded ${cardCls}`}>
                       <div className="font-medium text-[#f0e6d2]">{t(title)}</div>
@@ -1312,6 +1395,76 @@ export default function App() {
                 className="min-h-[44px] px-5 text-sm text-[#c7bfb0] hover:text-white border border-[#b8ae9c]/24 rounded transition-colors whitespace-nowrap"
               >
                 {t('返回')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VICTORY SUMMARY: 破雾撤离通关结算 */}
+      {hud?.mode === 'victory' && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs p-5">
+          <div className={`w-full max-w-md rounded-md p-6 text-center space-y-5 ${panelCls}`}>
+            <div className="flex justify-center">
+              <Sun className="w-9 h-9 text-[#dfb763]" />
+            </div>
+            <div>
+              <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#f3e6c8]">
+                {t('破雾撤离')}
+              </h2>
+              <p className="mt-2 text-xs sm:text-sm text-[#c5b9a3] leading-relaxed">
+                {t('信号中继电台穿透了黑林浓雾，你在灰白黎明中找到了逃出生天的路。')}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-left pt-1">
+              <div className={`p-3 rounded ${cardCls}`}>
+                <div className="text-xs text-[#9c9485]">{t('存活天数')}</div>
+                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
+                  {hud.day}
+                </div>
+              </div>
+              <div className={`p-3 rounded ${cardCls}`}>
+                <div className="text-xs text-[#9c9485]">{t('搜刮容器')}</div>
+                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
+                  {hud.containersLooted}/{hud.totalContainers}
+                </div>
+              </div>
+              <div className={`p-3 rounded ${cardCls}`}>
+                <div className="text-xs text-[#9c9485]">{t('击退怪物')}</div>
+                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
+                  {hud.enemiesDefeated}
+                </div>
+              </div>
+              <div className={`p-3 rounded ${cardCls}`}>
+                <div className="text-xs text-[#9c9485]">{t('中继零件')}</div>
+                <div className="font-mono-num text-xl font-semibold text-[#7ad8c5] mt-0.5">
+                  {hud.relayInstalled}/3
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => runtimeRef.current?.engine.continueEndless()}
+                className="min-h-[46px] px-5 bg-[#b87b3b] hover:bg-[#cc8b46] text-[#110e0a] font-semibold text-sm rounded transition-colors whitespace-nowrap"
+              >
+                {t('继续无尽求生')}
+              </button>
+              <button
+                type="button"
+                onClick={startSurvival}
+                className="min-h-[44px] px-5 border border-[#d8be8a]/40 hover:border-[#d8be8a]/80 text-[#f0e6d2] text-sm rounded transition-colors whitespace-nowrap"
+              >
+                {t('再次踏入森林')}
+              </button>
+              <button
+                type="button"
+                onClick={() => runtimeRef.current?.engine.reset(19847, false)}
+                className="min-h-[44px] px-5 border border-[#b8ae9c]/25 text-[#c7bfb0] hover:text-white text-sm rounded transition-colors whitespace-nowrap"
+              >
+                {t('回到标题')}
               </button>
             </div>
           </div>

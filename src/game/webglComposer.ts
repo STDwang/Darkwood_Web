@@ -32,6 +32,8 @@ export interface WebGLFrameUniforms {
   penumbraSamples: number;
   enableGrain: boolean;
   puddleReflections: boolean;
+  coldPalette: boolean;
+  visionFog: boolean;
   lights: GpuLight[];
 }
 
@@ -68,6 +70,8 @@ uniform float uFogDensity;
 uniform int uPenumbraSamples;
 uniform int uEnableGrain;
 uniform int uPuddleReflections;
+uniform int uColdPalette;
+uniform int uVisionFog;
 
 uniform int uLightCount;
 uniform vec4 uLightPosRad[12];   // xy = screen pos, z = radius, w = intensity
@@ -148,35 +152,42 @@ void main() {
   float puddleMask = nw.b;
   float activeWet = clamp(puddleMask * (0.28 + uWetness * 0.95) + uWetness * 0.16, 0.0, 1.0);
 
-  // Animated raindrop ripple normal perturbation on standing puddles
-  if (uPuddleReflections == 1 && activeWet > 0.25 && uRain > 0.05) {
-    vec2 cell = floor(worldPx * 0.038);
-    vec2 f = fract(worldPx * 0.038) - 0.5;
+  // 雨滴击打积水洼地的双圈同心法线扰动（手电/篝火/吊灯/闪电扫过时呈现湿润反光与细腻波纹高光）
+  if (uPuddleReflections == 1 && activeWet > 0.22 && uRain > 0.05) {
+    vec2 cell = floor(worldPx * 0.042);
+    vec2 f = fract(worldPx * 0.042) - 0.5;
     float h = hash21(cell);
-    float phase = fract(uTime * (0.85 + h * 0.6) + h * 7.0);
-    float ring = exp(-abs(length(f) - phase * 0.45) * 32.0) * (1.0 - phase) * uRain;
-    N = normalize(N + vec3(f.x, f.y, 0.0) * ring * 1.45);
+    float phase = fract(uTime * (0.95 + h * 0.65) + h * 7.0);
+    float rDist = length(f);
+    float ring1 = exp(-abs(rDist - phase * 0.46) * 34.0) * (1.0 - phase);
+    float phase2 = clamp(phase - 0.14, 0.0, 1.0);
+    float ring2 = exp(-abs(rDist - phase2 * 0.40) * 42.0) * (1.0 - phase2) * 0.55;
+    N = normalize(N + vec3(f.x, f.y, 0.0) * (ring1 + ring2) * uRain * 1.75);
   }
 
   vec3 shadowVis = sampleShadowSoft(uv);
 
-  // Wet puddles darken slightly & pick up cold sky tint
-  vec3 surfaceAlbedo = mix(albedo, albedo * vec3(0.58, 0.66, 0.72), activeWet * 0.52);
+  // 潮湿洼地微压暗并带冷调天光反射
+  vec3 surfaceAlbedo = mix(albedo, albedo * vec3(0.56, 0.62, 0.68), activeWet * 0.52);
 
-  vec3 totalLight = uAmbient * (0.82 + 0.18 * max(N.z, 0.0));
+  // 环境光与闪电照明
+  float directVis = 0.0;
+  vec3 ambientLight = uAmbient * (0.82 + 0.18 * max(N.z, 0.0));
+  vec3 directLight = vec3(0.0);
 
-  // Sky lightning flash momentarily illuminates entire forest & puddles
   if (uLightning > 0.01) {
     vec3 skyDir = normalize(vec3(-0.45, -0.55, 0.7));
     float ndl = max(dot(N, skyDir), 0.18);
-    vec3 boltCol = vec3(0.68, 0.80, 0.96) * uLightning * 1.45;
-    totalLight += boltCol * ndl;
-    if (uPuddleReflections == 1 && activeWet > 0.25) {
-      totalLight += boltCol * activeWet * 0.95;
+    vec3 boltCol = vec3(0.68, 0.78, 0.94) * uLightning * 1.55;
+    directLight += boltCol * ndl;
+    if (uPuddleReflections == 1 && activeWet > 0.22) {
+      directLight += boltCol * activeWet * 1.15;
     }
+    directVis = max(directVis, uLightning * 0.9);
   }
 
   vec3 volumetricScatter = vec3(0.0);
+  vec3 glareAccum = vec3(0.0);
 
   for (int i = 0; i < 12; i++) {
     if (i >= uLightCount) break;
@@ -189,13 +200,13 @@ void main() {
     if (d > pr.z) continue;
 
     float normD = d / pr.z;
-    float atten = pow(clamp(1.0 - normD, 0.0, 1.0), 1.65);
+    float atten = pow(clamp(1.0 - normD, 0.0, 1.0), 1.55);
 
     float spot = 1.0;
     if (cn.z > -1.5) {
       vec2 dirToPx = d > 0.001 ? toPx / d : cn.xy;
       float cosAng = dot(dirToPx, cn.xy);
-      spot = smoothstep(cn.z - 0.08, cn.z + 0.09, cosAng);
+      spot = smoothstep(cn.z - 0.07, cn.z + 0.08, cosAng);
       if (spot <= 0.001) continue;
     }
 
@@ -206,50 +217,92 @@ void main() {
 
     if (vis <= 0.003) continue;
 
-    vec3 L = normalize(vec3(-toPx.x, -toPx.y, 82.0));
+    vec3 L = normalize(vec3(-toPx.x, -toPx.y, 78.0));
     float ndl = max(dot(N, L), 0.16);
 
     float spec = 0.0;
-    if (uPuddleReflections == 1 && activeWet > 0.18) {
+    if (uPuddleReflections == 1 && activeWet > 0.16) {
       vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
-      float shininess = mix(14.0, 44.0, puddleMask);
-      spec = pow(max(dot(N, H), 0.0), shininess) * activeWet * 0.85;
+      float shininess = mix(16.0, 52.0, puddleMask);
+      spec = pow(max(dot(N, H), 0.0), shininess) * activeWet * 1.15;
     }
 
     vec3 contrib = cc.rgb * pr.w * atten * spot * vis;
-    totalLight += contrib * (ndl * 1.18 + spec);
+    directLight += contrib * (ndl * 1.22 + spec);
+
+    // 累计真实光照可见度（用于视野锥外冷灰记忆迷雾过渡）
+    float lightReveal = atten * spot * vis * (cc.a < 0.5 ? 1.55 : cc.a < 1.5 ? 1.35 : 0.85);
+    directVis = max(directVis, clamp(lightReveal, 0.0, 1.0));
 
     if (cn.w > 0.01) {
       float mist = fbm(worldPx * 0.011 + vec2(uTime * 0.18, -uTime * 0.11));
-      volumetricScatter += contrib * cn.w * (0.42 + mist * 0.85) * (0.55 + uFogDensity * 0.65);
+      volumetricScatter += contrib * cn.w * (0.40 + mist * 0.80) * (0.52 + uFogDensity * 0.62);
+    }
+
+    // 强点光源（吊灯、篝火、火盆、照明弹）处叠加极克制的水平微眩光（Subtle Anamorphic Glare）
+    if (cn.z < -1.5 && cc.a < 1.5 && pr.w >= 1.8) {
+      float gx = abs(toPx.x) / max(pr.z * 0.55, 60.0);
+      float gy = abs(toPx.y) / 9.5;
+      float streak = exp(-gx * 2.5 - gy * 1.65) * vis;
+      float coreGlow = exp(-d / 28.0) * vis * 0.45;
+      glareAccum += cc.rgb * (streak * 0.14 + coreGlow * 0.12) * clamp(pr.w * 0.35, 0.4, 1.1);
     }
   }
 
-  vec3 color = surfaceAlbedo * totalLight + volumetricScatter * 0.22;
-
-  // Painterly Eastern European oil-canvas weave & subtle film grain
-  if (uEnableGrain == 1) {
-    float weave = (sin(worldPx.x * 1.6) * sin(worldPx.y * 1.6)) * 0.015;
-    float grain = (hash21(screenPx + fract(uTime * 29.0) * 100.0) - 0.5) * 0.042;
-    color += vec3(weave + grain) * (0.35 + length(color) * 0.65);
+  // 视野锥外冷灰记忆迷雾（Darkwood 灵魂：锥外退化为冷灰暗影，锥内与光源区锐利通透）
+  vec3 effectiveAlbedo = surfaceAlbedo;
+  vec3 effectiveAmbient = ambientLight;
+  if (uVisionFog == 1) {
+    float reveal = smoothstep(0.06, 0.62, directVis);
+    float gray = dot(surfaceAlbedo, vec3(0.299, 0.587, 0.114));
+    vec3 memoryCold = vec3(gray) * vec3(0.84, 0.88, 0.94);
+    effectiveAlbedo = mix(mix(surfaceAlbedo, memoryCold, 0.78), surfaceAlbedo, reveal);
+    // 压深锥外环境暗部，拉开白昼/黄昏/黑夜电影级明暗对比
+    effectiveAmbient *= mix(0.42, 1.0, reveal);
   }
 
-  // ACES Filmic Tone Mapping + cool Baltic shadow split-toning
-  color = acesFilm(color * 1.12);
-  color = mix(color, color * vec3(0.93, 0.98, 1.04), clamp(1.0 - dot(color, vec3(0.3, 0.6, 0.1)) * 2.2, 0.0, 0.45));
+  // 数值安全红线：在 ACES 之前严格 clamp，杜绝 NaN/Inf 黑块
+  vec3 totalLight = clamp(effectiveAmbient + directLight, vec3(0.0), vec3(7.5));
+  volumetricScatter = clamp(volumetricScatter, vec3(0.0), vec3(3.5));
+  glareAccum = clamp(glareAccum, vec3(0.0), vec3(1.0));
 
-  // Organic dark vignette
-  float vig = smoothstep(0.90, 0.30, edgeDist);
-  color *= mix(0.24, 1.0, vig);
+  vec3 color = effectiveAlbedo * totalLight + volumetricScatter * 0.20 + glareAccum;
 
-  // Pulsing crimson dread vignette when wounded / hit
+  // 东欧油画帆布织纹与胶片颗粒
+  if (uEnableGrain == 1) {
+    float weave = (sin(worldPx.x * 1.6) * sin(worldPx.y * 1.6)) * 0.013;
+    float grain = (hash21(screenPx + fract(uTime * 29.0) * 100.0) - 0.5) * 0.038;
+    color += vec3(weave + grain) * (0.32 + length(color) * 0.62);
+  }
+
+  // ACES Filmic 色调映射
+  color = acesFilm(max(color, vec3(0.0)) * 1.10);
+
+  if (uColdPalette == 1) {
+    // 东欧冷腐油画色彩收敛：压低绿通道溢出、收束过饱和暖光、暗部注入冷灰青阴影
+    float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color = mix(vec3(lum), color, 0.70);
+    // 抑制绿通道显著高于红蓝通道的塑料感
+    float gCap = max(color.r, color.b) + 0.010;
+    color.g = mix(color.g, min(color.g, gCap), 0.75);
+    float shadowMask = clamp(1.0 - lum * 2.6, 0.0, 0.50);
+    color = mix(color, color * vec3(0.92, 0.96, 1.04), shadowMask);
+  } else {
+    color = mix(color, color * vec3(0.93, 0.98, 1.04), clamp(1.0 - dot(color, vec3(0.3, 0.6, 0.1)) * 2.2, 0.0, 0.45));
+  }
+
+  // 有机暗角压边
+  float vig = smoothstep(0.88, 0.26, edgeDist);
+  color *= mix(0.20, 1.0, vig);
+
+  // 受伤血色压迫暗角
   if (uBloodDread > 0.01) {
     float pulse = 0.84 + 0.16 * sin(uTime * 6.5);
     float bMask = smoothstep(0.26, 0.78, edgeDist) * uBloodDread * pulse;
     color = mix(color, vec3(0.42, 0.04, 0.04), clamp(bMask * 0.75, 0.0, 0.72));
   }
 
-  fragColor = vec4(color, 1.0);
+  fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
 `;
 
@@ -318,6 +371,8 @@ export class WebGL2Composer {
       'uPenumbraSamples',
       'uEnableGrain',
       'uPuddleReflections',
+      'uColdPalette',
+      'uVisionFog',
       'uLightCount',
       'uLightPosRad',
       'uLightColChan',
@@ -420,6 +475,8 @@ export class WebGL2Composer {
     gl.uniform1i(this.uniforms.uPenumbraSamples, u.penumbraSamples);
     gl.uniform1i(this.uniforms.uEnableGrain, u.enableGrain ? 1 : 0);
     gl.uniform1i(this.uniforms.uPuddleReflections, u.puddleReflections ? 1 : 0);
+    gl.uniform1i(this.uniforms.uColdPalette, u.coldPalette ? 1 : 0);
+    gl.uniform1i(this.uniforms.uVisionFog, u.visionFog ? 1 : 0);
 
     const count = Math.min(12, u.lights.length);
     for (let i = 0; i < count; i++) {

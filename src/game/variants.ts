@@ -68,6 +68,8 @@ export const Variants = {
 
 // Steam-grade visual A/B Variants
 Variants.def('shader', '法线光影', [['a', '平面光影'], ['b', 'WebGL2法线']], 'b');
+Variants.def('palette', '色彩风格', [['a', '初版偏绿'], ['b', '东欧冷腐油画']], 'b');
+Variants.def('vision', '视野恐惧', [['a', '传统可见'], ['b', '锥外记忆雾+盲区隐匿']], 'b');
 Variants.def('weather', '天气系统', [['a', '静谧浓雾'], ['b', '雷雨潮湿']], 'b');
 Variants.def('roof', '屋顶渐隐', [['a', '常显室内'], ['b', '平滑渐隐']], 'b');
 Variants.def('paper', '做旧界面', [['a', '暗色极简'], ['b', '羊皮做旧']], 'b');

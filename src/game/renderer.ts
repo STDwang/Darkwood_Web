@@ -11,14 +11,25 @@ import { GameEngine, SAWMILL_ROOF_RECT } from './engine';
 import { I18n } from './i18n';
 import { Quality } from './quality';
 import { ProceduralAtlas, getProceduralAtlas } from './textures';
-import { DecalEvent, Enemy, LootContainer, RectObstacle, RockObstacle } from './types';
+import {
+  DecalEvent,
+  Enemy,
+  LootContainer,
+  MovableFurniture,
+  RectObstacle,
+  RelayNode,
+  RockObstacle,
+} from './types';
 import { Vec2, angleDiff, clamp, createRng, dist, lerp } from './util';
 import { Variants } from './variants';
 import { computeVisibilityPolygon, hasLineOfSight } from './visibility';
 import { GpuLight, WebGL2Composer } from './webglComposer';
 import {
+  CAMPFIRE_POS,
   GENERATOR_POS,
+  HIDEOUT_BRAZIER_POS,
   HIDEOUT_RECT,
+  HIDEOUT_STOVE_POS,
   SHELTER_LAMPS,
   WORKBENCH_POS,
   WORLD_HALF,
@@ -59,6 +70,7 @@ export class GameRenderer {
   private wallLogPat: CanvasPattern | null = null;
   private wallRuinPat: CanvasPattern | null = null;
   private roofPat: CanvasPattern | null = null;
+  private currentPaletteMode: 'a' | 'b' = 'b';
 
   private polyScratch: Vec2[] = [];
   private auraPolyScratch: Vec2[] = [];
@@ -79,7 +91,8 @@ export class GameRenderer {
     if (!ctx) throw new Error('Failed to acquire 2D context');
     this.ctx = ctx;
 
-    this.atlas = getProceduralAtlas();
+    this.currentPaletteMode = Variants.val.palette === 'a' ? 'a' : 'b';
+    this.atlas = getProceduralAtlas(this.currentPaletteMode);
     this.webgl = new WebGL2Composer();
 
     this.albedoCanvas = document.createElement('canvas');
@@ -99,6 +112,10 @@ export class GameRenderer {
     this.decalCanvas.height = DECAL_TEX_SIZE;
     this.decalCtx = this.decalCanvas.getContext('2d')!;
 
+    this.rebuildAtlasPatterns();
+  }
+
+  private rebuildAtlasPatterns() {
     this.groundAlbedoPat = this.albedoCtx.createPattern(this.atlas.groundAlbedo, 'repeat');
     this.woodAlbedoPat = this.albedoCtx.createPattern(this.atlas.woodAlbedo, 'repeat');
     this.wallLogPat = this.albedoCtx.createPattern(this.atlas.wallLogAlbedo, 'repeat');
@@ -291,6 +308,14 @@ export class GameRenderer {
   render(engine: GameEngine) {
     if (this.drawDisabled) return;
 
+    // 响应 ?v-palette=a|b 动态切换程序化图集
+    const desiredPalette: 'a' | 'b' = Variants.val.palette === 'a' ? 'a' : 'b';
+    if (desiredPalette !== this.currentPaletteMode) {
+      this.currentPaletteMode = desiredPalette;
+      this.atlas = getProceduralAtlas(desiredPalette);
+      this.rebuildAtlasPatterns();
+    }
+
     const useWebGL = this.activeBackend === 'webgl2';
     engine.backendName = useWebGL ? 'webgl2' : 'canvas2d';
 
@@ -364,6 +389,8 @@ export class GameRenderer {
         penumbraSamples: Quality.preset.penumbraSamples,
         enableGrain: Quality.preset.enableGrain && Variants.val.grain === 'b',
         puddleReflections: Quality.preset.puddleReflections,
+        coldPalette: Variants.val.palette !== 'a',
+        visionFog: Variants.val.vision !== 'a',
         lights: this.gpuLights,
       });
 
@@ -403,8 +430,16 @@ export class GameRenderer {
   }
 
   private getAmbientRGB(engine: GameEngine): { r: number; g: number; b: number } {
+    const cold = Variants.val.palette !== 'a';
     if (engine.phase === 'day') {
       const t = engine.getPhaseProgress();
+      if (cold) {
+        return {
+          r: lerp(0.56, 0.44, t),
+          g: lerp(0.54, 0.43, t),
+          b: lerp(0.52, 0.42, t),
+        };
+      }
       return {
         r: lerp(0.46, 0.36, t),
         g: lerp(0.50, 0.38, t),
@@ -413,13 +448,20 @@ export class GameRenderer {
     }
     if (engine.phase === 'dusk') {
       const t = engine.getPhaseProgress();
+      if (cold) {
+        return {
+          r: lerp(0.44, 0.11, t),
+          g: lerp(0.32, 0.10, t),
+          b: lerp(0.26, 0.12, t),
+        };
+      }
       return {
         r: lerp(0.38, 0.08, t),
         g: lerp(0.24, 0.08, t),
         b: lerp(0.20, 0.11, t),
       };
     }
-    return { r: 0.032, g: 0.038, b: 0.048 };
+    return cold ? { r: 0.044, g: 0.048, b: 0.058 } : { r: 0.032, g: 0.038, b: 0.048 };
   }
 
   private renderSceneAlbedo(
@@ -526,18 +568,29 @@ export class GameRenderer {
       ctx.restore();
     }
 
-    // 6. Raindrop ground/puddle ripples
+    // 6. 积水双圈同心扩散波纹（主圈 + 滞后细副圈）
     if (engine.weather.rainIntensity > 0.05) {
-      ctx.strokeStyle = 'rgba(182, 198, 206, 0.42)';
-      ctx.lineWidth = 1.1;
+      ctx.strokeStyle = 'rgba(186, 200, 208, 0.48)';
       for (let i = 0; i < engine.rainRipples.count; i++) {
         const r = engine.rainRipples.items[i];
         if (!r.active) continue;
-        if (r.x < viewL - 20 || r.x > viewR + 20 || r.y < viewT - 20 || r.y > viewB + 20) continue;
-        ctx.globalAlpha = clamp(r.alpha, 0, 0.5);
+        if (r.x < viewL - 22 || r.x > viewR + 22 || r.y < viewT - 22 || r.y > viewB + 22) continue;
+        const baseA = clamp(r.alpha, 0, 0.54);
+        ctx.globalAlpha = baseA;
+        ctx.lineWidth = 1.25;
         ctx.beginPath();
         ctx.ellipse(r.x, r.y, r.radius, r.radius * 0.72, 0, 0, Math.PI * 2);
         ctx.stroke();
+
+        // 滞后细副圈
+        const innerR = r.radius - 4.2;
+        if (innerR > 1.2) {
+          ctx.globalAlpha = baseA * 0.56;
+          ctx.lineWidth = 0.85;
+          ctx.beginPath();
+          ctx.ellipse(r.x, r.y, innerR, innerR * 0.72, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       }
       ctx.globalAlpha = 1;
     }
@@ -624,10 +677,33 @@ export class GameRenderer {
       draws++;
     }
 
+    // 9b. 信号中继零件节点（3 处远方地标的苏式无线电中继组件 + 微弱青琥珀脉冲光）
+    for (const rn of engine.world.relayNodes) {
+      if (rn.collected) continue;
+      if (rn.x < viewL - 48 || rn.x > viewR + 48 || rn.y < viewT - 48 || rn.y > viewB + 48) continue;
+      this.drawRelayNode(ctx, rn, engine.simTime);
+      draws++;
+    }
+
     // 10. Soviet Generator & Cluttered Workbench
     this.drawGenerator(ctx, engine);
     this.drawWorkbench(ctx);
     draws += 2;
+
+    // 10b. 可拖拽重型家具防线（旧沙发 / 橡木柜 / 长木桌，含受损裂纹与拖拽微弱暖框轮廓）
+    for (const furn of engine.world.movables) {
+      if (furn.hp <= 0) continue;
+      if (
+        furn.x + furn.w < viewL - 30 ||
+        furn.x > viewR + 30 ||
+        furn.y + furn.h < viewT - 30 ||
+        furn.y > viewB + 30
+      ) {
+        continue;
+      }
+      this.drawMovableFurniture(ctx, furn, engine.draggedFurnitureId === furn.id, engine.simTime);
+      draws++;
+    }
 
     // 11. Architectural Walls, Crumbling Masonry & Iconic Crashed Soviet Supply Truck
     for (const w of engine.world.walls) {
@@ -660,7 +736,29 @@ export class GameRenderer {
       draws++;
     }
 
-    // 13. Multi-Faceted Mossy Boulders & Gnarled Root-Flared Tree Trunks
+    // 13. 多面苔石、林地斑驳树影（Dappled Ground Shadow）、盘根黑色枯枝与爪状板根树干
+    const windFactor = 1 + engine.weather.rainIntensity * 1.35;
+    const swayShadowOn = Quality.preset.canopySway;
+
+    // 批量绘制随风微微偏移的深邃斑驳地面投影（单次 fill 零 drawCall 膨胀）
+    ctx.fillStyle = 'rgba(4, 5, 5, 0.44)';
+    ctx.beginPath();
+    for (const t of engine.world.trees) {
+      if (t.x < viewL - 140 || t.x > viewR + 140 || t.y < viewT - 140 || t.y > viewB + 140) continue;
+      const sxOff = swayShadowOn ? Math.sin(engine.simTime * (0.85 * windFactor) + t.phase) * (4.2 * windFactor) : 0;
+      const syOff = swayShadowOn ? Math.cos(engine.simTime * (0.68 * windFactor) + t.phase) * (2.6 * windFactor) : 0;
+      const shX = t.x + 16 + sxOff;
+      const shY = t.y + 18 + syOff;
+      ctx.moveTo(shX + t.canopyR * 0.96, shY);
+      ctx.ellipse(shX, shY, t.canopyR * 0.96, t.canopyR * 0.78, t.phase * 0.5, 0, Math.PI * 2);
+    }
+    ctx.fill();
+    draws++;
+
+    // 在庇护所墙角、废墟边缘与老树周围点缀盘根错节的黑色枯枝根须（单次 stroke 批处理）
+    this.drawCreepingBlackRoots(ctx, engine, viewL, viewT, viewR, viewB);
+    draws++;
+
     for (const r of engine.world.rocks) {
       if (r.x < viewL - 44 || r.x > viewR + 44 || r.y < viewT - 44 || r.y > viewB + 44) continue;
       this.drawPainterlyRock(ctx, r);
@@ -668,7 +766,16 @@ export class GameRenderer {
     }
 
     for (const t of engine.world.trees) {
-      if (t.x < viewL - 95 || t.x > viewR + 95 || t.y < viewT - 95 || t.y > viewB + 95) continue;
+      const pad = t.trunkR * 2.8 + 12;
+      if (t.x < viewL - pad || t.x > viewR + pad || t.y < viewT - pad || t.y > viewB + pad) continue;
+      // 极外缘且远离玩家的树干被树冠与暗角完全遮蔽，跳过冗余绘制以保持低 drawCalls
+      if (
+        Math.abs(t.x - camX) > W * 0.48 &&
+        Math.abs(t.y - camY) > H * 0.48 &&
+        dist(engine.player.x, engine.player.y, t.x, t.y) > t.canopyR + 28
+      ) {
+        continue;
+      }
       const sprite = this.atlas.trunkSprites[t.id % this.atlas.trunkSprites.length];
       const size = t.trunkR * 5.2;
       ctx.save();
@@ -739,17 +846,39 @@ export class GameRenderer {
       }
     }
 
-    // 17. World Particles (blood, splinters, sparks, forest spores & flashlight dust motes)
+    // 17. 世界粒子（鲜血、木屑、火星余烬、热烟、林间孢子、手电浮尘、雨滴反弹水花）
     for (let i = 0; i < engine.particles.count; i++) {
       const pt = engine.particles.items[i];
       if (!pt.active) continue;
-      if (pt.x < viewL - 20 || pt.x > viewR + 20 || pt.y < viewT - 20 || pt.y > viewB + 20) continue;
+      if (pt.x < viewL - 28 || pt.x > viewR + 28 || pt.y < viewT - 28 || pt.y > viewB + 28) continue;
       const a = clamp(pt.life / pt.maxLife, 0, 1);
-      ctx.globalAlpha = pt.kind === 'spore' ? a * 0.5 : pt.kind === 'dust' ? a * 0.65 : a * 0.92;
-      ctx.fillStyle = pt.color;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
-      ctx.fill();
+      if (pt.kind === 'smoke') {
+        ctx.globalAlpha = a * 0.32;
+        ctx.fillStyle = pt.color;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (pt.kind === 'ember') {
+        // 明灭飘散的炽热余烬火星
+        const flicker = 0.65 + 0.35 * Math.sin(engine.simTime * 28 + i * 1.7);
+        ctx.globalAlpha = a * flicker * 0.95;
+        ctx.fillStyle = pt.color;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (pt.kind === 'splash') {
+        ctx.globalAlpha = a * 0.72;
+        ctx.fillStyle = pt.color;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.globalAlpha = pt.kind === 'spore' ? a * 0.45 : pt.kind === 'dust' ? a * 0.62 : a * 0.92;
+        ctx.fillStyle = pt.color;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.globalAlpha = 1;
 
@@ -770,28 +899,53 @@ export class GameRenderer {
       draws++;
     }
 
-    // 19. 4-Variant Hand-Painted Baltic Forest Canopies (with subtle vertical height parallax + storm sway!)
+    // 19. 电影级双层高度视差树冠 + 相位错开的受风波浪摇曳（杜绝刚体旋转）
     const swayOn = Quality.preset.canopySway;
-    const stormWind = 1 + engine.weather.rainIntensity * 1.45;
+    const stormWind = 1 + engine.weather.rainIntensity * 1.55;
     for (const t of engine.world.trees) {
-      if (t.x < viewL - 135 || t.x > viewR + 135 || t.y < viewT - 135 || t.y > viewB + 135) continue;
-      const swayX = swayOn ? Math.sin(engine.simTime * (0.95 * stormWind) + t.phase) * (3.8 * stormWind) : 0;
-      const swayY = swayOn ? Math.cos(engine.simTime * (0.72 * stormWind) + t.phase) * (2.6 * stormWind) : 0;
-      // Classic Darkwood top-down verticality: tree crowns lean slightly away from camera center
-      const paraX = clamp((t.x - camX) * 0.055, -24, 24);
-      const paraY = clamp((t.y - camY) * 0.055, -24, 24);
+      const cPad = t.canopyR * 1.32 + 24;
+      if (t.x < viewL - cPad || t.x > viewR + cPad || t.y < viewT - cPad || t.y > viewB + cPad) continue;
       const dPlayer = dist(engine.player.x, engine.player.y, t.x, t.y);
-      const canopyAlpha = dPlayer < t.canopyR + 18 ? 0.24 : 0.92;
+      const canopyAlpha = dPlayer < t.canopyR + 18 ? 0.22 : 0.94;
+      const variantIdx = t.id % this.atlas.canopySprites.length;
+      const size = t.canopyR * 2.58;
 
-      const sprite = this.atlas.canopySprites[t.id % this.atlas.canopySprites.length];
-      const size = t.canopyR * 2.55;
+      // 第一层：底层大暗冠（较低视差 + 沉重主波浪摇曳）
+      const waveBase = swayOn ? Math.sin(engine.simTime * (0.92 * stormWind) + t.phase + t.x * 0.004) : 0;
+      const waveBaseY = swayOn ? Math.cos(engine.simTime * (0.74 * stormWind) + t.phase + t.y * 0.004) : 0;
+      const baseSwayX = waveBase * (4.0 * stormWind);
+      const baseSwayY = waveBaseY * (2.6 * stormWind);
+      const baseParaX = clamp((t.x - camX) * 0.048, -22, 22);
+      const baseParaY = clamp((t.y - camY) * 0.048, -22, 22);
+
+      const baseSprite = this.atlas.canopySprites[variantIdx];
       ctx.save();
       ctx.globalAlpha = canopyAlpha;
-      ctx.translate(t.x + swayX + paraX, t.y + swayY + paraY);
+      ctx.translate(t.x + baseSwayX + baseParaX, t.y + baseSwayY + baseParaY);
       ctx.rotate(t.phase);
-      ctx.drawImage(sprite, -size * 0.5, -size * 0.5, size, size);
+      ctx.drawImage(baseSprite, -size * 0.5, -size * 0.5, size, size);
       ctx.restore();
       draws++;
+
+      // 第二层：顶层细枝冠（中近景主视野绘制双层高度视差 + 相位错开的波浪起伏，边缘暗角外跳过以保预算）
+      if (Math.abs(t.x - camX) < W * 0.42 && Math.abs(t.y - camY) < H * 0.46) {
+        const waveTop = swayOn ? Math.sin(engine.simTime * (1.38 * stormWind) + t.phase + 1.55 + t.x * 0.006) : 0;
+        const waveTopY = swayOn ? Math.cos(engine.simTime * (1.12 * stormWind) + t.phase + 0.95 + t.y * 0.006) : 0;
+        const topSwayX = baseSwayX + waveTop * (5.2 * stormWind);
+        const topSwayY = baseSwayY + waveTopY * (3.6 * stormWind);
+        const topParaX = clamp((t.x - camX) * 0.095, -42, 42);
+        const topParaY = clamp((t.y - camY) * 0.095, -42, 42);
+
+        const topSprite = this.atlas.canopyTopSprites[variantIdx];
+        const topSize = size * 0.94;
+        ctx.save();
+        ctx.globalAlpha = canopyAlpha;
+        ctx.translate(t.x + topSwayX + topParaX, t.y + topSwayY + topParaY);
+        ctx.rotate(t.phase + waveTop * 0.025);
+        ctx.drawImage(topSprite, -topSize * 0.5, -topSize * 0.5, topSize, topSize);
+        ctx.restore();
+        draws++;
+      }
     }
 
     // 20. Dark impenetrable treeline border
@@ -955,10 +1109,11 @@ export class GameRenderer {
     ctx.arc(5, 0, 12, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    // Flickering dull ember slit in stove grate
-    const emberGlow = 0.45 + Math.sin(engine.simTime * 6.5) * 0.25;
-    ctx.fillStyle = `rgba(225, 96, 36, ${emberGlow.toFixed(3)})`;
-    ctx.fillRect(-2, -3, 3.5, 6);
+    // 铸铁炭炉炉口跃动余烬活焰（3 层微焰）
+    const emberGlow = 0.62 + Math.sin(engine.simTime * 11.5) * 0.22 + Math.sin(engine.simTime * 23.0) * 0.12;
+    ctx.fillStyle = `rgba(248, 126, 42, ${clamp(emberGlow, 0.3, 1).toFixed(3)})`;
+    ctx.fillRect(-3, -3.5, 4.5, 7);
+    this.drawLivingFire(ctx, -2.5, 0, 0.42, engine.simTime, 3.1);
     // Top iron stove pipe ring
     ctx.fillStyle = '#333633';
     ctx.beginPath();
@@ -1076,34 +1231,45 @@ export class GameRenderer {
       ctx.fill();
       ctx.stroke();
 
-      // Dead charred campfire pit
-      ctx.translate(-636, 646);
-      const ash = ctx.createRadialGradient(0, 0, 3, 0, 0, 24);
-      ash.addColorStop(0, 'rgba(18, 16, 15, 0.85)');
-      ash.addColorStop(0.7, 'rgba(42, 36, 31, 0.45)');
+      // 猎人营地：仍在燃烧的活篝火（炽热炭床 + 3 层跃动火舌）
+      ctx.translate(CAMPFIRE_POS.x, CAMPFIRE_POS.y);
+      const ash = ctx.createRadialGradient(0, 0, 3, 0, 0, 28);
+      ash.addColorStop(0, 'rgba(22, 14, 10, 0.90)');
+      ash.addColorStop(0.65, 'rgba(48, 34, 24, 0.48)');
       ash.addColorStop(1, 'rgba(42, 36, 31, 0)');
       ctx.fillStyle = ash;
       ctx.beginPath();
-      ctx.arc(0, 0, 24, 0, Math.PI * 2);
+      ctx.arc(0, 0, 28, 0, Math.PI * 2);
       ctx.fill();
 
-      // Ring of soot-stained stones
+      // 熏黑围石圈
       for (let i = 0; i < 9; i++) {
         const a = (i / 9) * Math.PI * 2;
-        ctx.fillStyle = i % 2 === 0 ? '#454842' : '#353732';
+        ctx.fillStyle = i % 2 === 0 ? '#424440' : '#313330';
         ctx.beginPath();
-        ctx.arc(Math.cos(a) * 14, Math.sin(a) * 14, 4.2, 0, Math.PI * 2);
+        ctx.arc(Math.cos(a) * 15, Math.sin(a) * 15, 4.4, 0, Math.PI * 2);
         ctx.fill();
       }
-      // Crossed charred firewood logs
+      // 交叉炭化柴木与炽热炭床
       ctx.strokeStyle = '#181412';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 4.2;
       ctx.beginPath();
-      ctx.moveTo(-10, -6);
-      ctx.lineTo(10, 6);
-      ctx.moveTo(-8, 7);
-      ctx.lineTo(9, -7);
+      ctx.moveTo(-11, -6);
+      ctx.lineTo(11, 6);
+      ctx.moveTo(-9, 8);
+      ctx.lineTo(10, -7);
       ctx.stroke();
+
+      const bedGlow = ctx.createRadialGradient(0, 0, 1, 0, 0, 11);
+      bedGlow.addColorStop(0, 'rgba(255, 224, 140, 0.92)');
+      bedGlow.addColorStop(0.55, 'rgba(228, 86, 26, 0.72)');
+      bedGlow.addColorStop(1, 'rgba(120, 26, 12, 0)');
+      ctx.fillStyle = bedGlow;
+      ctx.beginPath();
+      ctx.arc(0, 0, 11, 0, Math.PI * 2);
+      ctx.fill();
+
+      this.drawLivingFire(ctx, 0, 0, 1.15, engine.simTime, 1.7);
       ctx.restore();
 
       // Dried dark blood drag streak leading toward the fallen hunter corpse (-690, 685)
@@ -1171,6 +1337,161 @@ export class GameRenderer {
       }
       ctx.restore();
     }
+
+    // 4. 庇护所南门外侧生锈铁桶余烬火盆（Brazier，标题页/白昼/黑夜均可见活火光，零碰撞死角）
+    if (
+      viewR > HIDEOUT_BRAZIER_POS.x - 45 &&
+      viewL < HIDEOUT_BRAZIER_POS.x + 45 &&
+      viewB > HIDEOUT_BRAZIER_POS.y - 45 &&
+      viewT < HIDEOUT_BRAZIER_POS.y + 45
+    ) {
+      ctx.save();
+      ctx.translate(HIDEOUT_BRAZIER_POS.x, HIDEOUT_BRAZIER_POS.y);
+      // 焦黑地面炭灰圈与接地投影
+      const soot = ctx.createRadialGradient(0, 0, 4, 0, 0, 24);
+      soot.addColorStop(0, 'rgba(10, 9, 8, 0.85)');
+      soot.addColorStop(0.65, 'rgba(26, 22, 18, 0.45)');
+      soot.addColorStop(1, 'rgba(10, 9, 8, 0)');
+      ctx.fillStyle = soot;
+      ctx.beginPath();
+      ctx.arc(0, 0, 24, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 锈蚀铁桶桶身与卷边
+      ctx.fillStyle = '#3a261e';
+      ctx.strokeStyle = '#0e0b0a';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 12.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // 桶内深暗炭火腔与炽热余烬
+      ctx.fillStyle = '#18110e';
+      ctx.beginPath();
+      ctx.arc(0, 0, 9.6, 0, Math.PI * 2);
+      ctx.fill();
+
+      const coal = ctx.createRadialGradient(0, 0, 1, 0, 0, 9.2);
+      coal.addColorStop(0, 'rgba(255, 228, 152, 0.95)');
+      coal.addColorStop(0.55, 'rgba(235, 94, 30, 0.78)');
+      coal.addColorStop(1, 'rgba(92, 22, 10, 0.15)');
+      ctx.fillStyle = coal;
+      ctx.beginPath();
+      ctx.arc(0, 0, 9.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 3 层跃动火舌
+      this.drawLivingFire(ctx, 0, 0, 0.96, engine.simTime, 5.3);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * 3 层跃动活火焰（暗红热气外焰 → 橙红扭曲中焰 → 白黄炽热核心）
+   */
+  private drawLivingFire(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    scale: number,
+    time: number,
+    seed: number
+  ) {
+    const f1 = Math.sin(time * 13.4 + seed) * 2.4 * scale;
+    const f2 = Math.cos(time * 19.2 + seed * 1.9) * 1.8 * scale;
+    const stretch = 1 + Math.sin(time * 16.5 + seed * 0.7) * 0.18;
+
+    ctx.save();
+    ctx.translate(x, y);
+
+    // 外层：暗红热气外焰
+    ctx.fillStyle = 'rgba(196, 52, 22, 0.62)';
+    ctx.beginPath();
+    ctx.moveTo(-7.5 * scale, 3 * scale);
+    ctx.quadraticCurveTo(-9 * scale + f2, -6 * scale, f1 * 1.15, -14.5 * scale * stretch);
+    ctx.quadraticCurveTo(9 * scale - f2, -6 * scale, 7.5 * scale, 3 * scale);
+    ctx.quadraticCurveTo(0, 7 * scale, -7.5 * scale, 3 * scale);
+    ctx.closePath();
+    ctx.fill();
+
+    // 中层：橙红扭曲中焰
+    ctx.fillStyle = 'rgba(248, 128, 36, 0.84)';
+    ctx.beginPath();
+    ctx.moveTo(-5.2 * scale, 2.2 * scale);
+    ctx.quadraticCurveTo(-6.2 * scale - f2 * 0.7, -4.5 * scale, -f1 * 0.7, -10.8 * scale * stretch);
+    ctx.quadraticCurveTo(6.2 * scale + f2 * 0.7, -4.5 * scale, 5.2 * scale, 2.2 * scale);
+    ctx.quadraticCurveTo(0, 5.2 * scale, -5.2 * scale, 2.2 * scale);
+    ctx.closePath();
+    ctx.fill();
+
+    // 内核：白黄炽热核心
+    ctx.fillStyle = 'rgba(255, 244, 198, 0.94)';
+    ctx.beginPath();
+    ctx.ellipse(f2 * 0.35, -1.8 * scale, 3.1 * scale, 4.6 * scale * stretch, f1 * 0.08, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  /**
+   * 在庇护所墙角、废墟边缘与老树周围点缀盘根错节的黑色枯枝根须（单次 stroke 批处理）
+   */
+  private drawCreepingBlackRoots(
+    ctx: CanvasRenderingContext2D,
+    engine: GameEngine,
+    viewL: number,
+    viewT: number,
+    viewR: number,
+    viewB: number
+  ) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(10, 9, 9, 0.82)';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+
+    const addRootCluster = (ox: number, oy: number, seed: number, count: number, maxLen: number) => {
+      if (ox < viewL - maxLen || ox > viewR + maxLen || oy < viewT - maxLen || oy > viewB + maxLen) return;
+      const rng = createRng(seed);
+      for (let i = 0; i < count; i++) {
+        const a = (i / count) * Math.PI * 2 + (rng() - 0.5) * 0.7;
+        const len = maxLen * (0.55 + rng() * 0.45);
+        const mx = ox + Math.cos(a + (rng() - 0.5) * 0.5) * len * 0.52;
+        const my = oy + Math.sin(a + (rng() - 0.5) * 0.5) * len * 0.52;
+        const ex = ox + Math.cos(a) * len;
+        const ey = oy + Math.sin(a) * len;
+        ctx.moveTo(ox, oy);
+        ctx.quadraticCurveTo(mx, my, ex, ey);
+        // 细碎末梢分叉
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx + Math.cos(a + 0.55) * len * 0.36, my + Math.sin(a + 0.55) * len * 0.36);
+      }
+    };
+
+    // 庇护所 4 个外墙角蔓延的黑枯根须
+    const { x, y, w, h } = HIDEOUT_RECT;
+    addRootCluster(x - 2, y - 2, 1011, 5, 34);
+    addRootCluster(x + w + 2, y - 2, 1021, 5, 32);
+    addRootCluster(x - 2, y + h + 2, 1031, 5, 36);
+    addRootCluster(x + w + 2, y + h + 2, 1041, 5, 34);
+
+    // 废墟石墙角落侵蚀根须
+    for (let i = 0; i < engine.world.walls.length; i++) {
+      const wall = engine.world.walls[i];
+      if (wall.kind !== 'ruin_wall') continue;
+      addRootCluster(wall.x, wall.y, 2003 + i * 71, 4, 28);
+      addRootCluster(wall.x + wall.w, wall.y + wall.h, 2111 + i * 89, 3, 24);
+    }
+
+    // 部分古树脚下外延黑枯枝须（每 3 棵树抽样 1 棵，丰富林地肌理且保持低开销）
+    for (let i = 0; i < engine.world.trees.length; i += 3) {
+      const t = engine.world.trees[i];
+      addRootCluster(t.x, t.y, 4001 + t.id * 37, 4, t.trunkR * 2.4 + 14);
+    }
+
+    ctx.stroke();
+    ctx.restore();
   }
 
   // --- Architectural Brushwork: Hewn Cabin Timber Walls ---
@@ -1212,13 +1533,23 @@ export class GameRenderer {
       }
     }
 
-    // Crisp outer dark ink outline & subtle northwest timber top highlight
-    ctx.strokeStyle = '#120d09';
-    ctx.lineWidth = 2.2;
-    ctx.strokeRect(w.x, w.y, w.w, w.h);
-    ctx.fillStyle = 'rgba(235, 208, 168, 0.14)';
-    ctx.fillRect(w.x + 2, w.y + 2, w.w - 4, 3);
-    ctx.fillRect(w.x + 2, w.y + 2, 3, w.h - 4);
+    // 建筑墙体顶部厚重近纯黑截断边框（#070808 + 轻微破损粗糙边），强化 Darkwood 空间切割压迫感
+    ctx.strokeStyle = '#070808';
+    ctx.lineWidth = 4.6;
+    ctx.strokeRect(w.x + 1, w.y + 1, w.w - 2, w.h - 2);
+
+    ctx.fillStyle = '#070808';
+    const edgeRng = createRng(Math.abs(Math.floor(w.x * 17 + w.y * 31)) + 19);
+    const chips = Math.max(3, Math.floor((w.w + w.h) / 34));
+    for (let i = 0; i < chips; i++) {
+      const cx = w.x + edgeRng() * Math.max(4, w.w - 4);
+      const cy = w.y + edgeRng() * Math.max(4, w.h - 4);
+      ctx.fillRect(cx, cy, 2.5 + edgeRng() * 3.5, 2.5 + edgeRng() * 3.5);
+    }
+
+    ctx.fillStyle = 'rgba(210, 198, 178, 0.10)';
+    ctx.fillRect(w.x + 3, w.y + 3, Math.max(0, w.w - 6), 2);
+    ctx.fillRect(w.x + 3, w.y + 3, 2, Math.max(0, w.h - 6));
   }
 
   private drawHideoutCornerNotches(ctx: CanvasRenderingContext2D) {
@@ -1249,22 +1580,26 @@ export class GameRenderer {
     ctx.fillStyle = this.wallRuinPat ?? '#3d4039';
     ctx.fillRect(w.x, w.y, w.w, w.h);
 
-    ctx.strokeStyle = '#121412';
-    ctx.lineWidth = 2.2;
-    ctx.strokeRect(w.x, w.y, w.w, w.h);
+    // 废墟石墙厚重近纯黑截断边框（#070808 + 破损石块缺口）
+    ctx.strokeStyle = '#070808';
+    ctx.lineWidth = 4.4;
+    ctx.strokeRect(w.x + 1, w.y + 1, w.w - 2, w.h - 2);
 
-    // Deterministic moss patches & scattered crumbling rubble chunks along edges
+    // 确定性冷灰苔藓斑块、墙顶破损黑块与散落碎石
     const rng = createRng(Math.abs(Math.floor(w.x * 13 + w.y * 29)) + 7);
     const specks = Math.max(3, Math.floor((w.w + w.h) / 38));
     for (let i = 0; i < specks; i++) {
       const mx = w.x + rng() * w.w;
       const my = w.y + rng() * w.h;
-      ctx.fillStyle = 'rgba(46, 68, 36, 0.45)';
+      ctx.fillStyle = Variants.val.palette !== 'a' ? 'rgba(54, 58, 52, 0.42)' : 'rgba(46, 68, 36, 0.45)';
       ctx.beginPath();
       ctx.ellipse(mx, my, 5 + rng() * 6, 3 + rng() * 4, rng() * Math.PI, 0, Math.PI * 2);
       ctx.fill();
 
-      // Fallen rubble stone beside ruin wall
+      ctx.fillStyle = '#070808';
+      ctx.fillRect(mx - 2, my - 2, 3.5, 3.5);
+
+      // 墙边散落碎石
       const rx = w.x + rng() * w.w;
       const ry = w.y + (rng() > 0.5 ? -3 : w.h + 3);
       ctx.fillStyle = '#484a43';
@@ -1699,13 +2034,16 @@ export class GameRenderer {
       sctx.fill();
     };
 
-    // Channel R: Player Flashlight Cone
+    // Channel R: 玩家手电筒光锥（标题页从庇护所南门廊外缓慢扫射，避免光锥三角穿透屋顶）
     if (p.flashlightOn && p.flickerVal > 0.05) {
-      const coneLen = 455;
+      const coneLen = 470;
+      const isTitle = engine.mode === 'title';
+      const beamX = isTitle ? 0 : p.x;
+      const beamY = isTitle ? HIDEOUT_RECT.y + HIDEOUT_RECT.h + 14 : p.y;
       computeVisibilityPolygon(
         engine.world,
-        p.x,
-        p.y,
+        beamX,
+        beamY,
         coneLen,
         this.polyScratch,
         p.angle,
@@ -1714,14 +2052,15 @@ export class GameRenderer {
       fillPoly(this.polyScratch, '#ff0000');
 
       const warmTone = Variants.val.light === 'b';
+      const coldPalette = Variants.val.palette !== 'a';
       this.gpuLights.push({
-        x: p.x - viewL,
-        y: p.y - viewT,
+        x: beamX - viewL,
+        y: beamY - viewT,
         radius: coneLen,
-        intensity: 2.35 * p.flickerVal,
-        r: warmTone ? 1.0 : 0.78,
-        g: warmTone ? 0.80 : 0.90,
-        b: warmTone ? 0.50 : 1.0,
+        intensity: (coldPalette ? 2.75 : 2.35) * p.flickerVal,
+        r: warmTone ? 1.0 : 0.84,
+        g: warmTone ? (coldPalette ? 0.87 : 0.80) : 0.91,
+        b: warmTone ? (coldPalette ? 0.68 : 0.50) : 1.0,
         dirX: Math.cos(p.angle),
         dirY: Math.sin(p.angle),
         coneCos: Math.cos(coneHalfRad),
@@ -1729,25 +2068,26 @@ export class GameRenderer {
       });
     }
 
-    // Channel B: Close 360° Ambient Awareness Halo
-    const auraR = engine.phase === 'day' ? 175 : engine.phase === 'dusk' ? 132 : 98;
+    // Channel B: 近身 360° 微光感知圈
+    const auraR = engine.phase === 'day' ? 168 : engine.phase === 'dusk' ? 128 : 108;
     computeVisibilityPolygon(engine.world, p.x, p.y, auraR, this.auraPolyScratch);
     fillPoly(this.auraPolyScratch, '#0000ff');
     this.gpuLights.push({
       x: p.x - viewL,
       y: p.y - viewT,
       radius: auraR,
-      intensity: engine.phase === 'night' ? 0.85 : 1.15,
-      r: 0.74,
-      g: 0.78,
-      b: 0.74,
+      intensity: engine.phase === 'night' ? 1.05 : 1.35,
+      r: 0.78,
+      g: 0.79,
+      b: 0.78,
       dirX: 0,
       dirY: 0,
       coneCos: -2.0,
       shadowChannel: 2,
     });
 
-    // Channel G: Hideout Generator Shelter Lamps + Active Crimson Flares
+    // Channel G: 庇护所发电机暖黄吊灯 + 活篝火/余烬火盆 + 照明弹
+    const coldPalette = Variants.val.palette !== 'a';
     if (engine.generatorOn && engine.generatorFuel > 0) {
       const sputter =
         engine.generatorFuel < 16
@@ -1755,7 +2095,7 @@ export class GameRenderer {
             ? 0.32
             : 0.96
           : 0.96 + Math.sin(engine.simTime * 7.2) * 0.04;
-      const lampR = 205;
+      const lampR = 232;
       for (const lamp of SHELTER_LAMPS) {
         if (this.gpuLights.length >= maxLights) break;
         if (dist(lamp.x, lamp.y, engine.camX, engine.camY) > W * 0.9) continue;
@@ -1765,16 +2105,54 @@ export class GameRenderer {
           x: lamp.x - viewL,
           y: lamp.y - viewT,
           radius: lampR,
-          intensity: 2.05 * sputter,
+          intensity: (coldPalette ? 2.38 : 2.05) * sputter,
           r: 1.0,
-          g: 0.69,
-          b: 0.34,
+          g: coldPalette ? 0.80 : 0.69,
+          b: coldPalette ? 0.54 : 0.34,
           dirX: 0,
           dirY: 0,
           coneCos: -2.0,
           shadowChannel: 1,
         });
       }
+    }
+
+    // 活篝火与生锈铁桶余烬火盆：不规则高频呼吸频闪暖色动态点光 + 柔和阴影摇曳
+    const fireSources = [
+      { pos: HIDEOUT_BRAZIER_POS, r: 190, baseIntensity: 2.35, seed: 5.3, shadowed: true },
+      { pos: CAMPFIRE_POS, r: 230, baseIntensity: 2.85, seed: 1.7, shadowed: true },
+      { pos: HIDEOUT_STOVE_POS, r: 100, baseIntensity: 1.28, seed: 3.1, shadowed: false },
+    ];
+    for (const fire of fireSources) {
+      if (this.gpuLights.length >= maxLights) break;
+      if (dist(fire.pos.x, fire.pos.y, engine.camX, engine.camY) > W * 0.85) continue;
+      const t = engine.simTime;
+      const flicker =
+        0.84 +
+        Math.sin(t * 11.7 + fire.seed) * 0.09 +
+        Math.sin(t * 25.3 + fire.seed * 2.1) * 0.07;
+      const jitterX = Math.sin(t * 9.2 + fire.seed) * 2.4;
+      const jitterY = Math.cos(t * 13.6 + fire.seed) * 2.0;
+      const fx = fire.pos.x + jitterX;
+      const fy = fire.pos.y + jitterY;
+
+      if (fire.shadowed) {
+        computeVisibilityPolygon(engine.world, fx, fy, fire.r, this.lampPolyScratch);
+        fillPoly(this.lampPolyScratch, '#00ff00');
+      }
+      this.gpuLights.push({
+        x: fx - viewL,
+        y: fy - viewT,
+        radius: fire.r,
+        intensity: fire.baseIntensity * flicker,
+        r: 1.0,
+        g: 0.64,
+        b: 0.32,
+        dirX: 0,
+        dirY: 0,
+        coneCos: -2.0,
+        shadowChannel: fire.shadowed ? 1 : 3,
+      });
     }
 
     for (const f of engine.flares) {
@@ -1856,21 +2234,45 @@ export class GameRenderer {
     }
     ctx.restore();
 
-    // 2. Slanted Rain Streaks
+    // 1b. 庇护所门窗木板缝隙的锐利条状漏光光束（参考 Darkwood ref_1_t4）
     ctx.save();
     ctx.translate(-viewL, -viewT);
+    this.drawBarricadeLightSlits(ctx, engine, viewL, viewT, viewL + W, viewT + H);
 
+    // 2. 双景深活雨幕（柔化暗区纯白对比度：中景冷灰雾细雨 + 近景微冷雾色雨线，保持涟漪与水花鲜活）
     if (engine.weather.rainIntensity > 0.04) {
       const windDx = Math.cos(engine.weather.windAngle);
       const windDy = Math.sin(engine.weather.windAngle);
       const flashBoost = engine.weather.lightningFlash * 0.45;
+      const nightSoften = engine.phase === 'night' ? 0.76 : engine.phase === 'dusk' ? 0.88 : 1.0;
+
+      // 中景细密倾斜雨丝（layer === 0）：压低远景/暗区 alpha 避免过白突兀
+      const midAlpha = flashBoost > 0.1 ? 0.42 : 0.24 * nightSoften;
       ctx.strokeStyle =
-        flashBoost > 0.1 ? 'rgba(214, 228, 244, 0.72)' : 'rgba(176, 192, 196, 0.55)';
-      ctx.lineWidth = 1.1;
+        flashBoost > 0.1
+          ? `rgba(178, 196, 212, ${midAlpha.toFixed(3)})`
+          : `rgba(128, 146, 156, ${midAlpha.toFixed(3)})`;
+      ctx.lineWidth = 0.95;
       ctx.beginPath();
       for (let i = 0; i < engine.rainDrops.count; i++) {
         const d = engine.rainDrops.items[i];
-        if (!d.active) continue;
+        if (!d.active || d.layer !== 0) continue;
+        ctx.moveTo(d.x, d.y);
+        ctx.lineTo(d.x - windDx * d.len, d.y - windDy * d.len);
+      }
+      ctx.stroke();
+
+      // 近景更粗、更快、微带冷雾色调的近镜头雨线（layer === 1）
+      const nearAlpha = flashBoost > 0.1 ? 0.58 : 0.37 * nightSoften;
+      ctx.strokeStyle =
+        flashBoost > 0.1
+          ? `rgba(204, 220, 234, ${nearAlpha.toFixed(3)})`
+          : `rgba(154, 174, 186, ${nearAlpha.toFixed(3)})`;
+      ctx.lineWidth = 1.65;
+      ctx.beginPath();
+      for (let i = 0; i < engine.rainDrops.count; i++) {
+        const d = engine.rainDrops.items[i];
+        if (!d.active || d.layer !== 1) continue;
         ctx.moveTo(d.x, d.y);
         ctx.lineTo(d.x - windDx * d.len, d.y - windDy * d.len);
       }
@@ -1927,6 +2329,87 @@ export class GameRenderer {
     ctx.restore();
   }
 
+  /**
+   * 庇护所门窗木板缝隙透出的锐利条状漏光光束（随屋内发电机灯光轻微晃动）
+   */
+  private drawBarricadeLightSlits(
+    ctx: CanvasRenderingContext2D,
+    engine: GameEngine,
+    viewL: number,
+    viewT: number,
+    viewR: number,
+    viewB: number
+  ) {
+    const genLit = engine.generatorOn && engine.generatorFuel > 0;
+    if (!genLit && engine.phase === 'night') return;
+    if (
+      viewR < HIDEOUT_RECT.x - 160 ||
+      viewL > HIDEOUT_RECT.x + HIDEOUT_RECT.w + 160 ||
+      viewB < HIDEOUT_RECT.y - 160 ||
+      viewT > HIDEOUT_RECT.y + HIDEOUT_RECT.h + 160
+    ) {
+      return;
+    }
+
+    const sway = Math.sin(engine.simTime * 2.6) * 5;
+    const flicker = genLit ? 0.88 + Math.sin(engine.simTime * 9.5) * 0.12 : 0.45;
+    const beamLen = engine.phase === 'night' ? 128 : 88;
+    const baseAlpha = (engine.phase === 'night' ? 0.24 : 0.13) * flicker;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (const b of engine.world.barricades) {
+      // 未封死的门洞不画木板缝隙光条（保留完整视野光锥）
+      if (b.hp <= 0 && b.kind === 'door') continue;
+      const cx = b.x + b.w * 0.5;
+      const cy = b.y + b.h * 0.5;
+
+      // 计算门窗朝向屋外的法线方向
+      let nx = 0;
+      let ny = 0;
+      if (b.id === 'bar_north_win') ny = -1;
+      else if (b.id === 'bar_south_door') ny = 1;
+      else if (b.id === 'bar_west_win') nx = -1;
+      else if (b.id === 'bar_east_door') nx = 1;
+      else continue;
+
+      const tx = -ny;
+      const ty = nx;
+      const slitOffsets = [-16, 0, 16];
+
+      for (let s = 0; s < slitOffsets.length; s++) {
+        const off = slitOffsets[s];
+        const sx = cx + tx * off + nx * 6;
+        const sy = cy + ty * off + ny * 6;
+        const fan = (s - 1) * 26 + sway;
+        const ex = sx + nx * beamLen + tx * fan;
+        const ey = sy + ny * beamLen + ty * fan;
+
+        const grad = ctx.createLinearGradient(sx, sy, ex, ey);
+        if (genLit) {
+          grad.addColorStop(0, `rgba(238, 188, 108, ${baseAlpha.toFixed(3)})`);
+          grad.addColorStop(0.55, `rgba(196, 152, 86, ${(baseAlpha * 0.45).toFixed(3)})`);
+          grad.addColorStop(1, 'rgba(180, 140, 80, 0)');
+        } else {
+          grad.addColorStop(0, `rgba(176, 188, 192, ${(baseAlpha * 0.8).toFixed(3)})`);
+          grad.addColorStop(1, 'rgba(176, 188, 192, 0)');
+        }
+
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(sx - tx * 2.2, sy - ty * 2.2);
+        ctx.lineTo(sx + tx * 2.2, sy + ty * 2.2);
+        ctx.lineTo(ex + tx * 11, ey + ty * 11);
+        ctx.lineTo(ex - tx * 11, ey - ty * 11);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
+  }
+
   private renderFallbackDarkness(
     ctx: CanvasRenderingContext2D,
     engine: GameEngine,
@@ -1976,8 +2459,11 @@ export class GameRenderer {
     punch(p.x, p.y, auraR, this.auraPolyScratch, 0.9);
 
     if (p.flashlightOn && p.flickerVal > 0.05) {
-      computeVisibilityPolygon(engine.world, p.x, p.y, 440, this.polyScratch, p.angle, coneHalfRad);
-      punch(p.x, p.y, 440, this.polyScratch, 0.97 * p.flickerVal);
+      const isTitle = engine.mode === 'title';
+      const beamX = isTitle ? 0 : p.x;
+      const beamY = isTitle ? HIDEOUT_RECT.y + HIDEOUT_RECT.h + 14 : p.y;
+      computeVisibilityPolygon(engine.world, beamX, beamY, 440, this.polyScratch, p.angle, coneHalfRad);
+      punch(beamX, beamY, 440, this.polyScratch, 0.97 * p.flickerVal);
     }
 
     if (engine.generatorOn && engine.generatorFuel > 0) {
@@ -1985,6 +2471,15 @@ export class GameRenderer {
         computeVisibilityPolygon(engine.world, lamp.x, lamp.y, 195, this.lampPolyScratch);
         punch(lamp.x, lamp.y, 195, this.lampPolyScratch, 0.95);
       }
+    }
+
+    // Canvas2D 回退同样照亮活篝火与庇护所火盆
+    for (const fire of [
+      { pos: HIDEOUT_BRAZIER_POS, r: 175 },
+      { pos: CAMPFIRE_POS, r: 215 },
+    ]) {
+      computeVisibilityPolygon(engine.world, fire.pos.x, fire.pos.y, fire.r, this.lampPolyScratch);
+      punch(fire.pos.x, fire.pos.y, fire.r, this.lampPolyScratch, 0.92);
     }
 
     for (const f of engine.flares) {
@@ -1998,38 +2493,59 @@ export class GameRenderer {
   }
 
   private isEnemyVisible(engine: GameEngine, e: Enemy, coneHalfRad: number): boolean {
+    // 传统可见对照组（?v-vision=a）：始终渲染敌人
+    if (Variants.val.vision === 'a') return true;
+
     const p = engine.player;
     const d = dist(p.x, p.y, e.x, e.y);
 
-    if (engine.weather.lightningFlash > 0.45 && d < 520) return true;
+    // ④ 闪电劈照瞬间显形
+    if (engine.weather.lightningFlash > 0.25 && d < 560) return true;
 
-    const awarenessR = engine.phase === 'day' ? 148 : 92;
-    if (d < awarenessR && hasLineOfSight(engine.world, p.x, p.y, e.x, e.y)) return true;
+    // ② 玩家近身微光圈内（dist < 115 且有视线）
+    if (d < 115 && hasLineOfSight(engine.world, p.x, p.y, e.x, e.y)) return true;
 
-    if (p.flashlightOn && p.flickerVal > 0.1 && d < 445) {
+    // ① 玩家手电视野锥内（有射线视线）
+    if (p.flashlightOn && p.flickerVal > 0.1 && d < 465) {
       const angToE = Math.atan2(e.y - p.y, e.x - p.x);
       if (
-        Math.abs(angleDiff(p.angle, angToE)) <= coneHalfRad + 0.09 &&
+        Math.abs(angleDiff(p.angle, angToE)) <= coneHalfRad + 0.08 &&
         hasLineOfSight(engine.world, p.x, p.y, e.x, e.y)
       ) {
         return true;
       }
     }
 
+    // ③ 室内吊灯 / 活篝火 / 火盆 / 照明弹照亮范围内且有视线
     if (engine.generatorOn && engine.generatorFuel > 0) {
       for (const lamp of SHELTER_LAMPS) {
-        if (dist(lamp.x, lamp.y, e.x, e.y) < 185 && hasLineOfSight(engine.world, lamp.x, lamp.y, e.x, e.y)) {
+        if (dist(lamp.x, lamp.y, e.x, e.y) < 210 && hasLineOfSight(engine.world, lamp.x, lamp.y, e.x, e.y)) {
           return true;
         }
       }
     }
 
+    if (
+      dist(HIDEOUT_BRAZIER_POS.x, HIDEOUT_BRAZIER_POS.y, e.x, e.y) < 185 &&
+      hasLineOfSight(engine.world, HIDEOUT_BRAZIER_POS.x, HIDEOUT_BRAZIER_POS.y, e.x, e.y)
+    ) {
+      return true;
+    }
+
+    if (
+      dist(CAMPFIRE_POS.x, CAMPFIRE_POS.y, e.x, e.y) < 220 &&
+      hasLineOfSight(engine.world, CAMPFIRE_POS.x, CAMPFIRE_POS.y, e.x, e.y)
+    ) {
+      return true;
+    }
+
     for (const f of engine.flares) {
-      if (dist(f.x, f.y, e.x, e.y) < 260 && hasLineOfSight(engine.world, f.x, f.y, e.x, e.y)) {
+      if (dist(f.x, f.y, e.x, e.y) < 265 && hasLineOfSight(engine.world, f.x, f.y, e.x, e.y)) {
         return true;
       }
     }
 
+    // 盲区中的敌人本体完全隐藏（仅保留声波涟漪、挠门木屑与低吼）
     return false;
   }
 
@@ -2066,7 +2582,34 @@ export class GameRenderer {
     let armAngle = 0.25 + stride * 0.14;
     let torsoTwist = stride * 0.09;
 
-    if (p.swingTimer > 0) {
+    // 蓄力架势：武器臂逐渐向后拉弓，并在角色身前绘制极克制的 Diegetic 弧形蓄力微光
+    if (p.isCharging && p.chargeTimer > 0.06) {
+      const chargeRatio = clamp((p.chargeTimer - 0.06) / (0.65 - 0.06), 0, 1);
+      const ready = p.chargeTimer >= 0.22;
+      armAngle = lerp(0.25, -1.28 * p.swingDir, chargeRatio);
+      torsoTwist = lerp(0, -0.32 * p.swingDir, chargeRatio);
+
+      const arcR = isAxe ? 44 : 36;
+      const halfSpan = lerp(0.95, 0.42, chargeRatio);
+      const pulse = ready ? 0.78 + Math.sin(engine.simTime * 18) * 0.22 : 0.45;
+      ctx.save();
+      ctx.strokeStyle = ready
+        ? `rgba(236, 186, 108, ${(0.42 * pulse).toFixed(3)})`
+        : `rgba(210, 198, 174, ${(0.22 * chargeRatio).toFixed(3)})`;
+      ctx.lineWidth = ready ? 2.4 : 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, arcR, -halfSpan, halfSpan);
+      ctx.stroke();
+
+      if (ready) {
+        ctx.strokeStyle = `rgba(255, 232, 176, ${(0.62 * pulse).toFixed(3)})`;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, arcR + 3, -halfSpan * 0.6, halfSpan * 0.6);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (p.swingTimer > 0) {
       const prog = 1 - p.swingTimer / p.swingDuration;
       const startA = -1.22 * p.swingDir;
       const endA = 1.12 * p.swingDir;
@@ -2699,6 +3242,189 @@ export class GameRenderer {
       ctx.arc(0, 0, 3.2, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    ctx.restore();
+  }
+
+  /**
+   * 绘制可拖拽重型家具（旧沙发 / 橡木柜 / 长木桌），采用东欧冷腐油画笔触、受损裂纹与拖拽微弱暖框
+   */
+  private drawMovableFurniture(
+    ctx: CanvasRenderingContext2D,
+    f: MovableFurniture,
+    dragging: boolean,
+    time: number
+  ) {
+    const cx = f.x + f.w * 0.5;
+    const cy = f.y + f.h * 0.5;
+    const hw = f.w * 0.5;
+    const hh = f.h * 0.5;
+    const hpRatio = clamp(f.hp / f.maxHp, 0, 1);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+
+    // 接地厚重暗影
+    ctx.fillStyle = 'rgba(5, 4, 4, 0.54)';
+    ctx.fillRect(-hw + 3, -hh + 4, f.w, f.h);
+
+    if (f.kind === 'sofa') {
+      // 腐朽暗褐绒布旧沙发：厚靠背 + 磨损双扶手 + 塌陷坐垫缝线
+      ctx.fillStyle = f.hitFlash > 0 ? '#78322a' : '#4a352c';
+      ctx.strokeStyle = '#120d0a';
+      ctx.lineWidth = 2;
+      ctx.fillRect(-hw, -hh, f.w, f.h);
+      ctx.strokeRect(-hw, -hh, f.w, f.h);
+
+      // 靠背与左右扶手立体厚边
+      ctx.fillStyle = f.hitFlash > 0 ? '#8c3d34' : '#382720';
+      ctx.fillRect(-hw + 1, -hh + 1, f.w - 2, 7);
+      ctx.fillRect(-hw + 1, -hh + 1, 7, f.h - 2);
+      ctx.fillRect(hw - 8, -hh + 1, 7, f.h - 2);
+
+      // 坐垫拼接缝与陈旧污渍
+      ctx.strokeStyle = 'rgba(18, 12, 9, 0.65)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(0, -hh + 8);
+      ctx.lineTo(0, hh - 2);
+      ctx.moveTo(-hw + 8, -hh + 8);
+      ctx.lineTo(hw - 8, -hh + 8);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(20, 15, 12, 0.32)';
+      ctx.beginPath();
+      ctx.ellipse(-10, 3, 9, 5, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (f.kind === 'cabinet') {
+      // 沉重橡木柜：暗沉木板顶面 + 铁质包角 + 暗铜抽屉把手
+      ctx.fillStyle = f.hitFlash > 0 ? '#7a3b2c' : '#423022';
+      ctx.strokeStyle = '#0e0a07';
+      ctx.lineWidth = 2.2;
+      ctx.fillRect(-hw, -hh, f.w, f.h);
+      ctx.strokeRect(-hw, -hh, f.w, f.h);
+
+      // 顶面木纹与厚黑边内框
+      ctx.strokeStyle = 'rgba(18, 12, 8, 0.62)';
+      ctx.lineWidth = 1.3;
+      ctx.strokeRect(-hw + 4, -hh + 4, f.w - 8, f.h - 8);
+      ctx.beginPath();
+      ctx.moveTo(-hw + 4, 0);
+      ctx.lineTo(hw - 4, 0);
+      ctx.stroke();
+
+      // 锈蚀铁包角与暗铜拉手
+      ctx.fillStyle = '#333836';
+      ctx.fillRect(-hw, -hh, 5, 5);
+      ctx.fillRect(hw - 5, -hh, 5, 5);
+      ctx.fillRect(-hw, hh - 5, 5, 5);
+      ctx.fillRect(hw - 5, hh - 5, 5, 5);
+      ctx.fillStyle = '#9c7e4e';
+      ctx.fillRect(-5, hh - 3, 10, 2);
+    } else {
+      // 长木桌：厚重划痕橡木拼板 + 桌面旧油渍
+      ctx.fillStyle = f.hitFlash > 0 ? '#7c3d2d' : '#533c28';
+      ctx.strokeStyle = '#140e09';
+      ctx.lineWidth = 2;
+      ctx.fillRect(-hw, -hh, f.w, f.h);
+      ctx.strokeRect(-hw, -hh, f.w, f.h);
+
+      ctx.strokeStyle = 'rgba(20, 14, 9, 0.58)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(-hw + 2, -hh + f.h * 0.35);
+      ctx.lineTo(hw - 2, -hh + f.h * 0.35);
+      ctx.moveTo(-hw + 2, -hh + f.h * 0.68);
+      ctx.lineTo(hw - 2, -hh + f.h * 0.68);
+      ctx.stroke();
+
+      // 桌面暗痕与钉头
+      ctx.fillStyle = 'rgba(16, 12, 9, 0.42)';
+      ctx.fillRect(-hw + 4, -hh + 4, 2.5, 2.5);
+      ctx.fillRect(hw - 6.5, -hh + 4, 2.5, 2.5);
+      ctx.fillRect(-hw + 4, hh - 6.5, 2.5, 2.5);
+      ctx.fillRect(hw - 6.5, hh - 6.5, 2.5, 2.5);
+    }
+
+    // 受损木裂纹（hp 低于 70% 时逐步显现）
+    if (hpRatio < 0.72) {
+      ctx.strokeStyle = 'rgba(14, 9, 7, 0.88)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(-hw * 0.5, -hh + 2);
+      ctx.lineTo(-hw * 0.15, 0);
+      ctx.lineTo(-hw * 0.35, hh - 3);
+      if (hpRatio < 0.4) {
+        ctx.moveTo(hw * 0.4, -hh + 3);
+        ctx.lineTo(hw * 0.1, 2);
+        ctx.lineTo(hw * 0.5, hh - 2);
+      }
+      ctx.stroke();
+    }
+
+    // 拖拽时的微弱暖框轮廓（极克制，帮助玩家确认当前抓取对象）
+    if (dragging) {
+      const pulse = 0.55 + Math.sin(time * 6.5) * 0.18;
+      ctx.strokeStyle = `rgba(226, 184, 108, ${pulse.toFixed(3)})`;
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(-hw - 3, -hh - 3, f.w + 6, f.h + 6);
+      ctx.setLineDash([]);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * 绘制地标处的信号中继零件节点（苏式金属无线电中继组件 + 微弱青琥珀脉冲光）
+   */
+  private drawRelayNode(ctx: CanvasRenderingContext2D, rn: RelayNode, time: number) {
+    const pulse = 0.65 + Math.sin(time * 3.4 + rn.x * 0.02) * 0.35;
+    ctx.save();
+    ctx.translate(rn.x, rn.y);
+
+    // 微弱青琥珀脉冲光晕
+    const grad = ctx.createRadialGradient(0, 0, 2, 0, 0, 26);
+    grad.addColorStop(0, `rgba(122, 212, 188, ${(0.42 * pulse).toFixed(3)})`);
+    grad.addColorStop(0.55, `rgba(218, 174, 96, ${(0.22 * pulse).toFixed(3)})`);
+    grad.addColorStop(1, 'rgba(122, 212, 188, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, 26, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 地面投影
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
+    ctx.fillRect(-11, -7, 24, 18);
+
+    // 锈蚀苏式无线电中继金属箱体
+    ctx.fillStyle = '#36443f';
+    ctx.strokeStyle = '#111614';
+    ctx.lineWidth = 2;
+    ctx.fillRect(-12, -9, 24, 18);
+    ctx.strokeRect(-12, -9, 24, 18);
+
+    // 铜线圈与仪表刻度盘
+    ctx.fillStyle = '#9c7844';
+    ctx.fillRect(-8, -5, 7, 10);
+    ctx.fillStyle = '#1b201e';
+    ctx.beginPath();
+    ctx.arc(5, 0, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 脉冲信号指示灯
+    ctx.fillStyle = pulse > 0.72 ? '#8ef0d6' : '#d8b062';
+    ctx.beginPath();
+    ctx.arc(5, 0, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 折断的天线杆
+    ctx.strokeStyle = '#8b9490';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(8, -9);
+    ctx.lineTo(14, -18);
+    ctx.stroke();
 
     ctx.restore();
   }

@@ -23,10 +23,12 @@ import {
   Inventory,
   JournalEntry,
   LootContainer,
+  MovableFurniture,
   Particle,
   PilotInput,
   RainDrop,
   RainRipple,
+  RelayNode,
   ResourceKey,
   SoundRipple,
   TimePhase,
@@ -42,14 +44,18 @@ import {
   createRng,
   dist,
   expDecay,
+  resolveCircleRect,
   wrapAngle,
 } from './util';
 import { Variants } from './variants';
 import { hasLineOfSight } from './visibility';
 import {
+  CAMPFIRE_POS,
   CRAFT_RECIPES,
   GENERATOR_POS,
+  HIDEOUT_BRAZIER_POS,
   HIDEOUT_RECT,
+  HIDEOUT_STOVE_POS,
   SHELTER_LAMPS,
   WORKBENCH_POS,
   WORLD_HALF,
@@ -58,6 +64,7 @@ import {
   getSurfaceAt,
   getZoneNameAt,
   isPointInHideout,
+  resolveFurnitureCollision,
   resolveWorldCollision,
 } from './world';
 
@@ -102,6 +109,14 @@ export interface PlayerState {
   breathePhase: number;
   searchingId: string | null;
   searchProgress: number;
+  // 蓄力重击与闪避急退状态
+  isCharging: boolean;
+  chargeTimer: number;
+  dodgeTimer: number;
+  dodgeInvuln: number;
+  dodgeCd: number;
+  dodgeDirX: number;
+  dodgeDirY: number;
 }
 
 export class GameEngine {
@@ -158,6 +173,8 @@ export class GameEngine {
   // Camera (One Clock — single exponential follower + decaying trauma shake)
   camX = 0;
   camY = 20;
+  camLockX: number | null = null;
+  camLockY: number | null = null;
   shake = 0;
   shakeOffsetX = 0;
   shakeOffsetY = 0;
@@ -181,6 +198,9 @@ export class GameEngine {
   enemiesDefeated = 0;
   essenceCollected = 0;
   dangerLevel = 0;
+  draggedFurnitureId: string | null = null;
+  relayInstalled = 0;
+  endlessMode = false;
   backendName: 'webgl2' | 'canvas2d' = 'webgl2';
   fps = 60;
 
@@ -189,7 +209,9 @@ export class GameEngine {
   private nextToastId = 1;
   private spawnTimer = 4;
   private sporeTimer = 0;
+  private emberTimer = 0;
   private rainSpawnAccum = 0;
+  private openerHookTriggered = false;
   private currentPrompt: InteractPrompt | null = null;
   private onOpenWorkbench: (() => void) | null = null;
   private hudSubscribers = new Set<(snap: HudSnapshot) => void>();
@@ -197,7 +219,7 @@ export class GameEngine {
 
   constructor(seed = 19847) {
     this.world = createWorld(seed);
-    this.particles = new LiveRing<Particle>(320, () => ({
+    this.particles = new LiveRing<Particle>(420, () => ({
       active: false,
       x: 0,
       y: 0,
@@ -227,15 +249,16 @@ export class GameEngine {
       life: 0,
       maxLife: 14,
     }));
-    this.rainDrops = new LiveRing<RainDrop>(220, () => ({
+    this.rainDrops = new LiveRing<RainDrop>(280, () => ({
       active: false,
       x: 0,
       y: 0,
       len: 16,
       speed: 520,
       alpha: 0.35,
+      layer: 0,
     }));
-    this.rainRipples = new LiveRing<RainRipple>(70, () => ({
+    this.rainRipples = new LiveRing<RainRipple>(90, () => ({
       active: false,
       x: 0,
       y: 0,
@@ -276,6 +299,13 @@ export class GameEngine {
       breathePhase: 0,
       searchingId: null,
       searchProgress: 0,
+      isCharging: false,
+      chargeTimer: 0,
+      dodgeTimer: 0,
+      dodgeInvuln: 0,
+      dodgeCd: 0,
+      dodgeDirX: 0,
+      dodgeDirY: 0,
     };
   }
 
@@ -291,6 +321,7 @@ export class GameEngine {
       bandages: 1,
       traps: 1,
       weaponTier: 1,
+      relayParts: 0,
     };
   }
 
@@ -380,12 +411,18 @@ export class GameEngine {
 
     this.camX = this.player.x;
     this.camY = this.player.y;
+    this.camLockX = null;
+    this.camLockY = null;
     this.shake = 0;
     this.hitStop = 0;
     this.containersLooted = 0;
     this.enemiesDefeated = 0;
     this.essenceCollected = 0;
     this.dangerLevel = 0;
+    this.draggedFurnitureId = null;
+    this.relayInstalled = 0;
+    this.endlessMode = false;
+    this.openerHookTriggered = false;
     this.spawnTimer = 6;
     this.currentPrompt = null;
 
@@ -397,9 +434,28 @@ export class GameEngine {
     this.emitHud();
   }
 
+  /**
+   * 临时锁定或解除测试检查相机坐标（供 window.__game.view 使用）
+   * 传入 null/undefined 解除锁定，恢复默认跟随逻辑
+   */
+  setCameraLock(x?: number | null, y?: number | null) {
+    if (x === null || x === undefined || y === null || y === undefined) {
+      this.camLockX = null;
+      this.camLockY = null;
+      return;
+    }
+    this.camLockX = x;
+    this.camLockY = y;
+    this.camX = x;
+    this.camY = y;
+    this.shake = 0;
+    this.shakeOffsetX = 0;
+    this.shakeOffsetY = 0;
+  }
+
   startPlay() {
     AudioFX.unlock();
-    if (this.mode === 'dead') {
+    if (this.mode === 'dead' || this.mode === 'victory') {
       this.reset(this.world.seed + 13, true);
       return;
     }
@@ -410,11 +466,24 @@ export class GameEngine {
     this.emitHud();
   }
 
+  /**
+   * 通关后选择继续无尽求生模式（不再重复触发通关结算）
+   */
+  continueEndless() {
+    if (this.mode !== 'victory') return;
+    this.endlessMode = true;
+    this.mode = 'play';
+    this.pushToast('你决定留在幽林深处，继续无尽求生……', 'info');
+    this.emitHud();
+  }
+
   setMode(next: GameMode) {
     this.mode = next;
     this.keys.clear();
     this.mouseDownLeft = false;
     this.touchInteract = false;
+    this.player.isCharging = false;
+    this.player.chargeTimer = 0;
     this.emitHud();
   }
 
@@ -473,7 +542,7 @@ export class GameEngine {
     }
   }
 
-  private spawnEnemyAt(x: number, y: number, kind: EnemyKind) {
+  private spawnEnemyAt(x: number, y: number, kind: EnemyKind, initialStalk = 0) {
     const spec =
       kind === 'hound'
         ? { r: 13, hp: 52, speed: 122, damage: 15 }
@@ -498,6 +567,8 @@ export class GameEngine {
       attackCd: 0.4,
       hitFlash: 0,
       snareTimer: 0,
+      stalkTimer: initialStalk,
+      stalkRippleCd: 0.35,
       stepTimer: 0,
       walkPhase: this.rng() * Math.PI * 2,
       clawPhase: 0,
@@ -519,7 +590,9 @@ export class GameEngine {
     let kind: EnemyKind = 'stalker';
     if (roll < 0.34) kind = 'hound';
     else if (this.day >= 2 && roll > 0.76) kind = 'banshee';
-    this.spawnEnemyAt(x, y, kind);
+    // 夜袭怪物自带 1.4s - 2.4s 门窗外窥伺试探期，杜绝入夜秒杀
+    const stalkDuration = 1.4 + this.rng() * 1.0;
+    this.spawnEnemyAt(x, y, kind, stalkDuration);
   }
 
   // --- Player Actions ---
@@ -536,29 +609,123 @@ export class GameEngine {
     this.emitHud();
   }
 
-  triggerAttack() {
+  /**
+   * 按下左键开始蓄力（拖拽家具或冷却中禁止进入蓄力）
+   */
+  beginAttackCharge() {
     if (this.mode !== 'play') return;
+    if (this.draggedFurnitureId) return;
     const p = this.player;
-    if (p.swingCd > 0 || p.stamina < 16) return;
+    if (p.swingCd > 0 || p.dodgeTimer > 0 || p.stamina < 16) return;
+    p.isCharging = true;
+    p.chargeTimer = 0;
+    p.searchingId = null;
+    p.searchProgress = 0;
+  }
+
+  /**
+   * 松开左键：短按 (<0.22s) 触发轻快横扫；长按 (>=0.22s) 爆发蓄力重击
+   */
+  releaseAttackCharge() {
+    const p = this.player;
+    if (!p.isCharging) return;
+    const held = p.chargeTimer;
+    p.isCharging = false;
+    p.chargeTimer = 0;
+    if (this.mode !== 'play' || this.draggedFurnitureId) return;
+    this.triggerAttack(held >= 0.22);
+  }
+
+  /**
+   * Space 闪避急退：消耗 28 体力，提供 0.18s 无敌帧与爆发位移，步末重跑碰撞解算
+   */
+  triggerDodge(dirX?: number, dirY?: number): boolean {
+    if (this.mode !== 'play') return false;
+    const p = this.player;
+    if (p.dodgeCd > 0 || p.dodgeTimer > 0 || p.stamina < 28) return false;
+
+    // 闪避时自动松开家具与取消蓄力/搜刮，保证保命手感顺滑
+    if (this.draggedFurnitureId) {
+      this.draggedFurnitureId = null;
+    }
+    p.isCharging = false;
+    p.chargeTimer = 0;
+    p.searchingId = null;
+    p.searchProgress = 0;
+
+    let dx = dirX ?? 0;
+    let dy = dirY ?? 0;
+    if (dx === 0 && dy === 0) {
+      if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) dy -= 1;
+      if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) dy += 1;
+      if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) dx -= 1;
+      if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) dx += 1;
+      if (Math.hypot(this.touchMoveX, this.touchMoveY) > 0.1) {
+        dx = this.touchMoveX;
+        dy = this.touchMoveY;
+      }
+    }
+
+    const mag = Math.hypot(dx, dy);
+    if (mag > 0.08) {
+      dx /= mag;
+      dy /= mag;
+    } else {
+      // 静止时向面朝反方向急退
+      dx = -Math.cos(p.angle);
+      dy = -Math.sin(p.angle);
+    }
+
+    p.stamina = Math.max(0, p.stamina - 28);
+    p.dodgeTimer = 0.18;
+    p.dodgeInvuln = 0.18;
+    p.dodgeCd = 0.65;
+    p.dodgeDirX = dx;
+    p.dodgeDirY = dy;
+    p.vx = dx * 340;
+    p.vy = dy * 340;
+
+    // 爆发尘土/雨地水花粒子、衣料破风声与急退脚步声
+    const wet = this.weather.wetness > 0.35 && !isPointInHideout(p.x, p.y);
+    this.spawnBurst(p.x, p.y, 8, wet ? 'splash' : 'dust', wet ? '#b8ccd4' : '#9c927d');
+    AudioFX.playDodgeWhoosh();
+    AudioFX.playFootstep(getSurfaceAt(this.world, p.x, p.y), true, this.weather.wetness);
+    this.emitHud();
+    return true;
+  }
+
+  /**
+   * 近战挥击（支持轻快横扫与蓄力重击）
+   */
+  triggerAttack(heavy = false) {
+    if (this.mode !== 'play') return;
+    if (this.draggedFurnitureId) return;
+    const p = this.player;
+    if (p.swingCd > 0 || p.dodgeTimer > 0 || p.stamina < 16) return;
 
     const isAxe = this.inv.weaponTier === 2;
-    p.stamina = Math.max(0, p.stamina - (isAxe ? 22 : 17));
-    p.swingDuration = isAxe ? 0.36 : 0.28;
+    const baseStamina = isAxe ? 22 : 17;
+    const totalStamina = heavy ? baseStamina + 14 : baseStamina;
+    p.stamina = Math.max(0, p.stamina - totalStamina);
+    p.swingDuration = heavy ? (isAxe ? 0.42 : 0.34) : isAxe ? 0.36 : 0.28;
     p.swingTimer = p.swingDuration;
-    p.swingCd = isAxe ? 0.54 : 0.44;
+    p.swingCd = heavy ? (isAxe ? 0.62 : 0.52) : isAxe ? 0.54 : 0.44;
     p.swingDir = -p.swingDir;
     p.searchingId = null;
     p.searchProgress = 0;
 
-    p.vx += Math.cos(p.angle) * 78;
-    p.vy += Math.sin(p.angle) * 78;
+    const lunge = heavy ? 132 : 78;
+    p.vx += Math.cos(p.angle) * lunge;
+    p.vy += Math.sin(p.angle) * lunge;
 
-    AudioFX.playSwing(isAxe);
+    AudioFX.playChargeSwing(heavy || isAxe);
 
-    const reach = isAxe ? 68 : 56;
+    const reach = (isAxe ? 68 : 56) + (heavy ? 10 : 0);
     const arcHalf = isAxe ? 1.05 : 0.92;
-    const dmg = isAxe ? 48 : 28;
-    const kb = isAxe ? 265 : 185;
+    const baseDmg = isAxe ? 48 : 28;
+    const baseKb = isAxe ? 265 : 185;
+    const dmg = heavy ? Math.round(baseDmg * 1.85) : baseDmg;
+    const kb = heavy ? Math.round(baseKb * 1.75) : baseKb;
 
     let hitSomething = false;
     for (let i = this.enemies.length - 1; i >= 0; i--) {
@@ -571,27 +738,27 @@ export class GameEngine {
 
       hitSomething = true;
       e.hp -= dmg;
-      e.hitFlash = 0.22;
+      e.hitFlash = heavy ? 0.3 : 0.22;
       e.vx += Math.cos(toEnemy) * kb;
       e.vy += Math.sin(toEnemy) * kb;
-      this.spawnBurst(e.x, e.y, 11, 'blood', '#7c1717');
+      this.spawnBurst(e.x, e.y, heavy ? 18 : 11, 'blood', '#7c1717');
       this.pushDecal({
         kind: 'splatter',
-        x: e.x + Math.cos(toEnemy) * 14,
-        y: e.y + Math.sin(toEnemy) * 14,
+        x: e.x + Math.cos(toEnemy) * (heavy ? 18 : 14),
+        y: e.y + Math.sin(toEnemy) * (heavy ? 18 : 14),
         angle: toEnemy,
-        scale: isAxe ? 1.25 : 0.95,
+        scale: heavy ? (isAxe ? 1.75 : 1.45) : isAxe ? 1.25 : 0.95,
         seed: this.rng() * 100,
       });
 
       if (e.hp <= 0) {
-        this.spawnBurst(e.x, e.y, 18, 'blood', '#560d0d');
+        this.spawnBurst(e.x, e.y, heavy ? 24 : 18, 'blood', '#560d0d');
         this.pushDecal({
           kind: 'blood',
           x: e.x,
           y: e.y,
           angle: toEnemy,
-          scale: 1.35,
+          scale: heavy ? 1.55 : 1.35,
           seed: this.rng() * 100,
         });
         this.pushDecal({
@@ -609,10 +776,10 @@ export class GameEngine {
     }
 
     if (hitSomething) {
-      this.hitStop = 0.048;
-      this.shake = Math.min(12, this.shake + (isAxe ? 7.5 : 5));
+      this.hitStop = heavy ? 0.055 : 0.042;
+      this.shake = Math.min(14, this.shake + (heavy ? 9.5 : isAxe ? 7.5 : 5));
       AudioFX.playImpact('flesh');
-      this.emitRipple(p.x, p.y, 130, 'rgba(214, 108, 92, 0.45)');
+      this.emitRipple(p.x, p.y, heavy ? 165 : 130, 'rgba(214, 108, 92, 0.48)');
     }
   }
 
@@ -741,8 +908,59 @@ export class GameEngine {
     if (this.mode !== 'play') return;
     const p = this.player;
 
+    // 1. 若正在拖拽家具，按 E 立刻松开
+    if (this.draggedFurnitureId) {
+      this.draggedFurnitureId = null;
+      AudioFX.playImpact('wood');
+      this.emitHud();
+      return;
+    }
+
+    // 2. 拾取远方地标的信号中继零件
+    const relay = this.findNearestRelayNode(52);
+    if (relay) {
+      relay.collected = true;
+      this.inv.relayParts++;
+      AudioFX.playRelayChime(false);
+      this.spawnBurst(relay.x, relay.y, 14, 'spark', '#7ad8c5');
+      this.emitRipple(relay.x, relay.y, 130, 'rgba(122, 216, 197, 0.48)');
+      this.pushToast(`拾取信号中继零件（${relay.zone}）！带回庇护所发电机安装。`, 'loot');
+      this.addJournal(
+        `中继零件：${relay.zone}`,
+        `在${relay.zone}找到了完整的苏式无线电中继组件。将全部 3 件装入庇护所发电机，熬过黑夜即可发信破雾撤离。`
+      );
+      this.emitHud();
+      return;
+    }
+
+    // 3. 庇护所发电机：若身上携带信号零件则优先安装，否则注入燃油
     if (dist(p.x, p.y, GENERATOR_POS.x, GENERATOR_POS.y) < 58) {
+      if (this.inv.relayParts > 0 && this.relayInstalled < 3) {
+        this.inv.relayParts--;
+        this.relayInstalled++;
+        AudioFX.playRelayChime(this.relayInstalled >= 3);
+        this.spawnBurst(GENERATOR_POS.x, GENERATOR_POS.y, 12, 'spark', '#e8c474');
+        if (this.relayInstalled >= 3) {
+          this.pushToast('中继电台已组装完毕 (3/3)！守住庇护所熬过终夜，破晓即可撤离！', 'loot');
+          this.addJournal(
+            '中继电台就绪',
+            '三件信号中继零件已全部接入发电机。只要守住庇护所撑到下一个黎明，就能借助信号破雾逃出黑林！'
+          );
+        } else {
+          this.pushToast(`已安装信号中继零件 (${this.relayInstalled}/3)`, 'loot');
+        }
+        this.emitHud();
+        return;
+      }
+
       if (this.generatorFuel >= 96) {
+        if (!this.generatorOn) {
+          this.generatorOn = true;
+          AudioFX.playClick(true);
+          this.pushToast('发电机已重新启动。', 'info');
+          this.emitHud();
+          return;
+        }
         this.pushToast('发电机燃料已满', 'info');
         return;
       }
@@ -766,11 +984,7 @@ export class GameEngine {
     }
 
     const bar = this.findNearestBarricade(64);
-    if (bar) {
-      if (bar.hp >= bar.maxHp) {
-        this.pushToast('木板完好无损', 'info');
-        return;
-      }
+    if (bar && bar.hp < bar.maxHp) {
       if (this.inv.wood < 2) {
         this.pushToast('无木材加固！', 'warn');
         return;
@@ -799,6 +1013,62 @@ export class GameEngine {
         return;
       }
     }
+
+    // 6. 靠近完好家具按 E 抓取拖拽（抵住门窗延缓怪物突入）
+    const furn = this.findNearestFurniture(54);
+    if (furn) {
+      this.draggedFurnitureId = furn.id;
+      p.isCharging = false;
+      p.chargeTimer = 0;
+      p.searchingId = null;
+      p.searchProgress = 0;
+      AudioFX.playImpact('wood');
+      this.emitHud();
+      return;
+    }
+
+    if (bar && bar.hp >= bar.maxHp) {
+      this.pushToast('木板完好无损', 'info');
+    }
+  }
+
+  /**
+   * 计算点到矩形边缘的最短距离
+   */
+  private distPointToRect(px: number, py: number, rx: number, ry: number, rw: number, rh: number): number {
+    const cx = clamp(px, rx, rx + rw);
+    const cy = clamp(py, ry, ry + rh);
+    return Math.hypot(px - cx, py - cy);
+  }
+
+  private findNearestFurniture(maxDist: number): MovableFurniture | null {
+    const p = this.player;
+    let best: MovableFurniture | null = null;
+    let bestD = maxDist;
+    for (const m of this.world.movables) {
+      if (m.hp <= 0) continue;
+      const d = this.distPointToRect(p.x, p.y, m.x, m.y, m.w, m.h);
+      if (d < bestD) {
+        bestD = d;
+        best = m;
+      }
+    }
+    return best;
+  }
+
+  private findNearestRelayNode(maxDist: number): RelayNode | null {
+    const p = this.player;
+    let best: RelayNode | null = null;
+    let bestD = maxDist;
+    for (const rn of this.world.relayNodes) {
+      if (rn.collected) continue;
+      const d = dist(p.x, p.y, rn.x, rn.y);
+      if (d < bestD) {
+        bestD = d;
+        best = rn;
+      }
+    }
+    return best;
   }
 
   private findNearestBarricade(maxDist: number): BarricadeSlot | null {
@@ -838,17 +1108,23 @@ export class GameEngine {
     // Title screen: live swaying misty rain forest behind title!
     if (this.mode === 'title') {
       this.simTime += dt;
-      this.camX = Math.sin(this.simTime * 0.14) * 78;
-      this.camY = 145 + Math.cos(this.simTime * 0.11) * 42;
-      this.player.angle = Math.PI * 0.45 + Math.sin(this.simTime * 0.32) * 0.35;
-      this.hideoutRoofAlpha = expDecay(this.hideoutRoofAlpha, 0.88, 3.0, dt);
+      if (this.camLockX !== null && this.camLockY !== null) {
+        this.camX = this.camLockX;
+        this.camY = this.camLockY;
+      } else {
+        this.camX = Math.sin(this.simTime * 0.14) * 78;
+        this.camY = 145 + Math.cos(this.simTime * 0.11) * 42;
+      }
+      this.player.angle = Math.PI * 0.5 + Math.sin(this.simTime * 0.32) * 0.36;
+      this.hideoutRoofAlpha = expDecay(this.hideoutRoofAlpha, 0.98, 4.0, dt);
       this.updateWeather(dt, canvasW, canvasH);
       this.updateParticles(dt);
       this.spawnAmbientSpores(dt);
+      this.updateCampfireEmbers(dt);
       return;
     }
 
-    if (this.mode === 'hold' || this.mode === 'dead') {
+    if (this.mode === 'hold' || this.mode === 'dead' || this.mode === 'victory') {
       return;
     }
 
@@ -858,6 +1134,29 @@ export class GameEngine {
     }
 
     this.simTime += dt;
+
+    // 30 秒开局钩子：第 1 天开局 6s 在庇护所南门外触发诡异挠门刮木声与立体声波涟漪
+    if (this.day === 1 && !this.openerHookTriggered && this.simTime >= 6.0) {
+      this.openerHookTriggered = true;
+      this.emitRipple(0, 152, 170, 'rgba(218, 128, 92, 0.65)');
+      this.emitRipple(-14, 166, 115, 'rgba(206, 189, 152, 0.48)');
+      const hookSpatial = {
+        worldX: 0,
+        worldY: 152,
+        listenerX: this.player.x,
+        listenerY: this.player.y,
+        muffled: isPointInHideout(this.player.x, this.player.y),
+      };
+      AudioFX.playWoodScrape(hookSpatial);
+      AudioFX.playImpact('wood', hookSpatial);
+      this.pushToast('南门外传来急促的挠门与脚步声……先搜刮门口背包，必要时拖家具堵门！', 'warn');
+    }
+
+    // 衰减家具受击闪烁
+    for (let i = 0; i < this.world.movables.length; i++) {
+      const m = this.world.movables[i];
+      if (m.hitFlash > 0) m.hitFlash = Math.max(0, m.hitFlash - dt);
+    }
 
     // 1. Day / Dusk / Night cycle
     this.dayTime += dt / CYCLE_SECONDS;
@@ -933,29 +1232,38 @@ export class GameEngine {
     // 9. Particles, Ripples, Footprints, Toasts
     this.updateParticles(dt);
     this.spawnAmbientSpores(dt);
+    this.updateCampfireEmbers(dt);
     this.updateRipplesAndFootprints(dt);
     this.updateToasts(dt);
 
     // 10. Camera (One Clock — single exponential follow + trauma decay)
-    const lookAhead = 34;
-    const targetCamX = this.player.x + Math.cos(this.player.angle) * lookAhead;
-    const targetCamY = this.player.y + Math.sin(this.player.angle) * lookAhead;
-    this.camX = expDecay(this.camX, targetCamX, 6.5, dt);
-    this.camY = expDecay(this.camY, targetCamY, 6.5, dt);
-
-    const halfViewW = Math.min(WORLD_HALF - 40, canvasW * 0.42);
-    const halfViewH = Math.min(WORLD_HALF - 40, canvasH * 0.42);
-    this.camX = clamp(this.camX, -WORLD_HALF + halfViewW, WORLD_HALF - halfViewW);
-    this.camY = clamp(this.camY, -WORLD_HALF + halfViewH, WORLD_HALF - halfViewH);
-
-    if (this.shake > 0.05) {
-      this.shake = Math.max(0, this.shake - dt * 26);
-      this.shakeOffsetX = (this.rng() * 2 - 1) * this.shake;
-      this.shakeOffsetY = (this.rng() * 2 - 1) * this.shake;
-    } else {
+    if (this.camLockX !== null && this.camLockY !== null) {
+      this.camX = this.camLockX;
+      this.camY = this.camLockY;
       this.shake = 0;
       this.shakeOffsetX = 0;
       this.shakeOffsetY = 0;
+    } else {
+      const lookAhead = 34;
+      const targetCamX = this.player.x + Math.cos(this.player.angle) * lookAhead;
+      const targetCamY = this.player.y + Math.sin(this.player.angle) * lookAhead;
+      this.camX = expDecay(this.camX, targetCamX, 6.5, dt);
+      this.camY = expDecay(this.camY, targetCamY, 6.5, dt);
+
+      const halfViewW = Math.min(WORLD_HALF - 40, canvasW * 0.42);
+      const halfViewH = Math.min(WORLD_HALF - 40, canvasH * 0.42);
+      this.camX = clamp(this.camX, -WORLD_HALF + halfViewW, WORLD_HALF - halfViewW);
+      this.camY = clamp(this.camY, -WORLD_HALF + halfViewH, WORLD_HALF - halfViewH);
+
+      if (this.shake > 0.05) {
+        this.shake = Math.max(0, this.shake - dt * 26);
+        this.shakeOffsetX = (this.rng() * 2 - 1) * this.shake;
+        this.shakeOffsetY = (this.rng() * 2 - 1) * this.shake;
+      } else {
+        this.shake = 0;
+        this.shakeOffsetX = 0;
+        this.shakeOffsetY = 0;
+      }
     }
 
     // 11. Continuous Physical Audio Modulation
@@ -1042,24 +1350,26 @@ export class GameEngine {
       }
     }
 
-    // Spawn rain streaks & ground splash ripples (zero-GC LiveRing!)
+    // 双景深雨幕 + 积水涟漪 + 地面/屋檐反弹水花微粒（全部复用零 GC 环形池）
     const rainScale = Quality.preset.rainScale;
-    const rate = this.weather.rainIntensity * 135 * rainScale;
+    const rate = this.weather.rainIntensity * 165 * rainScale;
     this.rainSpawnAccum += rate * dt;
     const w = Math.max(640, canvasW);
     const h = Math.max(480, canvasH);
     while (this.rainSpawnAccum >= 1) {
       this.rainSpawnAccum -= 1;
       const drop = this.rainDrops.alloc();
+      const isNear = this.rng() < 0.28;
       drop.active = true;
-      drop.x = this.camX + (this.rng() - 0.5) * (w + 180);
+      drop.layer = isNear ? 1 : 0;
+      drop.x = this.camX + (this.rng() - 0.5) * (w + 200);
       drop.y = this.camY - h * 0.55 - this.rng() * 120;
-      drop.len = 13 + this.rng() * 16;
-      drop.speed = 540 + this.rng() * 240;
-      drop.alpha = (0.18 + this.rng() * 0.24) * this.weather.rainIntensity;
+      drop.len = isNear ? 22 + this.rng() * 16 : 12 + this.rng() * 14;
+      drop.speed = isNear ? 780 + this.rng() * 240 : 520 + this.rng() * 210;
+      drop.alpha = (isNear ? 0.26 + this.rng() * 0.22 : 0.16 + this.rng() * 0.20) * this.weather.rainIntensity;
 
-      // Occasional puddle/ground splash ripple
-      if (this.rng() < 0.26) {
+      // 积水双圈涟漪与短促反弹水花微粒
+      if (this.rng() < 0.30) {
         const rx = this.camX + (this.rng() - 0.5) * w;
         const ry = this.camY + (this.rng() - 0.5) * h;
         if (!isPointInHideout(rx, ry)) {
@@ -1068,8 +1378,59 @@ export class GameEngine {
           rip.x = rx;
           rip.y = ry;
           rip.radius = 1.5;
-          rip.maxRadius = 9 + this.rng() * 9;
-          rip.alpha = 0.42 * this.weather.rainIntensity;
+          rip.maxRadius = 11 + this.rng() * 10;
+          rip.alpha = 0.48 * this.weather.rainIntensity;
+
+          // 短促反弹水花微粒（1~2 颗）
+          if (this.rng() < 0.58 * Quality.preset.particleScale) {
+            const count = this.rng() < 0.45 ? 2 : 1;
+            for (let k = 0; k < count; k++) {
+              const sp = this.particles.alloc();
+              sp.active = true;
+              sp.x = rx;
+              sp.y = ry;
+              sp.vx = (this.rng() - 0.5) * 46;
+              sp.vy = -22 - this.rng() * 34;
+              sp.size = 1.0 + this.rng() * 0.9;
+              sp.life = 0.14 + this.rng() * 0.11;
+              sp.maxLife = sp.life;
+              sp.color = '#c8d6dc';
+              sp.kind = 'splash';
+            }
+          }
+        }
+      }
+
+      // 庇护所屋檐边缘雨滴溅射水花
+      if (this.rng() < 0.08 * Quality.preset.particleScale) {
+        const side = Math.floor(this.rng() * 4);
+        let ex = HIDEOUT_RECT.x;
+        let ey = HIDEOUT_RECT.y;
+        if (side === 0) {
+          ex = HIDEOUT_RECT.x + this.rng() * HIDEOUT_RECT.w;
+          ey = HIDEOUT_RECT.y - 8;
+        } else if (side === 1) {
+          ex = HIDEOUT_RECT.x + this.rng() * HIDEOUT_RECT.w;
+          ey = HIDEOUT_RECT.y + HIDEOUT_RECT.h + 8;
+        } else if (side === 2) {
+          ex = HIDEOUT_RECT.x - 8;
+          ey = HIDEOUT_RECT.y + this.rng() * HIDEOUT_RECT.h;
+        } else {
+          ex = HIDEOUT_RECT.x + HIDEOUT_RECT.w + 8;
+          ey = HIDEOUT_RECT.y + this.rng() * HIDEOUT_RECT.h;
+        }
+        if (Math.abs(ex - this.camX) < w * 0.65 && Math.abs(ey - this.camY) < h * 0.65) {
+          const sp = this.particles.alloc();
+          sp.active = true;
+          sp.x = ex;
+          sp.y = ey;
+          sp.vx = (this.rng() - 0.5) * 34;
+          sp.vy = -18 - this.rng() * 24;
+          sp.size = 1.1 + this.rng() * 0.9;
+          sp.life = 0.15 + this.rng() * 0.10;
+          sp.maxLife = sp.life;
+          sp.color = '#d2e0e6';
+          sp.kind = 'splash';
         }
       }
     }
@@ -1118,6 +1479,19 @@ export class GameEngine {
   }
 
   private onNewDawn() {
+    // 若 3 件信号中继零件已全部安装且未进入无尽模式，破晓即触发「破雾撤离」通关！
+    if (this.relayInstalled >= 3 && !this.endlessMode) {
+      this.mode = 'victory';
+      AudioFX.playPhaseHorn(false);
+      AudioFX.playRelayChime(true);
+      this.addJournal(
+        '破雾撤离',
+        '无线电中继器穿透了浓重的林间迷雾。随着灰白黎明降临，你循着回应的信号踏出了幽林。'
+      );
+      this.emitHud();
+      return;
+    }
+
     this.pushToast('天亮了。你熬过了又一个漫长的黑夜。', 'loot');
     AudioFX.playPhaseHorn(false);
     this.addJournal(
@@ -1146,7 +1520,18 @@ export class GameEngine {
     p.hitFlash = Math.max(0, p.hitFlash - dt);
     p.swingCd = Math.max(0, p.swingCd - dt);
     p.swingTimer = Math.max(0, p.swingTimer - dt);
+    p.dodgeTimer = Math.max(0, p.dodgeTimer - dt);
+    p.dodgeInvuln = Math.max(0, p.dodgeInvuln - dt);
+    p.dodgeCd = Math.max(0, p.dodgeCd - dt);
     p.breathePhase += dt * 2.4;
+
+    // 校验当前拖拽家具是否仍存活
+    let draggedFurn: MovableFurniture | null = null;
+    if (this.draggedFurnitureId) {
+      draggedFurn =
+        this.world.movables.find((m) => m.id === this.draggedFurnitureId && m.hp > 0) ?? null;
+      if (!draggedFurn) this.draggedFurnitureId = null;
+    }
 
     let mx = 0;
     let my = 0;
@@ -1154,12 +1539,15 @@ export class GameEngine {
     let holdInteract = false;
 
     if (externalPilot) {
-      mx = externalPilot.mx;
-      my = externalPilot.my;
-      wantSprint = externalPilot.sprint;
-      holdInteract = externalPilot.interact;
-      p.angle = externalPilot.aimAngle;
-      if (externalPilot.attack) this.triggerAttack();
+      mx = Number.isFinite(externalPilot.mx) ? externalPilot.mx : 0;
+      my = Number.isFinite(externalPilot.my) ? externalPilot.my : 0;
+      wantSprint = Boolean(externalPilot.sprint);
+      holdInteract = Boolean(externalPilot.interact);
+      if (Number.isFinite(externalPilot.aimAngle)) {
+        p.angle = externalPilot.aimAngle;
+      }
+      if (externalPilot.dodge) this.triggerDodge(mx, my);
+      if (externalPilot.attack) this.triggerAttack(false);
       if (externalPilot.toggleLight) this.toggleFlashlight();
     } else {
       if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) my -= 1;
@@ -1184,7 +1572,14 @@ export class GameEngine {
         p.angle = Math.atan2(worldMouseY - p.y, worldMouseX - p.x);
       }
 
-      if (this.mouseDownLeft) this.triggerAttack();
+      // 蓄力计时推进（左键持续按住时累计，上限 0.65s）
+      if (p.isCharging) {
+        if (!this.mouseDownLeft || draggedFurn || p.dodgeTimer > 0) {
+          this.releaseAttackCharge();
+        } else {
+          p.chargeTimer = Math.min(0.65, p.chargeTimer + dt);
+        }
+      }
     }
 
     const moveMag = Math.hypot(mx, my);
@@ -1194,10 +1589,20 @@ export class GameEngine {
     }
 
     const isMoving = moveMag > 0.08;
-    const sprinting = wantSprint && isMoving && p.stamina > 6 && !p.searchingId;
+    const isDragging = draggedFurn !== null;
+    const isHeavyStance = p.isCharging && p.chargeTimer >= 0.22;
+    const sprinting =
+      wantSprint &&
+      isMoving &&
+      p.stamina > 6 &&
+      !p.searchingId &&
+      !isDragging &&
+      !isHeavyStance &&
+      p.dodgeTimer <= 0;
+
     if (sprinting) {
       p.stamina = Math.max(0, p.stamina - 28 * dt);
-    } else {
+    } else if (p.dodgeTimer <= 0) {
       p.stamina = Math.min(p.maxStamina, p.stamina + (isMoving ? 15 : 24) * dt);
     }
 
@@ -1206,20 +1611,97 @@ export class GameEngine {
     const sprintMul = sprinting ? 1.52 : 1.0;
     const searchMul = p.searchingId ? 0.35 : 1.0;
     const woundMul = p.hp < 25 ? 0.86 : 1.0;
-    const targetSpeed = baseSpeed * sprintMul * searchMul * woundMul;
+    const dragMul = isDragging ? 0.54 : 1.0;
+    const chargeMul = isHeavyStance ? 0.72 : 1.0;
+    const targetSpeed = baseSpeed * sprintMul * searchMul * woundMul * dragMul * chargeMul;
 
-    p.vx = expDecay(p.vx, mx * targetSpeed, 14, dt);
-    p.vy = expDecay(p.vy, my * targetSpeed, 14, dt);
+    if (p.dodgeTimer > 0) {
+      // 闪避急退期间维持高爆发速度并洒出微粒
+      p.vx = p.dodgeDirX * 340;
+      p.vy = p.dodgeDirY * 340;
+      if (this.rng() < 0.55 * Quality.preset.particleScale) {
+        const pt = this.particles.alloc();
+        pt.active = true;
+        pt.x = p.x + (this.rng() - 0.5) * 10;
+        pt.y = p.y + (this.rng() - 0.5) * 10;
+        pt.vx = -p.dodgeDirX * (20 + this.rng() * 30);
+        pt.vy = -p.dodgeDirY * (20 + this.rng() * 30);
+        pt.size = 1.6 + this.rng() * 1.8;
+        pt.life = 0.22 + this.rng() * 0.14;
+        pt.maxLife = pt.life;
+        pt.color = this.weather.wetness > 0.35 ? '#b6cbd4' : '#9c927e';
+        pt.kind = this.weather.wetness > 0.35 ? 'splash' : 'dust';
+      }
+    } else {
+      p.vx = expDecay(p.vx, mx * targetSpeed, 14, dt);
+      p.vy = expDecay(p.vy, my * targetSpeed, 14, dt);
+    }
 
     const prevX = p.x;
     const prevY = p.y;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
 
-    // Constraints Last
-    const resolved = resolveWorldCollision(this.world, p.x, p.y, p.r, true);
+    // Constraints Last（拖拽时先跳过正被抓取的家具，随后对家具解算并防夹死）
+    const resolved = resolveWorldCollision(
+      this.world,
+      p.x,
+      p.y,
+      p.r,
+      true,
+      draggedFurn?.id
+    );
     p.x = resolved.x;
     p.y = resolved.y;
+
+    // 拖拽家具平滑跟随玩家身前并执行世界碰撞解算，防止穿墙或夹死玩家
+    if (draggedFurn) {
+      const halfExtent = Math.max(draggedFurn.w, draggedFurn.h) * 0.5;
+      const offset = p.r + halfExtent + 8;
+      const desiredCx = p.x + Math.cos(p.angle) * offset;
+      const desiredCy = p.y + Math.sin(p.angle) * offset;
+      const desiredX = desiredCx - draggedFurn.w * 0.5;
+      const desiredY = desiredCy - draggedFurn.h * 0.5;
+
+      const prevFurnX = draggedFurn.x;
+      const prevFurnY = draggedFurn.y;
+      draggedFurn.x = expDecay(draggedFurn.x, desiredX, 12, dt);
+      draggedFurn.y = expDecay(draggedFurn.y, desiredY, 12, dt);
+
+      const fRes = resolveFurnitureCollision(this.world, draggedFurn);
+      draggedFurn.x = fRes.x;
+      draggedFurn.y = fRes.y;
+
+      // 家具实际滑动时触发带节流的旧木地板低沉摩擦声
+      const furnMoved = dist(prevFurnX, prevFurnY, draggedFurn.x, draggedFurn.y);
+      if (furnMoved > 0.35 && dt > 0) {
+        AudioFX.playFurnitureDrag(clamp(furnMoved / (dt * 92), 0.18, 1));
+      }
+
+      // 若家具被墙顶住导致与玩家重叠，将玩家安全分离并重跑世界碰撞
+      const sep = resolveCircleRect(
+        p.x,
+        p.y,
+        p.r,
+        draggedFurn.x,
+        draggedFurn.y,
+        draggedFurn.w,
+        draggedFurn.h
+      );
+      if (sep) {
+        const safeP = resolveWorldCollision(this.world, sep.x, sep.y, p.r, true, draggedFurn.id);
+        p.x = safeP.x;
+        p.y = safeP.y;
+      }
+
+      // 若因角落阻挡导致与家具拉开过远（>115px），自动脱手防卡死
+      if (
+        this.distPointToRect(p.x, p.y, draggedFurn.x, draggedFurn.y, draggedFurn.w, draggedFurn.h) >
+        115
+      ) {
+        this.draggedFurnitureId = null;
+      }
+    }
 
     const moved = dist(prevX, prevY, p.x, p.y);
 
@@ -1287,6 +1769,34 @@ export class GameEngine {
     const p = this.player;
     this.currentPrompt = null;
 
+    // 拖拽家具时优先提示松开
+    if (this.draggedFurnitureId) {
+      const furn = this.world.movables.find((m) => m.id === this.draggedFurnitureId && m.hp > 0);
+      if (furn) {
+        this.currentPrompt = {
+          label: '按 E 松开家具',
+          worldX: furn.x + furn.w * 0.5,
+          worldY: furn.y - 16,
+          progress: 0,
+          hold: false,
+        };
+        return;
+      }
+    }
+
+    // 信号中继零件节点交互提示
+    const relay = this.findNearestRelayNode(52);
+    if (relay) {
+      this.currentPrompt = {
+        label: '按 E 拾取信号中继零件',
+        worldX: relay.x,
+        worldY: relay.y - 26,
+        progress: 0,
+        hold: false,
+      };
+      return;
+    }
+
     const container = this.findNearestContainer(54);
     if (container) {
       if (holdInteract) {
@@ -1341,8 +1851,11 @@ export class GameEngine {
     }
 
     if (dist(p.x, p.y, GENERATOR_POS.x, GENERATOR_POS.y) < 58) {
+      const canInstall = this.inv.relayParts > 0 && this.relayInstalled < 3;
       this.currentPrompt = {
-        label: '按 E 注入燃油 (燃油×1)',
+        label: canInstall
+          ? `按 E 安装中继零件 (${this.relayInstalled}/3)`
+          : '按 E 注入燃油 (燃油×1)',
         worldX: GENERATOR_POS.x,
         worldY: GENERATOR_POS.y - 28,
         progress: 0,
@@ -1368,6 +1881,18 @@ export class GameEngine {
         label: '按 E 加固门窗 (木材×2)',
         worldX: bar.x + bar.w * 0.5,
         worldY: bar.y + bar.h * 0.5 - 24,
+        progress: 0,
+        hold: false,
+      };
+      return;
+    }
+
+    const furn = this.findNearestFurniture(54);
+    if (furn) {
+      this.currentPrompt = {
+        label: '按 E 拖拽家具',
+        worldX: furn.x + furn.w * 0.5,
+        worldY: furn.y - 16,
         progress: 0,
         hold: false,
       };
@@ -1473,7 +1998,13 @@ export class GameEngine {
             e.state = 'snared';
             e.hp -= 44;
             e.hitFlash = 0.35;
-            AudioFX.playImpact('metal');
+            AudioFX.playImpact('metal', {
+              worldX: e.x,
+              worldY: e.y,
+              listenerX: p.x,
+              listenerY: p.y,
+              muffled: isPointInHideout(e.x, e.y) !== isPointInHideout(p.x, p.y),
+            });
             this.spawnBurst(e.x, e.y, 14, 'blood', '#7a1414');
             this.pushDecal({
               kind: 'blood',
@@ -1556,7 +2087,29 @@ export class GameEngine {
             const bx = bestBar.x + bestBar.w * 0.5;
             const by = bestBar.y + bestBar.h * 0.5;
             const dBar = dist(e.x, e.y, bx, by);
-            if (bestBar.hp > 0 && dBar < 46) {
+            // 窥伺试探期：靠近门窗外 115px 时先短暂停顿窥伺 1.4-2.4s，发出刮木声波与低吼再破门
+            if (e.stalkTimer > 0 && dBar < 115) {
+              e.state = 'stalk';
+              e.stalkTimer = Math.max(0, e.stalkTimer - dt);
+              e.stalkRippleCd -= dt;
+              const orbitAng = Math.atan2(e.y - by, e.x - bx) + Math.sin(this.simTime * 1.6 + e.id) * 0.45;
+              targetX = bx + Math.cos(orbitAng) * 62;
+              targetY = by + Math.sin(orbitAng) * 62;
+              desiredSpeed = e.speed * 0.36;
+              if (e.stalkRippleCd <= 0) {
+                e.stalkRippleCd = 0.85;
+                this.emitRipple(bx, by, 145, 'rgba(208, 124, 92, 0.52)');
+                const stalkSpatial = {
+                  worldX: bx,
+                  worldY: by,
+                  listenerX: p.x,
+                  listenerY: p.y,
+                  muffled: true,
+                };
+                AudioFX.playWoodScrape(stalkSpatial);
+                AudioFX.playMonsterSnarl(clamp(1 - dToPlayer / 380, 0.15, 0.75), stalkSpatial);
+              }
+            } else if (bestBar.hp > 0 && dBar < 46) {
               e.state = 'attack_barricade';
               targetX = bx;
               targetY = by;
@@ -1566,7 +2119,13 @@ export class GameEngine {
                 e.clawPhase = 1.0;
                 const bDmg = e.kind === 'banshee' ? 28 : 16;
                 bestBar.hp = Math.max(0, bestBar.hp - bDmg);
-                AudioFX.playImpact('wood');
+                AudioFX.playImpact('wood', {
+                  worldX: bx,
+                  worldY: by,
+                  listenerX: p.x,
+                  listenerY: p.y,
+                  muffled: true,
+                });
                 this.spawnBurst(bx, by, 7, 'wood', '#7d5b3b');
                 this.pushDecal({
                   kind: 'wood',
@@ -1613,6 +2172,55 @@ export class GameEngine {
       e.x = resolved.x;
       e.y = resolved.y;
 
+      // 怪物路径若被可拖拽重型家具阻挡，则攻击家具（扣减 hp、轻微击退、木屑与声波，损毁后解除阻挡）
+      if (e.state === 'chase' && e.attackCd <= 0) {
+        for (let mIdx = 0; mIdx < this.world.movables.length; mIdx++) {
+          const furn = this.world.movables[mIdx];
+          if (furn.hp <= 0) continue;
+          const dFurn = this.distPointToRect(e.x, e.y, furn.x, furn.y, furn.w, furn.h);
+          if (dFurn < e.r + 10) {
+            e.attackCd = e.kind === 'banshee' ? 1.0 : 1.3;
+            e.clawPhase = 1.0;
+            const fDmg = e.kind === 'banshee' ? 28 : 18;
+            furn.hp = Math.max(0, furn.hp - fDmg);
+            furn.hitFlash = 0.26;
+            const fcx = furn.x + furn.w * 0.5;
+            const fcy = furn.y + furn.h * 0.5;
+            const pushAng = Math.atan2(fcy - e.y, fcx - e.x);
+            furn.x += Math.cos(pushAng) * 9;
+            furn.y += Math.sin(pushAng) * 9;
+            const fRes = resolveFurnitureCollision(this.world, furn);
+            furn.x = fRes.x;
+            furn.y = fRes.y;
+
+            AudioFX.playImpact('wood', {
+              worldX: fcx,
+              worldY: fcy,
+              listenerX: p.x,
+              listenerY: p.y,
+              muffled: isPointInHideout(fcx, fcy) !== isPointInHideout(p.x, p.y),
+            });
+            this.spawnBurst(fcx, fcy, 8, 'wood', '#7d5b3b');
+            this.emitRipple(fcx, fcy, 155, 'rgba(218, 128, 92, 0.50)');
+            this.shake = Math.min(7, this.shake + 2.2);
+            if (furn.hp <= 0) {
+              if (this.draggedFurnitureId === furn.id) this.draggedFurnitureId = null;
+              this.spawnBurst(fcx, fcy, 16, 'wood', '#6c4d31');
+              this.pushDecal({
+                kind: 'wood',
+                x: fcx,
+                y: fcy,
+                angle: pushAng,
+                scale: 1.35,
+                seed: this.rng() * 100,
+              });
+              this.pushToast('挡路的家具被怪物撞碎了！', 'danger');
+            }
+            break;
+          }
+        }
+      }
+
       e.walkPhase += dist(px, py, e.x, e.y) * 0.16;
 
       e.stepTimer -= dt;
@@ -1620,11 +2228,23 @@ export class GameEngine {
         e.stepTimer = e.kind === 'hound' ? 0.65 : 1.05;
         this.emitRipple(e.x, e.y, 72, 'rgba(198, 98, 82, 0.42)');
         if (this.rng() < 0.25 && dToPlayer < 320) {
-          AudioFX.playMonsterSnarl(clamp(1 - dToPlayer / 360, 0.1, 1));
+          AudioFX.playMonsterSnarl(clamp(1 - dToPlayer / 360, 0.1, 1), {
+            worldX: e.x,
+            worldY: e.y,
+            listenerX: p.x,
+            listenerY: p.y,
+            muffled: isPointInHideout(e.x, e.y) !== isPointInHideout(p.x, p.y),
+          });
         }
       }
 
-      if (dToPlayer < e.r + p.r + 10 && e.attackCd <= 0 && e.state !== 'flee_dawn') {
+      if (
+        dToPlayer < e.r + p.r + 10 &&
+        e.attackCd <= 0 &&
+        e.state !== 'flee_dawn' &&
+        e.state !== 'stalk' &&
+        p.dodgeInvuln <= 0
+      ) {
         e.attackCd = e.kind === 'hound' ? 0.95 : 1.25;
         e.clawPhase = 1.0;
         p.hp = Math.max(0, p.hp - e.damage);
@@ -1720,6 +2340,57 @@ export class GameEngine {
     }
   }
 
+  /**
+   * 活的篝火、庇护所铁桶火盆与室内铸铁炭炉：持续发射随风飘散的余烬火星与柔和热烟
+   */
+  private updateCampfireEmbers(dt: number) {
+    this.emberTimer -= dt;
+    const interval = 0.065 / Math.max(0.35, Quality.preset.particleScale);
+    if (this.emberTimer > 0) return;
+    this.emberTimer = interval;
+
+    const windDx = Math.cos(this.weather.windAngle) * (14 + this.weather.rainIntensity * 22);
+    const sources: Array<{ x: number; y: number; scale: number; indoor: boolean }> = [
+      { x: HIDEOUT_BRAZIER_POS.x, y: HIDEOUT_BRAZIER_POS.y, scale: 1.0, indoor: false },
+      { x: CAMPFIRE_POS.x, y: CAMPFIRE_POS.y, scale: 1.15, indoor: false },
+      { x: HIDEOUT_STOVE_POS.x - 4, y: HIDEOUT_STOVE_POS.y, scale: 0.55, indoor: true },
+    ];
+
+    for (const src of sources) {
+      if (Math.abs(src.x - this.camX) > 780 || Math.abs(src.y - this.camY) > 540) continue;
+
+      // 余烬火星（炽白黄 / 橙红随风明灭飘散）
+      if (this.rng() < 0.85) {
+        const em = this.particles.alloc();
+        em.active = true;
+        em.x = src.x + (this.rng() - 0.5) * 9 * src.scale;
+        em.y = src.y + (this.rng() - 0.5) * 9 * src.scale;
+        em.vx = (src.indoor ? 0 : windDx) + (this.rng() - 0.5) * 26;
+        em.vy = -24 - this.rng() * 34;
+        em.size = (1.1 + this.rng() * 1.4) * src.scale;
+        em.life = 0.65 + this.rng() * 0.85;
+        em.maxLife = em.life;
+        em.color = this.rng() < 0.35 ? '#fff0b8' : this.rng() < 0.72 ? '#ff9d3b' : '#e85224';
+        em.kind = 'ember';
+      }
+
+      // 缓慢上升淡出的暗灰暖烟
+      if (!src.indoor && this.rng() < 0.42) {
+        const sm = this.particles.alloc();
+        sm.active = true;
+        sm.x = src.x + (this.rng() - 0.5) * 8;
+        sm.y = src.y - 4 + (this.rng() - 0.5) * 6;
+        sm.vx = windDx * 0.55 + (this.rng() - 0.5) * 10;
+        sm.vy = -16 - this.rng() * 14;
+        sm.size = (5.5 + this.rng() * 5.5) * src.scale;
+        sm.life = 1.4 + this.rng() * 1.1;
+        sm.maxLife = sm.life;
+        sm.color = 'rgba(72, 68, 64, 0.34)';
+        sm.kind = 'smoke';
+      }
+    }
+  }
+
   private updateParticles(dt: number) {
     for (let i = 0; i < this.particles.count; i++) {
       const pt = this.particles.items[i];
@@ -1731,7 +2402,17 @@ export class GameEngine {
       }
       pt.x += pt.vx * dt;
       pt.y += pt.vy * dt;
-      if (pt.kind !== 'spore' && pt.kind !== 'dust') {
+      if (pt.kind === 'splash') {
+        pt.vy += 260 * dt;
+      } else if (pt.kind === 'ember') {
+        pt.vx += Math.sin(this.simTime * 7 + i) * 18 * dt;
+        pt.vx *= Math.exp(-1.1 * dt);
+        pt.vy *= Math.exp(-0.9 * dt);
+      } else if (pt.kind === 'smoke') {
+        pt.size += 6.5 * dt;
+        pt.vx *= Math.exp(-0.8 * dt);
+        pt.vy *= Math.exp(-0.6 * dt);
+      } else if (pt.kind !== 'spore' && pt.kind !== 'dust') {
         pt.vx *= Math.exp(-5.5 * dt);
         pt.vy *= Math.exp(-5.5 * dt);
       }
@@ -1847,7 +2528,26 @@ export class GameEngine {
     return clamp((this.dayTime - DUSK_END) / (1 - DUSK_END), 0, 1);
   }
 
+  /**
+   * 生成左上角极简紧凑的当前主目标指引文字
+   */
+  getObjectiveText(): string {
+    if (this.endlessMode) {
+      return `无尽求生 · 第 ${this.day} 天`;
+    }
+    if (this.relayInstalled >= 3) {
+      return '中继就绪 (3/3) · 守至破晓撤离';
+    }
+    if (this.inv.relayParts > 0) {
+      return `带回零件安装至发电机 (${this.relayInstalled}/3)`;
+    }
+    return `收集信号零件 ${this.relayInstalled}/3 · 探索地标`;
+  }
+
   getHudSnapshot(): HudSnapshot {
+    const chargeRatio = this.player.isCharging
+      ? clamp((this.player.chargeTimer - 0.12) / (0.65 - 0.12), 0, 1)
+      : 0;
     return {
       mode: this.mode,
       day: this.day,
@@ -1880,6 +2580,13 @@ export class GameEngine {
       dangerLevel: this.dangerLevel,
       discoveredZones: Array.from(this.discoveredZones),
       journal: this.journal.map((j) => ({ ...j })),
+      relayParts: this.inv.relayParts,
+      relayInstalled: this.relayInstalled,
+      relayCollectedZones: this.world.relayNodes.filter((rn) => rn.collected).map((rn) => rn.zone),
+      draggingFurniture: this.draggedFurnitureId !== null,
+      objectiveText: this.getObjectiveText(),
+      endlessMode: this.endlessMode,
+      chargeRatio,
       backend: this.backendName,
       fps: Math.round(this.fps),
       entities: this.enemies.length + this.flares.length + this.traps.length,

@@ -6,7 +6,9 @@ import {
   EssenceNode,
   FloorZone,
   LootContainer,
+  MovableFurniture,
   RectObstacle,
+  RelayNode,
   RockObstacle,
   TreeObstacle,
 } from './types';
@@ -36,6 +38,10 @@ export const SHELTER_LAMPS: Vec2[] = [
   { x: -65, y: 15 },
   { x: 75, y: 20 },
 ];
+// 活火源坐标（单源真相：渲染、动态点光与火星粒子共用，零碰撞死角）
+export const HIDEOUT_STOVE_POS: Vec2 = { x: 126, y: 98 };
+export const HIDEOUT_BRAZIER_POS: Vec2 = { x: 86, y: 196 };
+export const CAMPFIRE_POS: Vec2 = { x: -636, y: 646 };
 
 export const CRAFT_RECIPES: CraftRecipe[] = [
   {
@@ -85,6 +91,8 @@ export interface WorldData {
   seed: number;
   walls: RectObstacle[];
   barricades: BarricadeSlot[];
+  movables: MovableFurniture[];
+  relayNodes: RelayNode[];
   trees: TreeObstacle[];
   rocks: RockObstacle[];
   containers: LootContainer[];
@@ -245,6 +253,50 @@ export function createWorld(seed = 19847): WorldData {
   const containers: LootContainer[] = [];
   const essences: EssenceNode[] = [];
   const zones: FloorZone[] = [];
+
+  // 庇护所室内 3 件初始可拖拽重型家具（避开发电机、工作台、出生点 (0, 20) 与四面门窗通道）
+  const movables: MovableFurniture[] = [
+    {
+      id: 'furn_sofa',
+      kind: 'sofa',
+      x: -134,
+      y: 48,
+      w: 54,
+      h: 26,
+      hp: 110,
+      maxHp: 110,
+      hitFlash: 0,
+    },
+    {
+      id: 'furn_cabinet',
+      kind: 'cabinet',
+      x: 82,
+      y: -56,
+      w: 32,
+      h: 24,
+      hp: 130,
+      maxHp: 130,
+      hitFlash: 0,
+    },
+    {
+      id: 'furn_table',
+      kind: 'table',
+      x: 68,
+      y: 52,
+      w: 46,
+      h: 26,
+      hp: 95,
+      maxHp: 95,
+      hitFlash: 0,
+    },
+  ];
+
+  // 3 处远方地标的信号中继零件节点（避开全部墙体与容器，保证零重叠）
+  const relayNodes: RelayNode[] = [
+    { id: 'relay_truck', zone: '坠毁货车', x: -705, y: -518, collected: false },
+    { id: 'relay_mill', zone: '废弃锯木厂', x: 705, y: -455, collected: false },
+    { id: 'relay_shrine', zone: '枯林祭坛', x: 726, y: 605, collected: false },
+  ];
 
   addHideoutCabin(walls, barricades, zones);
 
@@ -460,8 +512,20 @@ export function createWorld(seed = 19847): WorldData {
     }
   );
 
-  // Nearby starter supplies just outside Hideout so player discovers scavenging within 8 seconds
+  // 庇护所门外 30 秒开局钩子：低耗时（1.2s）遇难者背包 + 周边基础物资，确保开局立刻形成搜刮与防线互动
   containers.push(
+    {
+      id: 'c_starter_backpack',
+      x: -36,
+      y: 184,
+      r: 16,
+      kind: 'backpack',
+      zone: '迷雾深林',
+      searched: false,
+      searchDuration: 1.2,
+      loot: { wood: 2, fuel: 1, herbs: 1 },
+      angle: 0.35,
+    },
     {
       id: 'c_yard_wood',
       x: 225,
@@ -476,8 +540,8 @@ export function createWorld(seed = 19847): WorldData {
     },
     {
       id: 'c_yard_crate',
-      x: -78,
-      y: 205,
+      x: -92,
+      y: 215,
       r: 17,
       kind: 'crate',
       zone: '迷雾深林',
@@ -598,9 +662,10 @@ export function createWorld(seed = 19847): WorldData {
     if (poiCenters.some((p) => dist(x, y, p.x, p.y) < p.r * 0.82)) continue;
     // Keep dirt paths unobstructed (guarantees 100% reachability!)
     if (nearPath(x, y, 36)) continue;
-    // Keep away from containers & essences
+    // Keep away from containers, essences & relay nodes
     if (containers.some((c) => dist(x, y, c.x, c.y) < 58)) continue;
     if (essences.some((e) => dist(x, y, e.x, e.y) < 55)) continue;
+    if (relayNodes.some((rn) => dist(x, y, rn.x, rn.y) < 58)) continue;
     // Minimum spacing between tree trunks so player (r=15) never gets wedged
     if (trees.some((t) => dist(x, y, t.x, t.y) < 76)) continue;
 
@@ -624,6 +689,7 @@ export function createWorld(seed = 19847): WorldData {
     if (poiCenters.some((p) => dist(x, y, p.x, p.y) < p.r * 0.85)) continue;
     if (nearPath(x, y, 34)) continue;
     if (containers.some((c) => dist(x, y, c.x, c.y) < 56)) continue;
+    if (relayNodes.some((rn) => dist(x, y, rn.x, rn.y) < 56)) continue;
     if (trees.some((t) => dist(x, y, t.x, t.y) < 56)) continue;
     if (rocks.some((r) => dist(x, y, r.x, r.y) < 88)) continue;
 
@@ -640,6 +706,8 @@ export function createWorld(seed = 19847): WorldData {
     seed,
     walls,
     barricades,
+    movables,
+    relayNodes,
     trees,
     rocks,
     containers,
@@ -651,15 +719,16 @@ export function createWorld(seed = 19847): WorldData {
 }
 
 /**
- * Single Source of Truth: resolve entity circle against world bounds, walls, intact barricades, trees, rocks.
- * Constraints Last: always call after all movement & knockback displacements.
+ * 单源真相碰撞解算：解析圆形实体与世界边界、墙体、完好门窗木板、可拖拽家具、树干与巨石的碰撞
+ * 约束最后：所有移动、闪避、拖拽、击退后均必须统一调用
  */
 export function resolveWorldCollision(
   world: WorldData,
   x: number,
   y: number,
   radius: number,
-  blockByWindows: boolean
+  blockByWindows: boolean,
+  skipMovableId?: string
 ): Vec2 {
   let px = clamp(x, -WORLD_HALF + radius + 30, WORLD_HALF - radius - 30);
   let py = clamp(y, -WORLD_HALF + radius + 30, WORLD_HALF - radius - 30);
@@ -681,6 +750,16 @@ export function resolveWorldCollision(
       const solid = b.hp > 0 || (blockByWindows && b.kind === 'window');
       if (!solid) continue;
       const pushed = resolveCircleRect(px, py, radius, b.x, b.y, b.w, b.h);
+      if (pushed) {
+        px = pushed.x;
+        py = pushed.y;
+      }
+    }
+
+    for (let i = 0; i < world.movables.length; i++) {
+      const m = world.movables[i];
+      if (m.hp <= 0 || m.id === skipMovableId) continue;
+      const pushed = resolveCircleRect(px, py, radius, m.x, m.y, m.w, m.h);
       if (pushed) {
         px = pushed.x;
         py = pushed.y;
@@ -709,6 +788,97 @@ export function resolveWorldCollision(
   }
 
   return { x: px, y: py };
+}
+
+/**
+ * 解析矩形与矩形的重叠分离（最小穿透轴推挤）
+ */
+function resolveRectRect(
+  ax: number,
+  ay: number,
+  aw: number,
+  ah: number,
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number
+): Vec2 | null {
+  const ox = Math.min(ax + aw, bx + bw) - Math.max(ax, bx);
+  const oy = Math.min(ay + ah, by + bh) - Math.max(ay, by);
+  if (ox <= 0 || oy <= 0) return null;
+  const acx = ax + aw * 0.5;
+  const acy = ay + ah * 0.5;
+  const bcx = bx + bw * 0.5;
+  const bcy = by + bh * 0.5;
+  if (ox < oy) {
+    return { x: acx < bcx ? ax - ox : ax + ox, y: ay };
+  }
+  return { x: ax, y: acy < bcy ? ay - oy : ay + oy };
+}
+
+/**
+ * 可拖拽重型家具的世界碰撞解算（单源真相：防止穿入墙体、完整门窗、其他家具、树石或越界）
+ */
+export function resolveFurnitureCollision(world: WorldData, furn: MovableFurniture): Vec2 {
+  let fx = clamp(furn.x, -WORLD_HALF + 32, WORLD_HALF - furn.w - 32);
+  let fy = clamp(furn.y, -WORLD_HALF + 32, WORLD_HALF - furn.h - 32);
+
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < world.walls.length; i++) {
+      const w = world.walls[i];
+      const pushed = resolveRectRect(fx, fy, furn.w, furn.h, w.x, w.y, w.w, w.h);
+      if (pushed) {
+        fx = pushed.x;
+        fy = pushed.y;
+      }
+    }
+
+    for (let i = 0; i < world.barricades.length; i++) {
+      const b = world.barricades[i];
+      // 家具不能穿过完好的木板或任何窗框（允许抵在门窗内侧但不可穿出）
+      const solid = b.hp > 0 || b.kind === 'window';
+      if (!solid) continue;
+      const pushed = resolveRectRect(fx, fy, furn.w, furn.h, b.x, b.y, b.w, b.h);
+      if (pushed) {
+        fx = pushed.x;
+        fy = pushed.y;
+      }
+    }
+
+    for (let i = 0; i < world.movables.length; i++) {
+      const other = world.movables[i];
+      if (other.id === furn.id || other.hp <= 0) continue;
+      const pushed = resolveRectRect(fx, fy, furn.w, furn.h, other.x, other.y, other.w, other.h);
+      if (pushed) {
+        fx = pushed.x;
+        fy = pushed.y;
+      }
+    }
+
+    for (let i = 0; i < world.trees.length; i++) {
+      const t = world.trees[i];
+      if (Math.abs(fx + furn.w * 0.5 - t.x) > 80 || Math.abs(fy + furn.h * 0.5 - t.y) > 80) continue;
+      const pushed = resolveCircleRect(t.x, t.y, t.trunkR, fx, fy, furn.w, furn.h);
+      if (pushed) {
+        fx -= pushed.x - t.x;
+        fy -= pushed.y - t.y;
+      }
+    }
+
+    for (let i = 0; i < world.rocks.length; i++) {
+      const r = world.rocks[i];
+      if (Math.abs(fx + furn.w * 0.5 - r.x) > 85 || Math.abs(fy + furn.h * 0.5 - r.y) > 85) continue;
+      const pushed = resolveCircleRect(r.x, r.y, r.r, fx, fy, furn.w, furn.h);
+      if (pushed) {
+        fx -= pushed.x - r.x;
+        fy -= pushed.y - r.y;
+      }
+    }
+  }
+
+  fx = clamp(fx, -WORLD_HALF + 32, WORLD_HALF - furn.w - 32);
+  fy = clamp(fy, -WORLD_HALF + 32, WORLD_HALF - furn.h - 32);
+  return { x: fx, y: fy };
 }
 
 export function isPointInHideout(x: number, y: number): boolean {
@@ -784,6 +954,27 @@ export function collectOccluderSegments(
       const mx = b.x + b.w * 0.5;
       out.push({ ax: mx, ay: b.y, bx: mx, by: b.y + b.h });
     }
+  }
+
+  // 可拖拽重型家具（单源真相：完好家具对低角度手电光/射线投射柔和缩进遮挡，橡木柜较高阻光更明显）
+  for (let i = 0; i < world.movables.length; i++) {
+    const m = world.movables[i];
+    if (m.hp <= 0) continue;
+    if (m.x + m.w < ox - pad || m.x > ox + pad || m.y + m.h < oy - pad || m.y > oy + pad) continue;
+    // 光源恰好位于家具矩形内部时跳过，避免自遮挡黑块
+    if (ox >= m.x - 2 && ox <= m.x + m.w + 2 && oy >= m.y - 2 && oy <= m.y + m.h + 2) continue;
+    const inset = m.kind === 'cabinet' ? 2 : 5;
+    const x1 = m.x + inset;
+    const y1 = m.y + inset;
+    const x2 = m.x + m.w - inset;
+    const y2 = m.y + m.h - inset;
+    if (x2 <= x1 || y2 <= y1) continue;
+    out.push(
+      { ax: x1, ay: y1, bx: x2, by: y1 },
+      { ax: x2, ay: y1, bx: x2, by: y2 },
+      { ax: x2, ay: y2, bx: x1, by: y2 },
+      { ax: x1, ay: y2, bx: x1, by: y1 }
+    );
   }
 
   // Tree trunks cast crisp perpendicular shadow chords facing the light origin

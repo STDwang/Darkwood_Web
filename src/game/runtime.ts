@@ -200,6 +200,30 @@ export class GameRuntime {
         menu: (open: boolean) => this.uiBridge?.setMenu(open),
       }),
       shot: async () => this.canvas.toDataURL('image/png'),
+      /**
+       * 捕获当前主画布的宽高与 RGBA 像素数组，供无头视觉/像素对比脚本使用
+       */
+      capture: async () => {
+        if (!this.renderer.drawDisabled) {
+          this.renderer.render(this.engine);
+        }
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+        const ctx = this.canvas.getContext('2d');
+        const img = ctx ? ctx.getImageData(0, 0, w, h) : null;
+        return {
+          w,
+          h,
+          data: img ? img.data : new Uint8ClampedArray(0),
+        };
+      },
+      /**
+       * 临时锁定检查相机坐标（传入 null 解除锁定），配合 shot()/capture() 做同机位像素对比
+       */
+      view: (x?: number | null, y?: number | null) => {
+        this.engine.setCameraLock(x, y);
+        this.renderer.render(this.engine);
+      },
       stats: () => this.getStats(),
       m: {
         Game: this.engine,

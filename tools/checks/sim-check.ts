@@ -4,7 +4,7 @@
 import { FIXED_DT, GameEngine } from '../../src/game/engine';
 import { dist } from '../../src/game/util';
 import { computeVisibilityPolygon } from '../../src/game/visibility';
-import { WORLD_HALF, resolveWorldCollision } from '../../src/game/world';
+import { GENERATOR_POS, HIDEOUT_RECT, WORLD_HALF, resolveWorldCollision } from '../../src/game/world';
 
 function assert(cond: boolean, msg: string) {
   if (!cond) {
@@ -102,6 +102,144 @@ async function main() {
   assert(engine.phase === 'night', 'jumpTimeOfDay("night") failed');
   assert(engine.journal.length >= 1, 'Field journal should initialize with Day 1 entry');
   console.log('✓ Crafting, Journal & Day/Dusk/Night state machine gate passed');
+
+  // 6. T2.1 永久探针：可拖拽重型家具移动与防穿墙碰撞断言
+  engine.reset(19847, true);
+  assert(engine.world.movables.length >= 3, 'Expected at least 3 movable furniture pieces in Hideout');
+  const sofa = engine.world.movables.find((m) => m.kind === 'sofa');
+  assert(Boolean(sofa), 'Expected sofa movable furniture');
+  if (sofa) {
+    const initX = sofa.x;
+    const initY = sofa.y;
+    // 将玩家移动到沙发旁并按 E 抓取
+    engine.player.x = sofa.x + sofa.w + 18;
+    engine.player.y = sofa.y + sofa.h * 0.5;
+    engine.player.angle = Math.PI; // 面向沙发
+    engine.triggerInstantInteract();
+    assert(engine.draggedFurnitureId === sofa.id, 'Pressing E near sofa should start dragging');
+
+    // 向西墙方向持续移动 1.5s，验证家具随动且不会穿入西墙（HIDEOUT_RECT.x + 18）
+    for (let i = 0; i < 90; i++) {
+      engine.step(FIXED_DT, 1280, 720, {
+        mx: -1,
+        my: 0,
+        aimAngle: Math.PI,
+        sprint: true,
+        attack: false,
+        interact: false,
+        toggleLight: false,
+      });
+    }
+    const movedDist = dist(initX, initY, sofa.x, sofa.y);
+    assert(movedDist > 2, `Dragged sofa did not move meaningfully (${movedDist.toFixed(2)}px)`);
+    assert(
+      sofa.x >= HIDEOUT_RECT.x + 17.5,
+      `Dragged sofa penetrated west wall: sofa.x=${sofa.x.toFixed(2)} < ${HIDEOUT_RECT.x + 18}`
+    );
+    // 再按 E 松开家具
+    engine.triggerInstantInteract();
+    assert(engine.draggedFurnitureId === null, 'Pressing E again should drop dragged furniture');
+    console.log(
+      `✓ Movable furniture drag & anti-clipping gate passed (shift=${movedDist.toFixed(1)}px, x=${sofa.x.toFixed(1)})`
+    );
+  }
+
+  // 7. T2.2 永久探针：闪避无敌帧消耗体力 + 蓄力重击伤害提升断言
+  engine.reset(19847, true);
+  const staminaBeforeDodge = engine.player.stamina;
+  const dodged = engine.triggerDodge(1, 0);
+  assert(dodged, 'triggerDodge() should succeed with full stamina');
+  assert(
+    engine.player.stamina <= staminaBeforeDodge - 27.5,
+    `Dodge should consume 28 stamina (before=${staminaBeforeDodge}, after=${engine.player.stamina})`
+  );
+  assert(engine.player.dodgeInvuln > 0.15, `Dodge should grant invulnerability frames (${engine.player.dodgeInvuln})`);
+
+  // 验证无敌帧期间贴脸怪物攻击不扣血
+  const hpBeforeHit = engine.player.hp;
+  const testEnemy = engine.enemies[0];
+  assert(Boolean(testEnemy), 'Expected ambient enemy for combat probe');
+  testEnemy.x = engine.player.x + 18;
+  testEnemy.y = engine.player.y;
+  testEnemy.attackCd = 0;
+  testEnemy.stalkTimer = 0;
+  testEnemy.state = 'chase';
+  engine.step(FIXED_DT, 1280, 720);
+  assert(engine.player.hp === hpBeforeHit, 'Player should take 0 damage during dodge invulnerability frames');
+
+  // 对比轻快横扫 vs 蓄力重击伤害提升
+  engine.reset(19847, true);
+  const eLight = engine.enemies[0];
+  engine.player.x = 0;
+  engine.player.y = 200; // 室外开阔处，确保无遮挡视线
+  engine.player.angle = 0;
+  eLight.x = 38;
+  eLight.y = 200;
+  eLight.hp = 200;
+  eLight.maxHp = 200;
+  const hpStartLight = eLight.hp;
+  engine.triggerAttack(false);
+  const lightDmg = hpStartLight - eLight.hp;
+
+  engine.reset(19847, true);
+  const eHeavy = engine.enemies[0];
+  engine.player.x = 0;
+  engine.player.y = 200;
+  engine.player.angle = 0;
+  eHeavy.x = 38;
+  eHeavy.y = 200;
+  eHeavy.hp = 200;
+  eHeavy.maxHp = 200;
+  const hpStartHeavy = eHeavy.hp;
+  engine.triggerAttack(true);
+  const heavyDmg = hpStartHeavy - eHeavy.hp;
+
+  assert(
+    lightDmg > 0 && heavyDmg > lightDmg * 1.6,
+    `Charged heavy attack damage (${heavyDmg}) should be significantly higher than light (${lightDmg})`
+  );
+  console.log(
+    `✓ Dodge invuln & charged heavy attack gate passed (lightDmg=${lightDmg}, heavyDmg=${heavyDmg})`
+  );
+
+  // 8. T2.3 永久探针：3 件信号中继零件拾取 → 发电机安装 → 破晓触发 mode === 'victory' 闭环断言
+  engine.reset(19847, true);
+  assert(engine.world.relayNodes.length === 3, `Expected 3 relay nodes, got ${engine.world.relayNodes.length}`);
+  for (const rn of engine.world.relayNodes) {
+    // 校验零件节点与静态几何零重叠
+    const res = resolveWorldCollision(engine.world, rn.x, rn.y, 12, true);
+    const shift = dist(rn.x, rn.y, res.x, res.y);
+    assert(shift < 18, `Relay node ${rn.id} overlaps solid geometry by ${shift.toFixed(1)}px`);
+
+    // 靠近并拾取零件
+    engine.player.x = rn.x;
+    engine.player.y = rn.y + 12;
+    engine.triggerInstantInteract();
+    assert(rn.collected, `Failed to collect relay node ${rn.id}`);
+  }
+  assert(engine.inv.relayParts === 3, `Expected 3 collected relayParts, got ${engine.inv.relayParts}`);
+
+  // 返回庇护所发电机旁安装 3 件零件
+  engine.player.x = GENERATOR_POS.x + 28;
+  engine.player.y = GENERATOR_POS.y + 24;
+  for (let i = 0; i < 3; i++) {
+    engine.triggerInstantInteract();
+  }
+  assert(engine.relayInstalled === 3, `Expected relayInstalled === 3, got ${engine.relayInstalled}`);
+  assert(engine.inv.relayParts === 0, `Expected relayParts === 0 after install, got ${engine.inv.relayParts}`);
+
+  // 推进至破晓，触发通关结算
+  engine.dayTime = 0.999;
+  engine.step(FIXED_DT * 20, 1280, 720);
+  assert(engine.mode === 'victory', `Expected mode === 'victory' at dawn with 3/3 relays, got ${engine.mode}`);
+
+  // 验证选择无尽模式后恢复游玩且下次破晓不再重复弹窗
+  engine.continueEndless();
+  assert(engine.mode === 'play' && engine.endlessMode, 'continueEndless() should resume play in endless mode');
+  engine.dayTime = 0.999;
+  engine.step(FIXED_DT * 20, 1280, 720);
+  assert(engine.mode === 'play', `Endless mode should not re-trigger victory at next dawn (got ${engine.mode})`);
+  console.log('✓ 3-Part Relay collection -> install -> Dawn Victory & Endless mode gate passed');
 }
 
 main().catch((err) => {

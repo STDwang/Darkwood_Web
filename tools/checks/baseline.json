@@ -1,0 +1,48 @@
+{
+  "version": "1.0.0",
+  "perf": {
+    "js1xP95MaxMs": 2.5,
+    "js2xP95MaxMs": 8.0,
+    "overBudgetFramesMax": 2,
+    "drawCallsMax": 180
+  },
+  "layout": {
+    "minTouchPx": 44,
+    "viewports": [
+      { "name": "desktop_720p", "width": 1280, "height": 720, "mobile": false },
+      { "name": "desktop_1080p", "width": 1920, "height": 1080, "mobile": false },
+      { "name": "mobile_landscape", "width": 844, "height": 390, "mobile": true },
+      { "name": "mobile_portrait", "width": 390, "height": 844, "mobile": true }
+    ]
+  },
+  "palette": {
+    "day_forest": {
+      "L": [18, 30],
+      "p95": [55, 88],
+      "dark": [0.15, 0.45],
+      "colorfulMax": 17.5,
+      "greenDomMax": 0.24
+    },
+    "dusk_forest": {
+      "L": [14, 24],
+      "p95": [45, 75],
+      "dark": [0.30, 0.60],
+      "colorfulMax": 16.0,
+      "greenDomMax": 0.12
+    },
+    "night_forest": {
+      "L": [8, 18],
+      "p95": [32, 65],
+      "dark": [0.55, 0.85],
+      "colorfulMax": 15.0,
+      "greenDomMax": 0.08
+    },
+    "night_hideout": {
+      "L": [10, 22],
+      "p95": [40, 78],
+      "dark": [0.45, 0.78],
+      "colorfulMax": 15.5,
+      "greenDomMax": 0.08
+    }
+  }
+}
