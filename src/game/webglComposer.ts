@@ -1,5 +1,5 @@
 // Pure-procedural WebGL2 Deferred 2D Normal-Mapped Lighting, Soft Penumbra,
-// Volumetric Flashlight Beam, Puddle Specular Reflections & ACES Oil-Painting Post-Process.
+// Volumetric Fog Scattering, Wet Puddle Specular & ACES Post-Process Composer.
 
 export interface GpuLight {
   x: number; // screen-space px
@@ -12,7 +12,7 @@ export interface GpuLight {
   dirX: number; // normalized cone direction (or 0,0 for omni)
   dirY: number;
   coneCos: number; // -2.0 for 360° omni light, else cos(halfAngle)
-  shadowChannel: number; // 0 = flashlight mask (R), 1 = omni/lamp mask (G), 2 = unshadowed/ambient
+  shadowChannel: number; // 0 = flashlight mask (R), 1 = lamp/flare mask (G), 2 = aura (B), 3 = unshadowed
 }
 
 export interface WebGLFrameUniforms {
@@ -54,7 +54,7 @@ out vec4 fragColor;
 
 uniform sampler2D uAlbedo;
 uniform sampler2D uNormalWet; // R=Nx, G=Ny, B=PuddleMask, A=WetnessBoost
-uniform sampler2D uShadow;    // R=FlashlightVis, G=WorldLightsVis, B=AuraVis
+uniform sampler2D uShadow;    // R=FlashlightVis, G=WorldLightsVis, B=PlayerAuraVis
 
 uniform vec2 uResolution;
 uniform vec2 uCamPos;
@@ -74,7 +74,6 @@ uniform vec4 uLightPosRad[12];   // xy = screen pos, z = radius, w = intensity
 uniform vec4 uLightColChan[12];  // rgb = color, a = shadowChannel (0=R, 1=G, 2=B, 3=unshadowed)
 uniform vec4 uLightCone[12];     // xy = dir, z = coneCos (-2 for omni), w = volumetricBoost
 
-// Cheap hash & value noise for volumetric fog beam & painterly canvas grain
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
@@ -104,22 +103,20 @@ float fbm(vec2 p) {
 vec3 sampleShadowSoft(vec2 uv) {
   vec3 c = texture(uShadow, uv).rgb;
   if (uPenumbraSamples <= 1) return c;
-  vec2 px = 2.6 / uResolution;
+  vec2 px = 2.4 / uResolution;
   if (uPenumbraSamples <= 3) {
     vec3 s1 = texture(uShadow, uv + vec2(px.x, px.y)).rgb;
     vec3 s2 = texture(uShadow, uv - vec2(px.x, px.y)).rgb;
     return (c * 2.0 + s1 + s2) * 0.25;
   }
-  // 5-tap Poisson penumbra feathering
-  vec3 sum = c * 0.32;
-  sum += texture(uShadow, uv + vec2(px.x * 1.1, px.y * 0.4)).rgb * 0.17;
-  sum += texture(uShadow, uv + vec2(-px.x * 0.5, px.y * 1.2)).rgb * 0.17;
-  sum += texture(uShadow, uv + vec2(-px.x * 1.1, -px.y * 0.4)).rgb * 0.17;
-  sum += texture(uShadow, uv + vec2(px.x * 0.5, -px.y * 1.2)).rgb * 0.17;
+  vec3 sum = c * 0.34;
+  sum += texture(uShadow, uv + vec2(px.x * 1.1, px.y * 0.4)).rgb * 0.165;
+  sum += texture(uShadow, uv + vec2(-px.x * 0.5, px.y * 1.2)).rgb * 0.165;
+  sum += texture(uShadow, uv + vec2(-px.x * 1.1, -px.y * 0.4)).rgb * 0.165;
+  sum += texture(uShadow, uv + vec2(px.x * 0.5, -px.y * 1.2)).rgb * 0.165;
   return sum;
 }
 
-// ACES Filmic Tone Mapping (prevents half-float/8-bit harsh blowout per penpen-gamePlus-skill §02)
 vec3 acesFilm(vec3 x) {
   const float a = 2.51;
   const float b = 0.03;
@@ -130,12 +127,10 @@ vec3 acesFilm(vec3 x) {
 }
 
 void main() {
-  // Flip Y because Canvas2D origin is top-left while WebGL UV origin is bottom-left
   vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
   vec2 screenPx = uv * uResolution;
   vec2 worldPx = screenPx + uCamPos - uResolution * 0.5;
 
-  // Subtle chromatic dread offset at screen edges when wounded
   vec2 centered = vUv - 0.5;
   float edgeDist = length(centered);
   vec3 albedo;
@@ -153,7 +148,7 @@ void main() {
   float puddleMask = nw.b;
   float activeWet = clamp(puddleMask * (0.28 + uWetness * 0.95) + uWetness * 0.16, 0.0, 1.0);
 
-  // Rain ripple perturbation on standing water puddles
+  // Animated raindrop ripple normal perturbation on standing puddles
   if (uPuddleReflections == 1 && activeWet > 0.25 && uRain > 0.05) {
     vec2 cell = floor(worldPx * 0.038);
     vec2 f = fract(worldPx * 0.038) - 0.5;
@@ -165,13 +160,12 @@ void main() {
 
   vec3 shadowVis = sampleShadowSoft(uv);
 
-  // Dark wet puddles darken albedo slightly and take on cold sky tint
+  // Wet puddles darken slightly & pick up cold sky tint
   vec3 surfaceAlbedo = mix(albedo, albedo * vec3(0.58, 0.66, 0.72), activeWet * 0.52);
 
-  // Base ambient Baltic forest darkness + subtle moonlight relief
   vec3 totalLight = uAmbient * (0.82 + 0.18 * max(N.z, 0.0));
 
-  // Sky lightning storm flash (directional cold blue-white slap across treetops & puddles!)
+  // Sky lightning flash momentarily illuminates entire forest & puddles
   if (uLightning > 0.01) {
     vec3 skyDir = normalize(vec3(-0.45, -0.55, 0.7));
     float ndl = max(dot(N, skyDir), 0.18);
@@ -182,7 +176,6 @@ void main() {
     }
   }
 
-  // Volumetric mist haze accumulator (brightens air inside flashlight beam!)
   vec3 volumetricScatter = vec3(0.0);
 
   for (int i = 0; i < 12; i++) {
@@ -198,16 +191,14 @@ void main() {
     float normD = d / pr.z;
     float atten = pow(clamp(1.0 - normD, 0.0, 1.0), 1.65);
 
-    // Directional cone shaping (flashlight beam)
     float spot = 1.0;
     if (cn.z > -1.5) {
       vec2 dirToPx = d > 0.001 ? toPx / d : cn.xy;
       float cosAng = dot(dirToPx, cn.xy);
-      spot = smoothstep(cn.z - 0.11, cn.z + 0.14, cosAng);
+      spot = smoothstep(cn.z - 0.08, cn.z + 0.09, cosAng);
       if (spot <= 0.001) continue;
     }
 
-    // Shadow visibility channel
     float vis = 1.0;
     if (cc.a < 0.5) vis = shadowVis.r;
     else if (cc.a < 1.5) vis = shadowVis.g;
@@ -215,11 +206,9 @@ void main() {
 
     if (vis <= 0.003) continue;
 
-    // 3D-like normal-mapped diffuse + wet puddle specular highlight
     vec3 L = normalize(vec3(-toPx.x, -toPx.y, 82.0));
     float ndl = max(dot(N, L), 0.16);
 
-    // Specular glint on wet mud, iron & rain puddles
     float spec = 0.0;
     if (uPuddleReflections == 1 && activeWet > 0.18) {
       vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
@@ -230,29 +219,28 @@ void main() {
     vec3 contrib = cc.rgb * pr.w * atten * spot * vis;
     totalLight += contrib * (ndl * 1.18 + spec);
 
-    // Volumetric misty beam shaft inside flashlight / flare
     if (cn.w > 0.01) {
       float mist = fbm(worldPx * 0.011 + vec2(uTime * 0.18, -uTime * 0.11));
-      volumetricScatter += contrib * cn.w * (0.45 + mist * 0.85) * (0.55 + uFogDensity * 0.65);
+      volumetricScatter += contrib * cn.w * (0.42 + mist * 0.85) * (0.55 + uFogDensity * 0.65);
     }
   }
 
-  vec3 color = surfaceAlbedo * totalLight + volumetricScatter * 0.24;
+  vec3 color = surfaceAlbedo * totalLight + volumetricScatter * 0.22;
 
   // Painterly Eastern European oil-canvas weave & subtle film grain
   if (uEnableGrain == 1) {
-    float weave = (sin(worldPx.x * 1.6) * sin(worldPx.y * 1.6)) * 0.016;
+    float weave = (sin(worldPx.x * 1.6) * sin(worldPx.y * 1.6)) * 0.015;
     float grain = (hash21(screenPx + fract(uTime * 29.0) * 100.0) - 0.5) * 0.042;
     color += vec3(weave + grain) * (0.35 + length(color) * 0.65);
   }
 
-  // ACES Filmic Tone Mapping + slight cool shadow grading (Darkwood moody teal-brown contrast)
+  // ACES Filmic Tone Mapping + cool Baltic shadow split-toning
   color = acesFilm(color * 1.12);
-  color = mix(color, color * vec3(0.95, 0.98, 1.03), clamp(1.0 - dot(color, vec3(0.3, 0.6, 0.1)) * 2.2, 0.0, 0.45));
+  color = mix(color, color * vec3(0.93, 0.98, 1.04), clamp(1.0 - dot(color, vec3(0.3, 0.6, 0.1)) * 2.2, 0.0, 0.45));
 
-  // Organic dark radial vignette
-  float vig = smoothstep(0.88, 0.30, edgeDist);
-  color *= mix(0.28, 1.0, vig);
+  // Organic dark vignette
+  float vig = smoothstep(0.90, 0.30, edgeDist);
+  color *= mix(0.24, 1.0, vig);
 
   // Pulsing crimson dread vignette when wounded / hit
   if (uBloodDread > 0.01) {
@@ -289,7 +277,7 @@ export class WebGL2Composer {
         antialias: false,
         depth: false,
         stencil: false,
-        preserveDrawingBuffer: true, // supports window.__game.shot()!
+        preserveDrawingBuffer: true,
         powerPreference: 'high-performance',
       });
     } catch {
@@ -405,7 +393,6 @@ export class WebGL2Composer {
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vao);
 
-    // Upload G-buffer textures
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texAlbedo);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, albedoCanvas);
@@ -451,8 +438,7 @@ export class WebGL2Composer {
       this.coneBuf[o] = L.dirX;
       this.coneBuf[o + 1] = L.dirY;
       this.coneBuf[o + 2] = L.coneCos;
-      // Volumetric mist boost for flashlight & flares
-      this.coneBuf[o + 3] = L.coneCos > -1.5 ? 0.58 : L.shadowChannel === 1 ? 0.22 : 0.0;
+      this.coneBuf[o + 3] = L.coneCos > -1.5 ? 0.55 : L.shadowChannel === 1 ? 0.22 : 0.0;
     }
 
     gl.uniform1i(this.uniforms.uLightCount, count);

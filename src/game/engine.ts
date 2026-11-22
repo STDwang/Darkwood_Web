@@ -1222,6 +1222,7 @@ export class GameEngine {
     p.y = resolved.y;
 
     const moved = dist(prevX, prevY, p.x, p.y);
+
     // Drive articulated skeletal stride phase strictly from real displacement (Single Owner)
     p.walkPhase += moved * 0.14;
     p.stepDist += moved;
