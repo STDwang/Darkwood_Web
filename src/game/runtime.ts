@@ -29,6 +29,9 @@ export class GameRuntime {
   private onFirstFrame: (() => void) | null = null;
   private firstFrameFired = false;
   private unsubs: Array<() => void> = [];
+  // 身体反馈音频：上一步体力（识别疾跑）与耗尽锁定标记
+  private prevStamina = -1;
+  private exhaustLatch = false;
 
   constructor(canvas: HTMLCanvasElement, onFirstFrame?: () => void) {
     this.canvas = canvas;
@@ -102,6 +105,7 @@ export class GameRuntime {
     let steps = 0;
     while (this.accum >= FIXED_DT && steps < 5) {
       this.engine.step(FIXED_DT, this.renderer.width, this.renderer.height);
+      this.feedBodyAudio(FIXED_DT);
       this.accum -= FIXED_DT;
       steps++;
     }
@@ -117,6 +121,42 @@ export class GameRuntime {
 
     this.rafId = requestAnimationFrame(this.loop);
   };
+
+  /**
+   * 身体反馈音频：只读 engine 字段推导疾跑 / 见底状态并调用 AudioFX.updateBody；非游玩状态只淡出蓄力张力
+   */
+  private feedBodyAudio(dt: number) {
+    const p = this.engine.player;
+    const st01 = p.stamina / Math.max(1, p.maxStamina);
+    // 引擎未保存疾跑标志：按每步体力下降速率识别（疾跑恒定 28/s；攻击/闪避为一次性大额扣除，不会误判）
+    const drop = this.prevStamina < 0 ? 0 : this.prevStamina - p.stamina;
+    this.prevStamina = p.stamina;
+    if (this.engine.mode !== 'play') {
+      AudioFX.setChargeLevel(0);
+      // 离开游玩状态（标题/死亡/胜利/暂停）时把异象不安声压回 0，避免残留在菜单里
+      (AudioFX as unknown as { setHauntLevel?: (v: number) => void }).setHauntLevel?.(0);
+      // 死亡/胜利不经过 engine.setMode，这里统一把火把燃烧声（手持与地上）淡出
+      AudioFX.setTorchBurn(0, 0);
+      AudioFX.setGroundTorchBurn(0);
+      return;
+    }
+    // 优先读取引擎写入的真实疾跑标志；旧版引擎无此字段时回退为体力下降速率推断
+    const sprinting =
+      typeof p.isSprinting === 'boolean'
+        ? p.isSprinting
+        : p.dodgeTimer <= 0 && drop > 20 * dt && drop < 40 * dt;
+    // 耗尽锁定期：体力跌到疾跑下限（6）后，直到恢复至 30% 前都视为见底
+    if (p.stamina <= 6.5) this.exhaustLatch = true;
+    else if (st01 >= 0.3) this.exhaustLatch = false;
+    AudioFX.updateBody({
+      dt,
+      stamina01: st01,
+      sprinting,
+      exhausted: st01 < 0.15 || this.exhaustLatch,
+      hp01: p.hp / Math.max(1, p.maxHp),
+      charging01: p.isCharging ? Math.min(1, Math.max(0, p.chargeTimer / 0.65)) : 0,
+    });
+  }
 
   stepFrame(dt = FIXED_DT, draw = true, pilotInput?: PilotInput) {
     this.engine.step(dt, this.renderer.width, this.renderer.height, pilotInput);

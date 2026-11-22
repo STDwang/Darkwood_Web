@@ -1,4 +1,5 @@
 // Deterministic procedural Darkwood world generator (Single Source of Truth for physics & lighting)
+// 第三轮：世界扩大到 4600，新增 7 处原作气质地点 + 建筑/房间系统（buildings.ts）+ 均匀网格空间索引
 
 import {
   BarricadeSlot,
@@ -21,27 +22,53 @@ import {
   resolveCircleCircle,
   resolveCircleRect,
 } from './util';
+import {
+  Building,
+  BuildingLight,
+  BuildingProp,
+  InteriorDoor,
+  RectLike,
+  buildingIndexAt,
+  createBuildingLayouts,
+} from './buildings';
 
-export const WORLD_SIZE = 2600;
+export const WORLD_SIZE = 4600;
 export const WORLD_HALF = WORLD_SIZE / 2;
 
+/** 庇护所外框（第三轮扩大为 560 × 380，内分主屋/卧室/储藏间/工作间；南墙与南门位置不变） */
 export const HIDEOUT_RECT = {
-  x: -170,
-  y: -140,
-  w: 340,
-  h: 280,
+  x: -280,
+  y: -240,
+  w: 560,
+  h: 380,
 };
 
+/** 锯木厂残垣屋顶矩形（engine.SAWMILL_ROOF_RECT 引用此处，单源） */
+export const SAWMILL_RECT = { x: 620, y: -610, w: 220, h: 230 };
+
 export const GENERATOR_POS: Vec2 = { x: -118, y: -88 };
-export const WORKBENCH_POS: Vec2 = { x: 112, y: -92 };
+/** 工作台移入东翼工作间 */
+export const WORKBENCH_POS: Vec2 = { x: 207, y: -182 };
 export const SHELTER_LAMPS: Vec2[] = [
   { x: -65, y: 15 },
   { x: 75, y: 20 },
 ];
 // 活火源坐标（单源真相：渲染、动态点光与火星粒子共用，零碰撞死角）
-export const HIDEOUT_STOVE_POS: Vec2 = { x: 126, y: 98 };
+// 室内铸铁炭炉按外框内角推导（与 renderer.drawHideoutInterior 的 innerR-26 / innerB-24 一致）
+export const HIDEOUT_STOVE_POS: Vec2 = {
+  x: HIDEOUT_RECT.x + HIDEOUT_RECT.w - 18 - 26,
+  y: HIDEOUT_RECT.y + HIDEOUT_RECT.h - 18 - 24,
+};
 export const HIDEOUT_BRAZIER_POS: Vec2 = { x: 86, y: 196 };
 export const CAMPFIRE_POS: Vec2 = { x: -636, y: 646 };
+
+/** 静态建筑布局（模块加载时生成一次；墙体/家具碰撞盒为只读共享对象） */
+const LAYOUT = createBuildingLayouts(HIDEOUT_RECT, SAWMILL_RECT);
+export const BUILDINGS: Building[] = LAYOUT.buildings;
+/** 室外叙事摆件（篱笆、井、墓碑、路标、铁道口道闸……） */
+export const YARD_PROPS: BuildingProp[] = LAYOUT.yardProps;
+/** 林间旧铁轨折线 */
+export const RAIL_LINES: Vec2[][] = LAYOUT.rails;
 
 export const CRAFT_RECIPES: CraftRecipe[] = [
   {
@@ -85,6 +112,38 @@ export const CRAFT_RECIPES: CraftRecipe[] = [
 export interface DirtPath {
   points: Vec2[];
   width: number;
+  /** 包围盒（含半宽），供渲染视口剔除 */
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/** 世界空间黑色枯枝灌木（纯装饰：无碰撞、不阻光；渲染层用预烘焙枝形旋转缩放复用） */
+export interface Bramble {
+  x: number;
+  y: number;
+  rot: number;
+  scale: number;
+  /** 预烘焙枝形索引 0..BRAMBLE_VARIANTS-1 */
+  variant: number;
+}
+
+export const BRAMBLE_VARIANTS = 10;
+
+/** 静态几何均匀网格空间索引（CSR 桶：start[cell]..start[cell+1] 为该格物体索引） */
+export interface StaticGrid {
+  cell: number;
+  cols: number;
+  wallStart: Int32Array;
+  wallItems: Int32Array;
+  treeStart: Int32Array;
+  treeItems: Int32Array;
+  rockStart: Int32Array;
+  rockItems: Int32Array;
+  /** 墙体跨格去重戳 */
+  wallStamp: Uint32Array;
+  stamp: number;
 }
 
 export interface WorldData {
@@ -100,6 +159,115 @@ export interface WorldData {
   zones: FloorZone[];
   paths: DirtPath[];
   poiCenters: { name: string; x: number; y: number; r: number }[];
+  /** 建筑静态布局（与 BUILDINGS 同一数组，只读） */
+  buildings: Building[];
+  /** 可开关室内门（每局克隆，engine 推进） */
+  interiorDoors: InteriorDoor[];
+  /** 建筑灯具（每局克隆，engine 推进开关） */
+  lights: BuildingLight[];
+  yardProps: BuildingProp[];
+  rails: Vec2[][];
+  /** 黑色枯枝灌木（确定性种子；林缘/树根/建筑墙角/道路边） */
+  brambles: Bramble[];
+  grid: StaticGrid;
+}
+
+const GRID_CELL = 128;
+
+function cellOf(g: StaticGrid, v: number): number {
+  const c = Math.floor((v + WORLD_HALF) / g.cell);
+  return c < 0 ? 0 : c >= g.cols ? g.cols - 1 : c;
+}
+
+/** CSR 分桶：ranges 每 4 个为一个物体的 [cx0, cy0, cx1, cy1] */
+function bucketize(cols: number, count: number, ranges: Int32Array): Int32Array[] {
+  const cells = cols * cols;
+  const start = new Int32Array(cells + 1);
+  for (let i = 0; i < count; i++) {
+    for (let cy = ranges[i * 4 + 1]; cy <= ranges[i * 4 + 3]; cy++) {
+      for (let cx = ranges[i * 4]; cx <= ranges[i * 4 + 2]; cx++) start[cy * cols + cx + 1]++;
+    }
+  }
+  for (let c = 0; c < cells; c++) start[c + 1] += start[c];
+  const items = new Int32Array(start[cells]);
+  const fill = start.slice(0, cells);
+  for (let i = 0; i < count; i++) {
+    for (let cy = ranges[i * 4 + 1]; cy <= ranges[i * 4 + 3]; cy++) {
+      for (let cx = ranges[i * 4]; cx <= ranges[i * 4 + 2]; cx++) {
+        const ci = cy * cols + cx;
+        items[fill[ci]++] = i;
+      }
+    }
+  }
+  return [start, items];
+}
+
+function buildStaticGrid(walls: RectObstacle[], trees: TreeObstacle[], rocks: RockObstacle[]): StaticGrid {
+  const cols = Math.ceil(WORLD_SIZE / GRID_CELL);
+  const g: StaticGrid = {
+    cell: GRID_CELL,
+    cols,
+    wallStart: new Int32Array(1),
+    wallItems: new Int32Array(0),
+    treeStart: new Int32Array(1),
+    treeItems: new Int32Array(0),
+    rockStart: new Int32Array(1),
+    rockItems: new Int32Array(0),
+    wallStamp: new Uint32Array(walls.length),
+    stamp: 0,
+  };
+  const wr = new Int32Array(walls.length * 4);
+  for (let i = 0; i < walls.length; i++) {
+    const w = walls[i];
+    wr[i * 4] = cellOf(g, w.x);
+    wr[i * 4 + 1] = cellOf(g, w.y);
+    wr[i * 4 + 2] = cellOf(g, w.x + w.w);
+    wr[i * 4 + 3] = cellOf(g, w.y + w.h);
+  }
+  const wb = bucketize(cols, walls.length, wr);
+  g.wallStart = wb[0];
+  g.wallItems = wb[1];
+  const tr = new Int32Array(trees.length * 4);
+  for (let i = 0; i < trees.length; i++) {
+    const cx = cellOf(g, trees[i].x);
+    const cy = cellOf(g, trees[i].y);
+    tr[i * 4] = cx;
+    tr[i * 4 + 1] = cy;
+    tr[i * 4 + 2] = cx;
+    tr[i * 4 + 3] = cy;
+  }
+  const tb = bucketize(cols, trees.length, tr);
+  g.treeStart = tb[0];
+  g.treeItems = tb[1];
+  const rr = new Int32Array(rocks.length * 4);
+  for (let i = 0; i < rocks.length; i++) {
+    const cx = cellOf(g, rocks[i].x);
+    const cy = cellOf(g, rocks[i].y);
+    rr[i * 4] = cx;
+    rr[i * 4 + 1] = cy;
+    rr[i * 4 + 2] = cx;
+    rr[i * 4 + 3] = cy;
+  }
+  const rb = bucketize(cols, rocks.length, rr);
+  g.rockStart = rb[0];
+  g.rockItems = rb[1];
+  return g;
+}
+
+function makePath(width: number, points: Vec2[]): DirtPath {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const h = width * 0.5 + 4;
+  return { points, width, minX: minX - h, minY: minY - h, maxX: maxX + h, maxY: maxY + h };
 }
 
 function addHideoutCabin(walls: RectObstacle[], barricades: BarricadeSlot[], zones: FloorZone[]) {
@@ -244,6 +412,35 @@ function addHideoutCabin(walls: RectObstacle[], barricades: BarricadeSlot[], zon
   });
 }
 
+function surfaceOfFloor(f: string): 'wood' | 'mud' | 'gravel' {
+  if (f === 'tile' || f === 'stone') return 'gravel';
+  if (f === 'dirt') return 'mud';
+  return 'wood';
+}
+
+function pointInRects(rects: RectLike[], x: number, y: number, pad: number): boolean {
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    if (x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad) return true;
+  }
+  return false;
+}
+
+function distToPolyline(pts: Vec2[], px: number, py: number): number {
+  let best = Infinity;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const vx = b.x - a.x;
+    const vy = b.y - a.y;
+    const len2 = vx * vx + vy * vy || 1;
+    const t = clamp(((px - a.x) * vx + (py - a.y) * vy) / len2, 0, 1);
+    const d = Math.hypot(px - (a.x + vx * t), py - (a.y + vy * t));
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 export function createWorld(seed = 19847): WorldData {
   const rng = createRng(seed);
   const walls: RectObstacle[] = [];
@@ -254,7 +451,7 @@ export function createWorld(seed = 19847): WorldData {
   const essences: EssenceNode[] = [];
   const zones: FloorZone[] = [];
 
-  // 庇护所室内 3 件初始可拖拽重型家具（避开发电机、工作台、出生点 (0, 20) 与四面门窗通道）
+  // 庇护所室内 3 件初始可拖拽重型家具（避开发电机、工作台、出生点 (0, 25)、内墙门洞与四面门窗通道）
   const movables: MovableFurniture[] = [
     {
       id: 'furn_sofa',
@@ -291,61 +488,127 @@ export function createWorld(seed = 19847): WorldData {
     },
   ];
 
-  // 3 处远方地标的信号中继零件节点（避开全部墙体与容器，保证零重叠）
+  // 3 件信号中继零件：坠毁货车（近）/ 木教堂圣器室（北）/ 信号塔配电小屋（东北），均避开墙体与容器
   const relayNodes: RelayNode[] = [
     { id: 'relay_truck', zone: '坠毁货车', x: -705, y: -518, collected: false },
-    { id: 'relay_mill', zone: '废弃锯木厂', x: 705, y: -455, collected: false },
-    { id: 'relay_shrine', zone: '枯林祭坛', x: 726, y: 605, collected: false },
+    { id: 'relay_chapel', zone: '木教堂', x: -290, y: -1684, collected: false },
+    { id: 'relay_tower', zone: '信号塔', x: 1584, y: -1356, collected: false },
   ];
 
   addHideoutCabin(walls, barricades, zones);
 
-  // Four atmospheric exploration POIs around the central Hideout
+  // 11 处探索地标（4 处原有 + 7 处新增）
   const poiCenters = [
     { name: '坠毁货车', x: -680, y: -560, r: 195 },
     { name: '废弃锯木厂', x: 740, y: -490, r: 225 },
     { name: '猎人营地', x: -640, y: 630, r: 190 },
     { name: '枯林祭坛', x: 690, y: 610, r: 205 },
+    { name: '荒芜农庄', x: -1470, y: -80, r: 330 },
+    { name: '林中村落', x: -10, y: 1530, r: 330 },
+    { name: '木教堂', x: -180, y: -1580, r: 300 },
+    { name: '医生之屋', x: 1570, y: 170, r: 300 },
+    { name: '沼泽渔屋', x: 1520, y: 1470, r: 320 },
+    { name: '信号塔', x: 1540, y: -1430, r: 300 },
+    { name: '旧铁道口', x: 190, y: 1050, r: 210 },
   ];
 
-  // Dirt paths connecting Hideout to the 4 landmarks (clear of dense trees)
+  // 土路网络：庇护所南门 / 东门出发连接全部地标
   const paths: DirtPath[] = [
-    {
-      width: 56,
-      points: [
-        { x: 0, y: 155 },
-        { x: -120, y: 290 },
-        { x: -370, y: 460 },
-        { x: -620, y: 610 },
-      ],
-    },
-    {
-      width: 54,
-      points: [
-        { x: 185, y: 0 },
-        { x: 420, y: -140 },
-        { x: 610, y: -340 },
-        { x: 740, y: -490 },
-      ],
-    },
-    {
-      width: 50,
-      points: [
-        { x: -140, y: 210 },
-        { x: -360, y: -40 },
-        { x: -530, y: -320 },
-        { x: -680, y: -560 },
-      ],
-    },
-    {
-      width: 48,
-      points: [
-        { x: 160, y: 150 },
-        { x: 380, y: 310 },
-        { x: 540, y: 470 },
-        { x: 690, y: 610 },
-      ],
-    },
+    makePath(56, [
+      { x: 0, y: 155 },
+      { x: -120, y: 290 },
+      { x: -370, y: 460 },
+      { x: -620, y: 610 },
+    ]),
+    makePath(54, [
+      { x: 300, y: -50 },
+      { x: 440, y: -160 },
+      { x: 610, y: -340 },
+      { x: 740, y: -490 },
+    ]),
+    makePath(50, [
+      { x: -60, y: 175 },
+      { x: -330, y: 180 },
+      { x: -420, y: -60 },
+      { x: -560, y: -330 },
+      { x: -680, y: -560 },
+    ]),
+    makePath(48, [
+      { x: 120, y: 160 },
+      { x: 380, y: 310 },
+      { x: 540, y: 470 },
+      { x: 690, y: 610 },
+    ]),
+    makePath(46, [
+      { x: -680, y: -560 },
+      { x: -560, y: -860 },
+      { x: -380, y: -1180 },
+      { x: -250, y: -1380 },
+    ]),
+    makePath(44, [
+      { x: -250, y: -1380 },
+      { x: 150, y: -1380 },
+      { x: 700, y: -1330 },
+      { x: 1150, y: -1300 },
+      { x: 1460, y: -1230 },
+      { x: 1674, y: -1240 },
+    ]),
+    makePath(46, [
+      { x: 740, y: -490 },
+      { x: 950, y: -780 },
+      { x: 1250, y: -1050 },
+      { x: 1520, y: -1230 },
+    ]),
+    makePath(50, [
+      { x: 300, y: -50 },
+      { x: 700, y: 40 },
+      { x: 1100, y: 200 },
+      { x: 1400, y: 330 },
+      { x: 1562, y: 345 },
+    ]),
+    makePath(44, [
+      { x: 1562, y: 345 },
+      { x: 1620, y: 700 },
+      { x: 1560, y: 1100 },
+      { x: 1420, y: 1380 },
+      { x: 1300, y: 1470 },
+    ]),
+    makePath(42, [
+      { x: 690, y: 610 },
+      { x: 980, y: 900 },
+      { x: 1200, y: 1250 },
+      { x: 1300, y: 1470 },
+    ]),
+    makePath(52, [
+      { x: 10, y: 150 },
+      { x: 30, y: 560 },
+      { x: 10, y: 980 },
+      { x: 0, y: 1370 },
+    ]),
+    makePath(44, [
+      { x: 240, y: 1570 },
+      { x: 700, y: 1640 },
+      { x: 1100, y: 1560 },
+      { x: 1300, y: 1470 },
+    ]),
+    makePath(44, [
+      { x: -30, y: 1360 },
+      { x: -330, y: 1250 },
+      { x: -560, y: 950 },
+      { x: -640, y: 700 },
+    ]),
+    makePath(46, [
+      { x: -640, y: 630 },
+      { x: -950, y: 430 },
+      { x: -1220, y: 180 },
+      { x: -1400, y: 40 },
+    ]),
+    makePath(44, [
+      { x: -1250, y: -40 },
+      { x: -1050, y: -300 },
+      { x: -850, y: -480 },
+      { x: -700, y: -560 },
+    ]),
   ];
 
   // POI 1: Crashed Supply Truck (NW)
@@ -512,7 +775,11 @@ export function createWorld(seed = 19847): WorldData {
     }
   );
 
-  // 庇护所门外 30 秒开局钩子：低耗时（1.2s）遇难者背包 + 周边基础物资，确保开局立刻形成搜刮与防线互动
+  // 新增地点的地表（只用于脚步声的 '#' 隐形地表 + 农庄院落/墓地/铁道口可见地表）
+  zones.push({ name: '旧铁道口', x: 90, y: 940, w: 200, h: 80, surface: 'gravel' });
+  zones.push({ name: '#墓地', x: -150, y: -1730, w: 260, h: 300, surface: 'mud' });
+
+  // 庇护所门外 30 秒开局钩子：低耗时（1.2s）遇难者背包 + 周边基础物资（庇护所扩建后院落木柴与油桶外移到东西墙外）
   containers.push(
     {
       id: 'c_starter_backpack',
@@ -528,8 +795,8 @@ export function createWorld(seed = 19847): WorldData {
     },
     {
       id: 'c_yard_wood',
-      x: 225,
-      y: 75,
+      x: 330,
+      y: 70,
       r: 19,
       kind: 'logpile',
       zone: '迷雾深林',
@@ -552,8 +819,8 @@ export function createWorld(seed = 19847): WorldData {
     },
     {
       id: 'c_yard_barrel',
-      x: -235,
-      y: -40,
+      x: -335,
+      y: 30,
       r: 17,
       kind: 'barrel',
       zone: '迷雾深林',
@@ -564,7 +831,30 @@ export function createWorld(seed = 19847): WorldData {
     }
   );
 
-  // Additional scattered deep-forest containers
+  // 建筑：静态墙体/窗/家具碰撞盒（共享只读）、房间地表、室内门与灯（每局克隆）、房间容器（每局克隆）
+  const interiorDoors: InteriorDoor[] = [];
+  const lights: BuildingLight[] = [];
+  for (let i = 0; i < BUILDINGS.length; i++) {
+    const b = BUILDINGS[i];
+    for (let k = 0; k < b.walls.length; k++) walls.push(b.walls[k]);
+    for (let k = 0; k < b.doorSpecs.length; k++) interiorDoors.push({ ...b.doorSpecs[k] });
+    for (let k = 0; k < b.lightSpecs.length; k++) lights.push({ ...b.lightSpecs[k] });
+    for (let k = 0; k < b.movableSpecs.length; k++) movables.push({ ...b.movableSpecs[k] });
+    for (let k = 0; k < b.containerSpecs.length; k++) {
+      const c = b.containerSpecs[k];
+      containers.push({ ...c, loot: { ...c.loot } });
+    }
+    if (b.externalRoof && b.id !== 'h_in') continue;
+    for (let k = 0; k < b.rooms.length; k++) {
+      const rm = b.rooms[k];
+      // 庇护所木地板由既有 '庇护所' 地表负责，只补充非木地板房间
+      if (b.id === 'h_in' && rm.floor === 'plank') continue;
+      zones.push({ name: '#' + rm.name, x: rm.x, y: rm.y, w: rm.w, h: rm.h, surface: surfaceOfFloor(rm.floor) });
+    }
+  }
+  for (let k = 0; k < LAYOUT.yardWalls.length; k++) walls.push(LAYOUT.yardWalls[k]);
+
+  // Additional scattered deep-forest containers（地图扩大约 3 倍面积，野外容器 14 → 26）
   const lootTemplates: Array<{
     kind: LootContainer['kind'];
     loot: LootContainer['loot'];
@@ -577,15 +867,26 @@ export function createWorld(seed = 19847): WorldData {
     { kind: 'corpse', loot: { fuel: 1, herbs: 2, scrap: 1 } },
   ];
 
+  const clearRects = LAYOUT.clearRects;
+  const rails = LAYOUT.rails;
+  const nearRail = function (px: number, py: number, pad: number): boolean {
+    for (let i = 0; i < rails.length; i++) {
+      if (distToPolyline(rails[i], px, py) < 26 + pad) return true;
+    }
+    return false;
+  };
+
   let extraContainers = 0;
   let attempts = 0;
-  while (extraContainers < 14 && attempts < 400) {
+  while (extraContainers < 26 && attempts < 900) {
     attempts++;
     const x = (rng() * 2 - 1) * (WORLD_HALF - 180);
     const y = (rng() * 2 - 1) * (WORLD_HALF - 180);
-    if (dist(x, y, 0, 0) < 340) continue;
+    if (dist(x, y, 0, 0) < 420) continue;
     if (poiCenters.some((p) => dist(x, y, p.x, p.y) < p.r - 30)) continue;
     if (containers.some((c) => dist(x, y, c.x, c.y) < 160)) continue;
+    if (pointInRects(clearRects, x, y, 10)) continue;
+    if (nearRail(x, y, 20)) continue;
 
     const tpl = lootTemplates[extraContainers % lootTemplates.length];
     containers.push({
@@ -613,6 +914,17 @@ export function createWorld(seed = 19847): WorldData {
     { x: 350, y: 540 },
     { x: -910, y: 120 },
     { x: 930, y: 80 },
+    // 新地点：墓地边、沼泽、农庄菜地、村落南、四角深林
+    { x: 20, y: -1450 },
+    { x: 1380, y: 1600 },
+    { x: 1460, y: 1290 },
+    { x: -1560, y: 92 },
+    { x: 330, y: 1720 },
+    { x: -1900, y: -900 },
+    { x: 1900, y: -700 },
+    { x: -1000, y: 1450 },
+    { x: 1000, y: -1150 },
+    { x: -1850, y: 1700 },
   ];
   fixedEssence.forEach((p, idx) => {
     essences.push({
@@ -627,6 +939,7 @@ export function createWorld(seed = 19847): WorldData {
   // Helper: distance from point to dirt path segments
   const nearPath = (px: number, py: number, pad: number): boolean => {
     for (const path of paths) {
+      if (px < path.minX - pad || px > path.maxX + pad || py < path.minY - pad || py > path.maxY + pad) continue;
       for (let i = 0; i < path.points.length - 1; i++) {
         const a = path.points[i];
         const b = path.points[i + 1];
@@ -642,9 +955,21 @@ export function createWorld(seed = 19847): WorldData {
     return false;
   };
 
-  // Scatter dense Baltic pine trees with guaranteed clear pathways & POI arenas
+  const tooClose = (list: Array<{ x: number; y: number }>, x: number, y: number, d: number): boolean => {
+    const d2 = d * d;
+    for (let i = 0; i < list.length; i++) {
+      const dx = list[i].x - x;
+      if (dx > d || dx < -d) continue;
+      const dy = list[i].y - y;
+      if (dy > d || dy < -d) continue;
+      if (dx * dx + dy * dy < d2) return true;
+    }
+    return false;
+  };
+
+  // Scatter dense Baltic pine trees with guaranteed clear pathways & POI arenas（面积约 3.1 倍，尝试次数等比放大）
   let treeId = 0;
-  for (let i = 0; i < 620; i++) {
+  for (let i = 0; i < 1950; i++) {
     const x = (rng() * 2 - 1) * (WORLD_HALF - 70);
     const y = (rng() * 2 - 1) * (WORLD_HALF - 70);
 
@@ -660,14 +985,17 @@ export function createWorld(seed = 19847): WorldData {
 
     // Keep POIs navigable
     if (poiCenters.some((p) => dist(x, y, p.x, p.y) < p.r * 0.82)) continue;
+    // 建筑院落、墓地、信号塔基座等保持开阔
+    if (pointInRects(clearRects, x, y, 10)) continue;
     // Keep dirt paths unobstructed (guarantees 100% reachability!)
     if (nearPath(x, y, 36)) continue;
+    if (nearRail(x, y, 30)) continue;
     // Keep away from containers, essences & relay nodes
-    if (containers.some((c) => dist(x, y, c.x, c.y) < 58)) continue;
-    if (essences.some((e) => dist(x, y, e.x, e.y) < 55)) continue;
-    if (relayNodes.some((rn) => dist(x, y, rn.x, rn.y) < 58)) continue;
+    if (tooClose(containers, x, y, 58)) continue;
+    if (tooClose(essences, x, y, 55)) continue;
+    if (tooClose(relayNodes, x, y, 58)) continue;
     // Minimum spacing between tree trunks so player (r=15) never gets wedged
-    if (trees.some((t) => dist(x, y, t.x, t.y) < 76)) continue;
+    if (tooClose(trees, x, y, 76)) continue;
 
     trees.push({
       id: treeId++,
@@ -682,16 +1010,19 @@ export function createWorld(seed = 19847): WorldData {
 
   // Scatter mossy boulders
   let rockId = 0;
-  for (let i = 0; i < 68; i++) {
+  for (let i = 0; i < 210; i++) {
     const x = (rng() * 2 - 1) * (WORLD_HALF - 100);
     const y = (rng() * 2 - 1) * (WORLD_HALF - 100);
-    if (dist(x, y, 0, 0) < 310) continue;
+    if (dist(x, y, 0, 0) < 380) continue;
     if (poiCenters.some((p) => dist(x, y, p.x, p.y) < p.r * 0.85)) continue;
+    if (pointInRects(clearRects, x, y, 20)) continue;
     if (nearPath(x, y, 34)) continue;
-    if (containers.some((c) => dist(x, y, c.x, c.y) < 56)) continue;
-    if (relayNodes.some((rn) => dist(x, y, rn.x, rn.y) < 56)) continue;
-    if (trees.some((t) => dist(x, y, t.x, t.y) < 56)) continue;
-    if (rocks.some((r) => dist(x, y, r.x, r.y) < 88)) continue;
+    if (nearRail(x, y, 34)) continue;
+    if (tooClose(containers, x, y, 56)) continue;
+    if (tooClose(essences, x, y, 50)) continue;
+    if (tooClose(relayNodes, x, y, 56)) continue;
+    if (tooClose(trees, x, y, 56)) continue;
+    if (tooClose(rocks, x, y, 88)) continue;
 
     rocks.push({
       id: rockId++,
@@ -701,6 +1032,9 @@ export function createWorld(seed = 19847): WorldData {
       seed: rng() * 100,
     });
   }
+
+  const grid = buildStaticGrid(walls, trees, rocks);
+  const brambles = scatterBrambles(seed, trees, paths, poiCenters);
 
   return {
     seed,
@@ -715,12 +1049,95 @@ export function createWorld(seed = 19847): WorldData {
     zones,
     paths,
     poiCenters,
+    buildings: BUILDINGS,
+    interiorDoors,
+    lights,
+    yardProps: YARD_PROPS,
+    rails: RAIL_LINES,
+    brambles,
+    grid,
   };
 }
 
 /**
- * 单源真相碰撞解算：解析圆形实体与世界边界、墙体、完好门窗木板、可拖拽家具、树干与巨石的碰撞
+ * 黑色枯枝灌木散布（独立随机流，不扰动树/石/容器的既有种子序列）
+ * 集中在：树根旁、土路两侧林缘、建筑外墙角、地标空地边缘；排除室内
+ */
+function scatterBrambles(
+  seed: number,
+  trees: TreeObstacle[],
+  paths: DirtPath[],
+  pois: { name: string; x: number; y: number; r: number }[]
+): Bramble[] {
+  const rng = createRng((seed ^ 0x5bd1e995) >>> 0);
+  const out: Bramble[] = [];
+  const lim = WORLD_HALF - 60;
+  const add = function (x: number, y: number, scale: number) {
+    if (out.length >= 1100) return;
+    if (x < -lim || x > lim || y < -lim || y > lim) return;
+    if (buildingIndexAt(BUILDINGS, x, y, -6) >= 0) return;
+    out.push({
+      x,
+      y,
+      rot: rng() * Math.PI * 2,
+      scale,
+      variant: Math.floor(rng() * BRAMBLE_VARIANTS) % BRAMBLE_VARIANTS,
+    });
+  };
+  // 1. 树根：每两棵树一簇，贴着树干外缘
+  for (let i = 0; i < trees.length; i += 2) {
+    const t = trees[i];
+    const a = rng() * Math.PI * 2;
+    const d = t.trunkR + 6 + rng() * 14;
+    add(t.x + Math.cos(a) * d, t.y + Math.sin(a) * d, 0.55 + rng() * 0.45);
+  }
+  // 2. 土路两侧林缘：每 90px 一次，左右各约 55% 概率
+  for (let pi = 0; pi < paths.length; pi++) {
+    const path = paths[pi];
+    for (let i = 0; i < path.points.length - 1; i++) {
+      const a = path.points[i];
+      const b = path.points[i + 1];
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (len < 1) continue;
+      const nx = -(b.y - a.y) / len;
+      const ny = (b.x - a.x) / len;
+      for (let s = 30; s < len; s += 90) {
+        const px = a.x + ((b.x - a.x) * s) / len;
+        const py = a.y + ((b.y - a.y) * s) / len;
+        for (let side = -1; side <= 1; side += 2) {
+          if (rng() > 0.55) continue;
+          const off = path.width * 0.5 + 8 + rng() * 22;
+          add(px + nx * off * side, py + ny * off * side, 0.6 + rng() * 0.5);
+        }
+      }
+    }
+  }
+  // 3. 建筑外墙角（含庇护所）
+  for (let i = 0; i < BUILDINGS.length; i++) {
+    const b = BUILDINGS[i];
+    for (let c = 0; c < 4; c++) {
+      if (rng() > 0.85) continue;
+      const cx = c % 2 === 0 ? b.x - 10 - rng() * 10 : b.x + b.w + 10 + rng() * 10;
+      const cy = c < 2 ? b.y - 10 - rng() * 10 : b.y + b.h + 10 + rng() * 10;
+      add(cx, cy, 0.7 + rng() * 0.45);
+    }
+  }
+  // 4. 地标空地边缘（光区边缘伸入的枯枝）
+  for (let i = 0; i < pois.length; i++) {
+    const p = pois[i];
+    for (let k = 0; k < 7; k++) {
+      const a = rng() * Math.PI * 2;
+      const d = p.r * (0.82 + rng() * 0.16);
+      add(p.x + Math.cos(a) * d, p.y + Math.sin(a) * d, 0.8 + rng() * 0.5);
+    }
+  }
+  return out;
+}
+
+/**
+ * 单源真相碰撞解算：解析圆形实体与世界边界、墙体、完好门窗木板、关闭的室内门、可拖拽家具、树干与巨石的碰撞
  * 约束最后：所有移动、闪避、拖拽、击退后均必须统一调用
+ * 静态墙/树/石走均匀网格索引（只读），动态阻挡物（门窗木板、室内门、家具）数量少，全量遍历
  */
 export function resolveWorldCollision(
   world: WorldData,
@@ -728,31 +1145,67 @@ export function resolveWorldCollision(
   y: number,
   radius: number,
   blockByWindows: boolean,
-  skipMovableId?: string
+  skipMovableId?: string,
+  // 玩家专用：自家庇护所的门无论是否钉板都可推开挤过（怪物仍被完好门板阻挡），杜绝夜里被关在门外的软锁；
+  // 同理玩家可推开关闭的室内门（engine 检测接触后把门打开），怪物需撞门约 1.5s
+  passDoors = false
 ): Vec2 {
   let px = clamp(x, -WORLD_HALF + radius + 30, WORLD_HALF - radius - 30);
   let py = clamp(y, -WORLD_HALF + radius + 30, WORLD_HALF - radius - 30);
+  const g = world.grid;
+  const walls = world.walls;
+  const trees = world.trees;
+  const rocks = world.rocks;
+  const cols = g.cols;
 
   // 2 passes resolve corners cleanly without tunneling
   for (let pass = 0; pass < 2; pass++) {
-    for (let i = 0; i < world.walls.length; i++) {
-      const w = world.walls[i];
-      const pushed = resolveCircleRect(px, py, radius, w.x, w.y, w.w, w.h);
-      if (pushed) {
-        px = pushed.x;
-        py = pushed.y;
+    {
+      const reach = radius + 4;
+      const cx0 = cellOf(g, px - reach);
+      const cx1 = cellOf(g, px + reach);
+      const cy0 = cellOf(g, py - reach);
+      const cy1 = cellOf(g, py + reach);
+      for (let cy = cy0; cy <= cy1; cy++) {
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const ci = cy * cols + cx;
+          const end = g.wallStart[ci + 1];
+          for (let k = g.wallStart[ci]; k < end; k++) {
+            const w = walls[g.wallItems[k]];
+            const pushed = resolveCircleRect(px, py, radius, w.x, w.y, w.w, w.h);
+            if (pushed) {
+              px = pushed.x;
+              py = pushed.y;
+            }
+          }
+        }
       }
     }
 
     for (let i = 0; i < world.barricades.length; i++) {
       const b = world.barricades[i];
       // Intact barricades block everyone; unbarricaded windows still block player walking through
+      if (passDoors && b.kind === 'door') continue;
       const solid = b.hp > 0 || (blockByWindows && b.kind === 'window');
       if (!solid) continue;
       const pushed = resolveCircleRect(px, py, radius, b.x, b.y, b.w, b.h);
       if (pushed) {
         px = pushed.x;
         py = pushed.y;
+      }
+    }
+
+    if (!passDoors) {
+      const doors = world.interiorDoors;
+      for (let i = 0; i < doors.length; i++) {
+        const d = doors[i];
+        if (d.open) continue;
+        if (px + radius < d.x || px - radius > d.x + d.w || py + radius < d.y || py - radius > d.y + d.h) continue;
+        const pushed = resolveCircleRect(px, py, radius, d.x, d.y, d.w, d.h);
+        if (pushed) {
+          px = pushed.x;
+          py = pushed.y;
+        }
       }
     }
 
@@ -766,23 +1219,49 @@ export function resolveWorldCollision(
       }
     }
 
-    for (let i = 0; i < world.trees.length; i++) {
-      const t = world.trees[i];
-      if (Math.abs(px - t.x) > 48 || Math.abs(py - t.y) > 48) continue;
-      const pushed = resolveCircleCircle(px, py, radius, t.x, t.y, t.trunkR);
-      if (pushed) {
-        px = pushed.x;
-        py = pushed.y;
+    {
+      const reach = radius + 24;
+      const cx0 = cellOf(g, px - reach);
+      const cx1 = cellOf(g, px + reach);
+      const cy0 = cellOf(g, py - reach);
+      const cy1 = cellOf(g, py + reach);
+      for (let cy = cy0; cy <= cy1; cy++) {
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const ci = cy * cols + cx;
+          const end = g.treeStart[ci + 1];
+          for (let k = g.treeStart[ci]; k < end; k++) {
+            const t = trees[g.treeItems[k]];
+            if (Math.abs(px - t.x) > 48 || Math.abs(py - t.y) > 48) continue;
+            const pushed = resolveCircleCircle(px, py, radius, t.x, t.y, t.trunkR);
+            if (pushed) {
+              px = pushed.x;
+              py = pushed.y;
+            }
+          }
+        }
       }
     }
 
-    for (let i = 0; i < world.rocks.length; i++) {
-      const r = world.rocks[i];
-      if (Math.abs(px - r.x) > 54 || Math.abs(py - r.y) > 54) continue;
-      const pushed = resolveCircleCircle(px, py, radius, r.x, r.y, r.r);
-      if (pushed) {
-        px = pushed.x;
-        py = pushed.y;
+    {
+      const reach = radius + 34;
+      const cx0 = cellOf(g, px - reach);
+      const cx1 = cellOf(g, px + reach);
+      const cy0 = cellOf(g, py - reach);
+      const cy1 = cellOf(g, py + reach);
+      for (let cy = cy0; cy <= cy1; cy++) {
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const ci = cy * cols + cx;
+          const end = g.rockStart[ci + 1];
+          for (let k = g.rockStart[ci]; k < end; k++) {
+            const r = rocks[g.rockItems[k]];
+            if (Math.abs(px - r.x) > 54 || Math.abs(py - r.y) > 54) continue;
+            const pushed = resolveCircleCircle(px, py, radius, r.x, r.y, r.r);
+            if (pushed) {
+              px = pushed.x;
+              py = pushed.y;
+            }
+          }
+        }
       }
     }
   }
@@ -817,19 +1296,33 @@ function resolveRectRect(
 }
 
 /**
- * 可拖拽重型家具的世界碰撞解算（单源真相：防止穿入墙体、完整门窗、其他家具、树石或越界）
+ * 可拖拽重型家具的世界碰撞解算（单源真相：防止穿入墙体、完整门窗、关闭的室内门、其他家具、树石或越界）
  */
 export function resolveFurnitureCollision(world: WorldData, furn: MovableFurniture): Vec2 {
   let fx = clamp(furn.x, -WORLD_HALF + 32, WORLD_HALF - furn.w - 32);
   let fy = clamp(furn.y, -WORLD_HALF + 32, WORLD_HALF - furn.h - 32);
+  const g = world.grid;
+  const cols = g.cols;
 
   for (let pass = 0; pass < 3; pass++) {
-    for (let i = 0; i < world.walls.length; i++) {
-      const w = world.walls[i];
-      const pushed = resolveRectRect(fx, fy, furn.w, furn.h, w.x, w.y, w.w, w.h);
-      if (pushed) {
-        fx = pushed.x;
-        fy = pushed.y;
+    {
+      const cx0 = cellOf(g, fx - 6);
+      const cx1 = cellOf(g, fx + furn.w + 6);
+      const cy0 = cellOf(g, fy - 6);
+      const cy1 = cellOf(g, fy + furn.h + 6);
+      for (let cy = cy0; cy <= cy1; cy++) {
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const ci = cy * cols + cx;
+          const end = g.wallStart[ci + 1];
+          for (let k = g.wallStart[ci]; k < end; k++) {
+            const w = world.walls[g.wallItems[k]];
+            const pushed = resolveRectRect(fx, fy, furn.w, furn.h, w.x, w.y, w.w, w.h);
+            if (pushed) {
+              fx = pushed.x;
+              fy = pushed.y;
+            }
+          }
+        }
       }
     }
 
@@ -839,6 +1332,16 @@ export function resolveFurnitureCollision(world: WorldData, furn: MovableFurnitu
       const solid = b.hp > 0 || b.kind === 'window';
       if (!solid) continue;
       const pushed = resolveRectRect(fx, fy, furn.w, furn.h, b.x, b.y, b.w, b.h);
+      if (pushed) {
+        fx = pushed.x;
+        fy = pushed.y;
+      }
+    }
+
+    for (let i = 0; i < world.interiorDoors.length; i++) {
+      const d = world.interiorDoors[i];
+      if (d.open) continue;
+      const pushed = resolveRectRect(fx, fy, furn.w, furn.h, d.x, d.y, d.w, d.h);
       if (pushed) {
         fx = pushed.x;
         fy = pushed.y;
@@ -855,23 +1358,35 @@ export function resolveFurnitureCollision(world: WorldData, furn: MovableFurnitu
       }
     }
 
-    for (let i = 0; i < world.trees.length; i++) {
-      const t = world.trees[i];
-      if (Math.abs(fx + furn.w * 0.5 - t.x) > 80 || Math.abs(fy + furn.h * 0.5 - t.y) > 80) continue;
-      const pushed = resolveCircleRect(t.x, t.y, t.trunkR, fx, fy, furn.w, furn.h);
-      if (pushed) {
-        fx -= pushed.x - t.x;
-        fy -= pushed.y - t.y;
-      }
-    }
-
-    for (let i = 0; i < world.rocks.length; i++) {
-      const r = world.rocks[i];
-      if (Math.abs(fx + furn.w * 0.5 - r.x) > 85 || Math.abs(fy + furn.h * 0.5 - r.y) > 85) continue;
-      const pushed = resolveCircleRect(r.x, r.y, r.r, fx, fy, furn.w, furn.h);
-      if (pushed) {
-        fx -= pushed.x - r.x;
-        fy -= pushed.y - r.y;
+    {
+      const cx0 = cellOf(g, fx - 30);
+      const cx1 = cellOf(g, fx + furn.w + 30);
+      const cy0 = cellOf(g, fy - 30);
+      const cy1 = cellOf(g, fy + furn.h + 30);
+      for (let cy = cy0; cy <= cy1; cy++) {
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const ci = cy * cols + cx;
+          const tEnd = g.treeStart[ci + 1];
+          for (let k = g.treeStart[ci]; k < tEnd; k++) {
+            const t = world.trees[g.treeItems[k]];
+            if (Math.abs(fx + furn.w * 0.5 - t.x) > 80 || Math.abs(fy + furn.h * 0.5 - t.y) > 80) continue;
+            const pushed = resolveCircleRect(t.x, t.y, t.trunkR, fx, fy, furn.w, furn.h);
+            if (pushed) {
+              fx -= pushed.x - t.x;
+              fy -= pushed.y - t.y;
+            }
+          }
+          const rEnd = g.rockStart[ci + 1];
+          for (let k = g.rockStart[ci]; k < rEnd; k++) {
+            const r = world.rocks[g.rockItems[k]];
+            if (Math.abs(fx + furn.w * 0.5 - r.x) > 85 || Math.abs(fy + furn.h * 0.5 - r.y) > 85) continue;
+            const pushed = resolveCircleRect(r.x, r.y, r.r, fx, fy, furn.w, furn.h);
+            if (pushed) {
+              fx -= pushed.x - r.x;
+              fy -= pushed.y - r.y;
+            }
+          }
+        }
       }
     }
   }
@@ -881,6 +1396,7 @@ export function resolveFurnitureCollision(world: WorldData, furn: MovableFurnitu
   return { x: fx, y: fy };
 }
 
+/** 庇护所专用室内判定（原语义保留：外框内缩 12px；发电机/围攻/HUD inHideout 等庇护所逻辑使用） */
 export function isPointInHideout(x: number, y: number): boolean {
   return (
     x >= HIDEOUT_RECT.x + 12 &&
@@ -890,8 +1406,19 @@ export function isPointInHideout(x: number, y: number): boolean {
   );
 }
 
+/** 任意建筑室内判定（单源：屋顶渐隐、室内混响/雨打屋顶、室内不落雨共用；与 isPointInHideout 同一内缩口径） */
+export function isPointIndoors(x: number, y: number): boolean {
+  return buildingIndexAt(BUILDINGS, x, y, 12) >= 0;
+}
+
+/** 点所在建筑索引（world.buildings / BUILDINGS 下标），不在室内返回 -1 */
+export function buildingAt(x: number, y: number): number {
+  return buildingIndexAt(BUILDINGS, x, y, 12);
+}
+
 export function getSurfaceAt(world: WorldData, x: number, y: number): 'wood' | 'mud' | 'gravel' {
-  for (let i = 0; i < world.zones.length; i++) {
+  // 后压入的地表更具体（建筑房间 '#' 地表覆盖整栋屋地表），逆序命中
+  for (let i = world.zones.length - 1; i >= 0; i--) {
     const z = world.zones[i];
     if (x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h) {
       return z.surface;
@@ -909,8 +1436,27 @@ export function getZoneNameAt(world: WorldData, x: number, y: number): string {
   return '迷雾深林';
 }
 
+// 遮挡线段对象池（每帧零分配：调用方在下一次调用前消费完结果）
+const segPool: Segment[] = [];
+let segUsed = 0;
+
+function pushSeg(out: Segment[], ax: number, ay: number, bx: number, by: number) {
+  let s = segPool[segUsed];
+  if (!s) {
+    s = { ax: 0, ay: 0, bx: 0, by: 0 };
+    segPool[segUsed] = s;
+  }
+  segUsed++;
+  s.ax = ax;
+  s.ay = ay;
+  s.bx = bx;
+  s.by = by;
+  out.push(s);
+}
+
 /**
  * Collect light-occluding segments near a light origin (Single Source of Truth with world walls/trees/barricades).
+ * 静态墙/树/石走网格索引；返回的线段来自对象池，仅在下一次调用前有效
  */
 export function collectOccluderSegments(
   world: WorldData,
@@ -920,26 +1466,45 @@ export function collectOccluderSegments(
   out: Segment[]
 ): Segment[] {
   out.length = 0;
+  segUsed = 0;
   const pad = maxDist + 40;
+  const g = world.grid;
+  const cols = g.cols;
 
   // Bounding box around light range
-  out.push(
-    { ax: ox - maxDist, ay: oy - maxDist, bx: ox + maxDist, by: oy - maxDist },
-    { ax: ox + maxDist, ay: oy - maxDist, bx: ox + maxDist, by: oy + maxDist },
-    { ax: ox + maxDist, ay: oy + maxDist, bx: ox - maxDist, by: oy + maxDist },
-    { ax: ox - maxDist, ay: oy + maxDist, bx: ox - maxDist, by: oy - maxDist }
-  );
+  pushSeg(out, ox - maxDist, oy - maxDist, ox + maxDist, oy - maxDist);
+  pushSeg(out, ox + maxDist, oy - maxDist, ox + maxDist, oy + maxDist);
+  pushSeg(out, ox + maxDist, oy + maxDist, ox - maxDist, oy + maxDist);
+  pushSeg(out, ox - maxDist, oy + maxDist, ox - maxDist, oy - maxDist);
 
-  for (let i = 0; i < world.walls.length; i++) {
-    const w = world.walls[i];
-    if (!w.blocksLight) continue;
-    if (w.x + w.w < ox - pad || w.x > ox + pad || w.y + w.h < oy - pad || w.y > oy + pad) continue;
-    out.push(
-      { ax: w.x, ay: w.y, bx: w.x + w.w, by: w.y },
-      { ax: w.x + w.w, ay: w.y, bx: w.x + w.w, by: w.y + w.h },
-      { ax: w.x + w.w, ay: w.y + w.h, bx: w.x, by: w.y + w.h },
-      { ax: w.x, ay: w.y + w.h, bx: w.x, by: w.y }
-    );
+  const cx0 = cellOf(g, ox - pad);
+  const cx1 = cellOf(g, ox + pad);
+  const cy0 = cellOf(g, oy - pad);
+  const cy1 = cellOf(g, oy + pad);
+
+  g.stamp = (g.stamp + 1) >>> 0;
+  if (g.stamp === 0) {
+    g.wallStamp.fill(0);
+    g.stamp = 1;
+  }
+  const stamp = g.stamp;
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const ci = cy * cols + cx;
+      const end = g.wallStart[ci + 1];
+      for (let k = g.wallStart[ci]; k < end; k++) {
+        const wi = g.wallItems[k];
+        if (g.wallStamp[wi] === stamp) continue;
+        g.wallStamp[wi] = stamp;
+        const w = world.walls[wi];
+        if (!w.blocksLight) continue;
+        if (w.x + w.w < ox - pad || w.x > ox + pad || w.y + w.h < oy - pad || w.y > oy + pad) continue;
+        pushSeg(out, w.x, w.y, w.x + w.w, w.y);
+        pushSeg(out, w.x + w.w, w.y, w.x + w.w, w.y + w.h);
+        pushSeg(out, w.x + w.w, w.y + w.h, w.x, w.y + w.h);
+        pushSeg(out, w.x, w.y + w.h, w.x, w.y);
+      }
+    }
   }
 
   // Intact barricades also block sight/light (Darkwood claustrophobia!)
@@ -949,10 +1514,25 @@ export function collectOccluderSegments(
     if (b.x + b.w < ox - pad || b.x > ox + pad || b.y + b.h < oy - pad || b.y > oy + pad) continue;
     if (b.orientation === 'h') {
       const my = b.y + b.h * 0.5;
-      out.push({ ax: b.x, ay: my, bx: b.x + b.w, by: my });
+      pushSeg(out, b.x, my, b.x + b.w, my);
     } else {
       const mx = b.x + b.w * 0.5;
-      out.push({ ax: mx, ay: b.y, bx: mx, by: b.y + b.h });
+      pushSeg(out, mx, b.y, mx, b.y + b.h);
+    }
+  }
+
+  // 关闭的室内门：门扇中线遮光（门缝不透光，开门后光线才泄入走廊）
+  const doors = world.interiorDoors;
+  for (let i = 0; i < doors.length; i++) {
+    const d = doors[i];
+    if (d.open) continue;
+    if (d.x + d.w < ox - pad || d.x > ox + pad || d.y + d.h < oy - pad || d.y > oy + pad) continue;
+    if (d.orientation === 'h') {
+      const my = d.y + d.h * 0.5;
+      pushSeg(out, d.x, my, d.x + d.w, my);
+    } else {
+      const mx = d.x + d.w * 0.5;
+      pushSeg(out, mx, d.y, mx, d.y + d.h);
     }
   }
 
@@ -969,38 +1549,43 @@ export function collectOccluderSegments(
     const x2 = m.x + m.w - inset;
     const y2 = m.y + m.h - inset;
     if (x2 <= x1 || y2 <= y1) continue;
-    out.push(
-      { ax: x1, ay: y1, bx: x2, by: y1 },
-      { ax: x2, ay: y1, bx: x2, by: y2 },
-      { ax: x2, ay: y2, bx: x1, by: y2 },
-      { ax: x1, ay: y2, bx: x1, by: y1 }
-    );
+    pushSeg(out, x1, y1, x2, y1);
+    pushSeg(out, x2, y1, x2, y2);
+    pushSeg(out, x2, y2, x1, y2);
+    pushSeg(out, x1, y2, x1, y1);
   }
 
   // Tree trunks cast crisp perpendicular shadow chords facing the light origin
-  for (let i = 0; i < world.trees.length; i++) {
-    const t = world.trees[i];
-    const dx = t.x - ox;
-    const dy = t.y - oy;
-    const d2 = dx * dx + dy * dy;
-    if (d2 > pad * pad || d2 < 25) continue;
-    const d = Math.sqrt(d2);
-    const nx = (-dy / d) * t.trunkR;
-    const ny = (dx / d) * t.trunkR;
-    out.push({ ax: t.x - nx, ay: t.y - ny, bx: t.x + nx, by: t.y + ny });
-  }
-
-  // Large boulders cast shadows too
-  for (let i = 0; i < world.rocks.length; i++) {
-    const r = world.rocks[i];
-    const dx = r.x - ox;
-    const dy = r.y - oy;
-    const d2 = dx * dx + dy * dy;
-    if (d2 > pad * pad || d2 < 25) continue;
-    const d = Math.sqrt(d2);
-    const nx = (-dy / d) * (r.r * 0.85);
-    const ny = (dx / d) * (r.r * 0.85);
-    out.push({ ax: r.x - nx, ay: r.y - ny, bx: r.x + nx, by: r.y + ny });
+  const pad2 = pad * pad;
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const ci = cy * cols + cx;
+      const tEnd = g.treeStart[ci + 1];
+      for (let k = g.treeStart[ci]; k < tEnd; k++) {
+        const t = world.trees[g.treeItems[k]];
+        const dx = t.x - ox;
+        const dy = t.y - oy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > pad2 || d2 < 25) continue;
+        const d = Math.sqrt(d2);
+        const nx = (-dy / d) * t.trunkR;
+        const ny = (dx / d) * t.trunkR;
+        pushSeg(out, t.x - nx, t.y - ny, t.x + nx, t.y + ny);
+      }
+      // Large boulders cast shadows too
+      const rEnd = g.rockStart[ci + 1];
+      for (let k = g.rockStart[ci]; k < rEnd; k++) {
+        const r = world.rocks[g.rockItems[k]];
+        const dx = r.x - ox;
+        const dy = r.y - oy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > pad2 || d2 < 25) continue;
+        const d = Math.sqrt(d2);
+        const nx = (-dy / d) * (r.r * 0.85);
+        const ny = (dx / d) * (r.r * 0.85);
+        pushSeg(out, r.x - nx, r.y - ny, r.x + nx, r.y + ny);
+      }
+    }
   }
 
   return out;

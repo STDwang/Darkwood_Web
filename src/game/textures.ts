@@ -14,7 +14,16 @@ export interface ProceduralAtlas {
   canopySprites: HTMLCanvasElement[];    // 4 种 320x320 电影级底层林冠（主干分枝骨架 + 深邃暗冠）
   canopyTopSprites: HTMLCanvasElement[]; // 4 种 320x320 电影级顶层细枝冠（用于双层高度视差与错相摇曳）
   trunkSprites: HTMLCanvasElement[];     // 2 种 128x128 粗犷爪状板根树干
+  // ?v-cine=b 专属：低频大尺度地表变化（湿泥/积水暗斑/枯叶斑块），384x384 无缝平铺，渲染时放大 GROUND_MACRO_SCALE 倍
+  groundMacroAlbedo: HTMLCanvasElement | null; // RGBA 叠加层（source-over）
+  groundMacroWet: HTMLCanvasElement | null;    // 仅 B 通道 = 额外积水遮罩（lighter 叠加到法线缓冲 B 通道）
+  // ?v-cine=b 专属：林冠地面投影的半透明“叶隙斑驳”图案（256x256 无缝平铺，A = 投影不透明度）
+  canopyDapple?: HTMLCanvasElement | null;
+  cine: boolean;
 }
+
+/** 低频地表叠加层在世界空间的放大倍数（384 * 6 = 2304 世界像素一个周期，接近整张 2600 地图，肉眼不可见重复） */
+export const GROUND_MACRO_SCALE = 6;
 
 // Fast tileable 2D value noise (period = N)
 function makeTileNoise(period: number, seed: number) {
@@ -1021,38 +1030,760 @@ function bakeTrunkSprite(variant: number, coldDecay: boolean): HTMLCanvasElement
   return c;
 }
 
-const cachedAtlasByMode: Partial<Record<'a' | 'b', ProceduralAtlas>> = {};
+// ============================================================================
+// ?v-cine=b 电影级重制烘焙（仅在启动或切换 Variant 时执行一次，零每帧开销）
+// ============================================================================
 
-export function getProceduralAtlas(paletteMode: 'a' | 'b' = 'b'): ProceduralAtlas {
-  const mode: 'a' | 'b' = paletteMode === 'a' ? 'a' : 'b';
-  const existing = cachedAtlasByMode[mode];
+function smooth01(e0: number, e1: number, x: number): number {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * 低频大尺度地表变化：大块湿泥、积水暗斑、枯叶斑块与干燥淤泥（无缝平铺，渲染时放大 GROUND_MACRO_SCALE 倍）。
+ * 明暗双向平衡：湿泥/积水压暗、枯叶/干泥轻微提亮，整体平均亮度基本不变，保持低饱和。
+ */
+function bakeGroundMacro(coldDecay: boolean): { albedo: HTMLCanvasElement; wet: HTMLCanvasElement } {
+  const S = 384;
+  const albedo = document.createElement('canvas');
+  albedo.width = S;
+  albedo.height = S;
+  const actx = albedo.getContext('2d')!;
+  const wet = document.createElement('canvas');
+  wet.width = S;
+  wet.height = S;
+  const wctx = wet.getContext('2d')!;
+
+  // 所有噪声周期均为整数，坐标按 nx * period 采样，保证 384 像素无缝平铺
+  const nWarp = makeTileNoise(4, 1601);
+  const nLow = makeTileNoise(3, 1201);
+  const nMid = makeTileNoise(7, 3307);
+  const nHi = makeTileNoise(19, 4409);
+  const nLeaf = makeTileNoise(5, 2203);
+  const nLeafHi = makeTileNoise(23, 6607);
+
+  const aImg = actx.createImageData(S, S);
+  const aData = aImg.data;
+  const wImg = wctx.createImageData(S, S);
+  const wData = wImg.data;
+
+  for (let y = 0; y < S; y++) {
+    const ny = y / S;
+    for (let x = 0; x < S; x++) {
+      const nx = x / S;
+      const warpX = (nWarp(nx * 4, ny * 4) - 0.5) * 0.16;
+      const warpY = (nWarp(nx * 4 + 1.7, ny * 4 + 2.9) - 0.5) * 0.16;
+      const hi = nHi(nx * 19, ny * 19);
+      // 湿度场：低频主导 + 中高频破碎边缘
+      const m = nLow((nx + warpX) * 3, (ny + warpY) * 3) * 0.6 + nMid((nx + warpX) * 7, (ny + warpY) * 7) * 0.28 + hi * 0.12;
+      const leafField = nLeaf((nx - warpX) * 5 + 2.3, (ny - warpY) * 5 + 0.7) * 0.75 + nLeafHi(nx * 23, ny * 23) * 0.25;
+
+      const mud = smooth01(0.56, 0.70, m);
+      const puddle = smooth01(0.68, 0.76, m);
+      const leaf = smooth01(0.58, 0.72, leafField) * (1 - mud);
+      const dry = smooth01(0.60, 0.74, 1 - m) * (1 - leaf) * (1 - mud);
+
+      // 手动 premultiplied “over” 合成：干泥 -> 枯叶 -> 湿泥 -> 积水（内联展开，避免逐像素创建闭包）
+      let cr = 0;
+      let cg = 0;
+      let cb = 0;
+      let ca = 0;
+      if (dry > 0.001) {
+        const a = 0.15 * dry;
+        cr = (coldDecay ? 80 : 76) * a;
+        cg = (coldDecay ? 77 : 78) * a;
+        cb = (coldDecay ? 70 : 64) * a;
+        ca = a;
+      }
+      if (leaf > 0.001) {
+        const a = 0.22 * leaf;
+        const lr = coldDecay ? 66 + hi * 14 : 64 + hi * 14;
+        const lg = coldDecay ? 53 + hi * 9 : 56 + hi * 10;
+        const lb = coldDecay ? 39 + hi * 6 : 34 + hi * 6;
+        cr = lr * a + cr * (1 - a);
+        cg = lg * a + cg * (1 - a);
+        cb = lb * a + cb * (1 - a);
+        ca = a + ca * (1 - a);
+      }
+      if (mud > 0.001) {
+        const a = 0.32 * mud;
+        cr = 17 * a + cr * (1 - a);
+        cg = 14 * a + cg * (1 - a);
+        cb = 12 * a + cb * (1 - a);
+        ca = a + ca * (1 - a);
+      }
+      if (puddle > 0.001) {
+        const a = 0.30 * puddle;
+        cr = 9 * a + cr * (1 - a);
+        cg = 11 * a + cg * (1 - a);
+        cb = 13 * a + cb * (1 - a);
+        ca = a + ca * (1 - a);
+      }
+
+      const o = (y * S + x) * 4;
+      if (ca > 0.0001) {
+        aData[o] = clamp(Math.round(cr / ca), 0, 255);
+        aData[o + 1] = clamp(Math.round(cg / ca), 0, 255);
+        aData[o + 2] = clamp(Math.round(cb / ca), 0, 255);
+        aData[o + 3] = clamp(Math.round(ca * 255), 0, 255);
+      } else {
+        aData[o] = 0;
+        aData[o + 1] = 0;
+        aData[o + 2] = 0;
+        aData[o + 3] = 0;
+      }
+
+      // 积水遮罩（B 通道），以 lighter 叠加进法线缓冲，驱动 WebGL 湿润高光与雨滴波纹
+      wData[o] = 0;
+      wData[o + 1] = 0;
+      wData[o + 2] = clamp(Math.round(puddle * 130 + mud * 22), 0, 255);
+      wData[o + 3] = 255;
+    }
+  }
+  actx.putImageData(aImg, 0, 0);
+  wctx.putImageData(wImg, 0, 0);
+  return { albedo, wet };
+}
+
+/** 在 9 个平铺偏移处重复绘制，保证跨越纹理边界的元素无缝衔接 */
+function wrapDraw(S: number, fn: (ox: number, oy: number) => void) {
+  for (const ox of [-S, 0, S]) {
+    for (const oy of [-S, 0, S]) fn(ox, oy);
+  }
+}
+
+/** 把随机长度序列缩放到总和恰为 total（保证平铺周期闭合、长短不一且错缝） */
+function randomPartition(total: number, minLen: number, maxLen: number, rng: () => number): number[] {
+  const parts: number[] = [];
+  let sum = 0;
+  while (sum < total) {
+    const v = minLen + rng() * (maxLen - minLen);
+    parts.push(v);
+    sum += v;
+  }
+  const k = total / sum;
+  for (let i = 0; i < parts.length; i++) parts[i] *= k;
+  return parts;
+}
+
+/**
+ * 破旧屋顶：焦油毡长条 + 腐朽木瓦（长短不一、错缝）+ 锈铁皮补丁，撕裂破口、苔藓与雨水污渍，整体低对比。
+ * 384 无缝平铺（大于庇护所屋顶尺寸，单个屋顶内不出现重复）。
+ */
+function bakeRoofCine(coldDecay: boolean): HTMLCanvasElement {
+  const S = 384;
+  const c = document.createElement('canvas');
+  c.width = S;
+  c.height = S;
+  const ctx = c.getContext('2d')!;
+  const rng = createRng(7349);
+
+  ctx.fillStyle = '#15130f';
+  ctx.fillRect(0, 0, S, S);
+
+  const rows = randomPartition(S, 16, 44, rng);
+  let y = 0;
+  for (let r = 0; r < rows.length; r++) {
+    const rowH = rows[r];
+    const segs = randomPartition(S, 46, 150, rng);
+    // 每一行起点随机错位，避免竖向接缝对齐
+    let x = rng() * S;
+    for (let s = 0; s < segs.length; s++) {
+      const segW = segs[s];
+      const pick = rng();
+      const kind = pick < 0.62 ? 'tar' : pick < 0.88 ? 'shingle' : 'tin';
+      const shade = Math.floor(rng() * 10) - 5;
+      const segX = x;
+      const segY = y;
+      const tilt = (rng() - 0.5) * 1.6;
+      const shingleW = randomPartition(segW, 9, 26, rng);
+      const shingleShade = shingleW.map(() => Math.floor(rng() * 9) - 5);
+      const shingleDrop = shingleW.map(() => rng() * 3.2);
+
+      wrapDraw(S, (ox, oy) => {
+        const sx0 = segX + ox;
+        const sy0 = segY + oy;
+        if (sx0 > S + 4 || sx0 + segW < -4 || sy0 > S + 4 || sy0 + rowH < -4) return;
+        if (kind === 'tar') {
+          // 焦油毡：近黑灰褐、轻微起皱
+          ctx.fillStyle = coldDecay
+            ? `rgb(${36 + shade}, ${33 + shade}, ${30 + shade})`
+            : `rgb(${38 + shade}, ${33 + shade}, ${27 + shade})`;
+          ctx.beginPath();
+          ctx.moveTo(sx0, sy0 + tilt);
+          ctx.lineTo(sx0 + segW, sy0 - tilt);
+          ctx.lineTo(sx0 + segW, sy0 + rowH - tilt);
+          ctx.lineTo(sx0, sy0 + rowH + tilt);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(12, 11, 9, 0.30)';
+          ctx.lineWidth = 1;
+          for (let k = 0; k < 3; k++) {
+            const wy = sy0 + rowH * (0.25 + k * 0.22);
+            ctx.beginPath();
+            ctx.moveTo(sx0 + 3, wy);
+            ctx.quadraticCurveTo(sx0 + segW * 0.5, wy + (k - 1) * 1.6, sx0 + segW - 3, wy + 0.8);
+            ctx.stroke();
+          }
+        } else if (kind === 'shingle') {
+          // 腐朽木瓦：宽度随机、下缘参差、个别缺失
+          let px = sx0;
+          for (let k = 0; k < shingleW.length; k++) {
+            const w = shingleW[k];
+            const sh = shingleShade[k];
+            // 约 1/9 的木瓦缺失，露出深色底层
+            if (sh <= -5) {
+              ctx.fillStyle = '#0b0a08';
+              ctx.fillRect(px + 0.5, sy0 + 1, w - 1, rowH - 2);
+            } else {
+              ctx.fillStyle = coldDecay
+                ? `rgb(${42 + sh}, ${37 + sh}, ${32 + sh})`
+                : `rgb(${46 + sh}, ${37 + sh}, ${28 + sh})`;
+              ctx.fillRect(px + 0.35, sy0 + 0.5, w - 0.7, rowH - 1 + shingleDrop[k]);
+              ctx.fillStyle = 'rgba(10, 9, 7, 0.2)';
+              ctx.fillRect(px + w * 0.42, sy0 + 2, 1, rowH * 0.7);
+            }
+            px += w;
+          }
+        } else {
+          // 锈铁皮补丁：细密瓦楞 + 锈斑
+          ctx.fillStyle = coldDecay
+            ? `rgb(${50 + shade}, ${40 + shade}, ${33 + shade})`
+            : `rgb(${56 + shade}, ${40 + shade}, ${28 + shade})`;
+          ctx.fillRect(sx0, sy0, segW, rowH + 1.5);
+          for (let k = 0; k < segW; k += 4) {
+            ctx.fillStyle = k % 8 === 0 ? 'rgba(0, 0, 0, 0.20)' : 'rgba(150, 132, 112, 0.06)';
+            ctx.fillRect(sx0 + k, sy0, 1.6, rowH + 1.5);
+          }
+          ctx.fillStyle = '#1c1916';
+          ctx.fillRect(sx0 + 3, sy0 + 3, 1.6, 1.6);
+          ctx.fillRect(sx0 + segW - 5, sy0 + rowH - 4, 1.6, 1.6);
+        }
+        // 上一行压住下一行的瓦唇阴影（参差的波浪下缘）
+        ctx.fillStyle = 'rgba(5, 5, 4, 0.48)';
+        ctx.beginPath();
+        ctx.moveTo(sx0, sy0 + rowH - 1.6);
+        const steps = Math.max(2, Math.floor(segW / 9));
+        for (let k = 1; k <= steps; k++) {
+          const px = sx0 + (segW * k) / steps;
+          ctx.lineTo(px, sy0 + rowH - 1.6 + Math.sin(px * 0.37 + sy0) * 0.9);
+        }
+        ctx.lineTo(sx0 + segW, sy0 + rowH + 1.4);
+        ctx.lineTo(sx0, sy0 + rowH + 1.4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = 'rgba(160, 152, 138, 0.045)';
+        ctx.fillRect(sx0 + 1, sy0 + 0.5, segW - 2, 1.2);
+      });
+      x += segW;
+    }
+    y += rowH;
+  }
+
+  // 撕裂破口：不规则暗洞 + 翻起的浅色毡边
+  for (let i = 0; i < 6; i++) {
+    const hx = rng() * S;
+    const hy = rng() * S;
+    const hr = 2.2 + rng() * 4.2;
+    const pts: number[] = [];
+    const n = 9;
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2;
+      const rr = hr * (0.55 + rng() * 0.6);
+      pts.push(Math.cos(a) * rr * 1.5, Math.sin(a) * rr);
+    }
+    wrapDraw(S, (ox, oy) => {
+      const cx = hx + ox;
+      const cy = hy + oy;
+      if (cx < -30 || cx > S + 30 || cy < -30 || cy > S + 30) return;
+      ctx.fillStyle = 'rgba(70, 64, 54, 0.14)';
+      ctx.beginPath();
+      for (let k = 0; k < n; k++) {
+        const px = cx + pts[k * 2] * 1.25;
+        const py = cy + pts[k * 2 + 1] * 1.25 - 0.8;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = 'rgba(10, 9, 8, 0.82)';
+      ctx.beginPath();
+      for (let k = 0; k < n; k++) {
+        const px = cx + pts[k * 2];
+        const py = cy + pts[k * 2 + 1];
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+    });
+  }
+
+  // 大面积苔藓、雨水污渍与锈水流痕（低对比，打破任何残余格子感）
+  for (let i = 0; i < 80; i++) {
+    const lx = rng() * S;
+    const ly = rng() * S;
+    const rad = 12 + rng() * 42;
+    const pick = rng();
+    const col = pick < 0.40
+      ? coldDecay ? 'rgba(46, 50, 44, 0.42)' : 'rgba(44, 58, 34, 0.40)' // 冷灰苔藓
+      : pick < 0.78
+      ? 'rgba(7, 7, 6, 0.40)' // 焦黑水渍
+      : coldDecay ? 'rgba(78, 52, 34, 0.22)' : 'rgba(86, 54, 30, 0.24)'; // 锈水
+    const sxScale = 0.6 + rng() * 0.9;
+    wrapDraw(S, (ox, oy) => {
+      const cx = lx + ox;
+      const cy = ly + oy;
+      if (cx < -rad * 1.6 || cx > S + rad * 1.6 || cy < -rad * 1.6 || cy > S + rad * 1.6) return;
+      const g = ctx.createRadialGradient(cx, cy, 1, cx, cy, rad);
+      g.addColorStop(0, col);
+      g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(sxScale, 1);
+      ctx.translate(-cx, -cy);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    });
+  }
+
+  // 细碎苔点
+  for (let i = 0; i < 300; i++) {
+    const px = rng() * S;
+    const py = rng() * S;
+    ctx.fillStyle = rng() > 0.5 ? 'rgba(58, 62, 54, 0.35)' : 'rgba(8, 8, 7, 0.38)';
+    ctx.fillRect(px, py, 1 + rng() * 2.4, 1 + rng() * 1.6);
+  }
+
+  return c;
+}
+
+interface CanopyPalette {
+  deep: string;
+  base: string;
+  mid: string;
+  lit: string;
+  rim: string;
+}
+
+function canopyPaletteFor(variantIndex: number, coldDecay: boolean): CanopyPalette {
+  if (coldDecay) {
+    if (variantIndex === 1) {
+      return { deep: '#0a0908', base: '#12100d', mid: '#1b1813', lit: '#2b261e', rim: 'rgba(122, 112, 94, 0.16)' };
+    }
+    if (variantIndex === 2) {
+      return { deep: '#090909', base: '#101110', mid: '#191a17', lit: '#292922', rim: 'rgba(120, 120, 110, 0.15)' };
+    }
+    return { deep: '#070908', base: '#0d100f', mid: '#151917', lit: '#232723', rim: 'rgba(118, 126, 124, 0.15)' };
+  }
+  if (variantIndex === 1) {
+    return { deep: '#0a0b07', base: '#13160d', mid: '#1d2213', lit: '#2f351e', rim: 'rgba(116, 112, 80, 0.17)' };
+  }
+  return { deep: '#070b08', base: '#0c140e', mid: '#142016', lit: '#223423', rim: 'rgba(100, 124, 90, 0.17)' };
+}
+
+/**
+ * 不规则电影级树冠（?v-cine=b）：噪声扰动半径的多瓣剪影、无任何描边，
+ * 叠加错落枝干骨架、暗核心、西北向受光边缘与外突针叶/枯枝打碎轮廓。
+ * top=true 时生成较小、更通透、枝干更多的顶层冠，用于原有双层视差与错相风摆。
+ */
+function bakeCanopyCine(variantIndex: number, coldDecay: boolean, top: boolean): HTMLCanvasElement {
+  const S = 320;
+  const c = document.createElement('canvas');
+  c.width = S;
+  c.height = S;
+  const ctx = c.getContext('2d')!;
+  const cx = S * 0.5;
+  const cy = S * 0.5;
+  const rng = createRng((top ? 9203 : 4421) + variantIndex * 1597);
+  const pal = canopyPaletteFor(variantIndex, coldDecay);
+
+  // 多瓣噪声扰动半径
+  const lobes = 3 + (variantIndex % 3);
+  const ph1 = rng() * Math.PI * 2;
+  const ph2 = rng() * Math.PI * 2;
+  const ph3 = rng() * Math.PI * 2;
+  const baseR = top ? S * 0.25 : S * 0.385;
+  const radiusAt = (a: number) =>
+    baseR *
+    (0.8 +
+      0.14 * Math.sin(lobes * a + ph1) +
+      0.08 * Math.sin((lobes * 2 + 1) * a + ph2) +
+      0.05 * Math.sin((lobes * 3 + 2) * a + ph3));
+  const maxR = S * 0.485;
+
+  // 1. 柔和外缘半影（多层低透明度剪影叠加，无硬边无描边）
+  if (!top) {
+    for (let k = 0; k < 4; k++) {
+      const sc = 1.1 - k * 0.03;
+      ctx.fillStyle = 'rgba(4, 5, 5, 0.10)';
+      ctx.beginPath();
+      for (let i = 0; i <= 72; i++) {
+        const a = (i / 72) * Math.PI * 2;
+        const r = Math.min(maxR, radiusAt(a) * sc);
+        const px = cx + 4 + Math.cos(a) * r;
+        const py = cy + 5 + Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // 2. 错落主枝骨架（叶团之下）
+  const boughs = top ? 6 + variantIndex : 8 + (variantIndex % 2) * 3;
+  for (let i = 0; i < boughs; i++) {
+    const a = (i / boughs) * Math.PI * 2 + (rng() - 0.5) * 0.6;
+    drawCrookedBranch(ctx, cx, cy, a, radiusAt(a) * (0.62 + rng() * 0.2), top ? 3.0 : 4.6, 1, rng, pal.deep);
+  }
+
+  // 2b. 噪声扰动的整体冠体（深色实底，保证剪影是连续体块而非散点）
+  if (!top) {
+    ctx.fillStyle = pal.deep;
+    ctx.beginPath();
+    for (let i = 0; i <= 96; i++) {
+      const a = (i / 96) * Math.PI * 2;
+      const r = radiusAt(a) * (0.84 + 0.06 * Math.sin(a * 11 + ph2) + 0.04 * Math.sin(a * 23 + ph3));
+      const px = cx + Math.cos(a) * r;
+      const py = cy + Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // 3. 叶团：每团保存不规则顶点半径，三遍绘制（暗底 -> 中间调 -> 西北向受光边缘）
+  const clumpCount = top ? 26 + variantIndex * 2 : 78 + variantIndex * 4;
+  const clumps: { x: number; y: number; r: number; outer: number; verts: number[] }[] = [];
+  for (let i = 0; i < clumpCount; i++) {
+    const a = rng() * Math.PI * 2;
+    const R = radiusAt(a);
+    const t = Math.sqrt(rng());
+    const rc = (top ? 10 + rng() * 12 : 14 + rng() * 16) * (1 - 0.3 * t);
+    const rr = Math.min(t * R, R * 1.02 - rc * 0.6);
+    // 顶点半径：随机后做一次环形平滑，再随机挖 1~2 个深缺口，得到自然不规则的叶团轮廓（避免星形锯齿）
+    const nv = 15 + Math.floor(rng() * 6);
+    const raw: number[] = [];
+    for (let k = 0; k < nv; k++) raw.push(0.62 + rng() * 0.5);
+    const verts: number[] = [];
+    for (let k = 0; k < nv; k++) {
+      verts.push((raw[(k + nv - 1) % nv] + raw[k] * 2 + raw[(k + 1) % nv]) * 0.25);
+    }
+    const notches = 1 + Math.floor(rng() * 2);
+    for (let k = 0; k < notches; k++) verts[Math.floor(rng() * nv)] *= 0.55;
+    clumps.push({ x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr, r: rc, outer: t, verts });
+  }
+  const clumpPath = (cl: { x: number; y: number; r: number; verts: number[] }, sc: number, ox: number, oy: number) => {
+    const nv = cl.verts.length;
+    ctx.beginPath();
+    for (let k = 0; k <= nv; k++) {
+      const kk = k % nv;
+      const a = (kk / nv) * Math.PI * 2;
+      const r = cl.r * sc * cl.verts[kk];
+      const px = cl.x + ox + Math.cos(a) * r;
+      const py = cl.y + oy + Math.sin(a) * r;
+      if (k === 0) ctx.moveTo(px, py);
+      else {
+        const am = ((kk - 0.5) / nv) * Math.PI * 2;
+        const rm = cl.r * sc * (cl.verts[kk] + cl.verts[(kk + nv - 1) % nv]) * 0.52;
+        ctx.quadraticCurveTo(cl.x + ox + Math.cos(am) * rm, cl.y + oy + Math.sin(am) * rm, px, py);
+      }
+    }
+    ctx.closePath();
+  };
+  // 暗底
+  ctx.fillStyle = pal.base;
+  for (const cl of clumps) {
+    clumpPath(cl, 1, 0, 0);
+    ctx.fill();
+  }
+  // 中间调（向西北偏移）
+  ctx.fillStyle = pal.mid;
+  for (const cl of clumps) {
+    if (cl.outer < 0.25 && !top) continue;
+    clumpPath(cl, 0.74, -cl.r * 0.18, -cl.r * 0.2);
+    ctx.fill();
+  }
+  // 叶团内部针叶/细叶笔触（朝西北受光方向短促排刷，提供油画肌理而非平涂色块）
+  ctx.lineCap = 'round';
+  for (const cl of clumps) {
+    const strokes = top ? 4 : 6;
+    for (let k = 0; k < strokes; k++) {
+      const a0 = rng() * Math.PI * 2;
+      const d0 = cl.r * rng() * 0.7;
+      const sx = cl.x + Math.cos(a0) * d0;
+      const sy = cl.y + Math.sin(a0) * d0;
+      const dirA = -2.3 + (rng() - 0.5) * 1.4;
+      const len = cl.r * (0.25 + rng() * 0.35);
+      ctx.strokeStyle = rng() > 0.55 ? pal.lit : pal.deep;
+      ctx.lineWidth = 1 + rng() * 1.5;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + Math.cos(dirA) * len, sy + Math.sin(dirA) * len);
+      ctx.stroke();
+    }
+  }
+  // 受光边缘（仅部分外圈叶团）
+  ctx.fillStyle = pal.lit;
+  for (let i = 0; i < clumps.length; i++) {
+    const cl = clumps[i];
+    if (cl.outer < 0.45 || i % 3 === 0) continue;
+    clumpPath(cl, 0.42, -cl.r * 0.34, -cl.r * 0.38);
+    ctx.fill();
+  }
+
+  // 4. 暗核心与叶团间的深隙
+  const core = ctx.createRadialGradient(cx, cy, 2, cx, cy, baseR * (top ? 0.5 : 0.46));
+  core.addColorStop(0, top ? 'rgba(5, 6, 6, 0.55)' : 'rgba(4, 5, 5, 0.86)');
+  core.addColorStop(1, 'rgba(4, 5, 5, 0)');
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(cx, cy, baseR * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(4, 5, 5, 0.42)';
+  for (let i = 0; i < (top ? 8 : 18); i++) {
+    const a = rng() * Math.PI * 2;
+    const r = radiusAt(a) * (0.3 + rng() * 0.5);
+    ctx.beginPath();
+    ctx.ellipse(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 4 + rng() * 7, 2 + rng() * 4, a, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 5. 沿剪影外缘的针叶短笔触（与叶团同色，打碎轮廓而非描边）
+  ctx.lineCap = 'round';
+  const needles = top ? 70 : 170;
+  for (let i = 0; i < needles; i++) {
+    const a = rng() * Math.PI * 2;
+    const r0 = radiusAt(a) * (0.84 + rng() * 0.14);
+    const len = 3 + rng() * 8;
+    const da = (rng() - 0.5) * 0.5;
+    const r1 = Math.min(maxR, r0 + len);
+    ctx.strokeStyle = rng() > 0.3 ? pal.base : pal.mid;
+    ctx.lineWidth = 1 + rng() * 1.4;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+    ctx.lineTo(cx + Math.cos(a + da * 0.1) * r1, cy + Math.sin(a + da * 0.1) * r1);
+    ctx.stroke();
+  }
+
+  // 6. 外突的枯枝（多层错落、不等长）
+  const twigs = top ? 4 + variantIndex : 3 + variantIndex;
+  for (let i = 0; i < twigs; i++) {
+    const a = rng() * Math.PI * 2;
+    const R = radiusAt(a);
+    const r0 = R * (0.55 + rng() * 0.25);
+    const len = Math.min(maxR - r0 - 6, R * (0.3 + rng() * 0.3));
+    if (len < 8) continue;
+    drawCrookedBranch(ctx, cx + Math.cos(a) * r0, cy + Math.sin(a) * r0, a, len, top ? 2.0 : 2.6, 1, rng, 'rgba(10, 9, 8, 0.9)');
+  }
+
+  // 7. 西北向极克制的冷雾受光碎点
+  ctx.fillStyle = pal.rim;
+  for (let i = 0; i < (top ? 26 : 34); i++) {
+    const a = -Math.PI * 0.75 + (rng() - 0.5) * 1.5;
+    const r = radiusAt(a) * (0.45 + rng() * 0.5);
+    ctx.beginPath();
+    ctx.ellipse(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 2.5 + rng() * 5, 1.4 + rng() * 2.4, a + 0.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  return c;
+}
+
+/** 与调色无关、可在 cine a/b 之间共享的基础烘焙件（避免切换 Variant 时重复烘焙地面与墙体） */
+/**
+ * ?v-cine=b：林冠斑驳地面投影的半透明“叶隙透光”图案（256x256 无缝平铺，世界锚定，零外部资源）。
+ * RGB = 偏冷的深蓝绿灰阴影色（不是纯黑），A = 投影不透明度：浓密叶团处约 0.48，叶隙光斑处降到约 0.12。
+ * 用于替换旧版均一 rgba(4,5,5,0.44) 的实心冠影；平均不透明度（约 0.38）略低于旧版，不额外推高暗部占比。
+ */
+function bakeCanopyDapple(coldDecay: boolean): HTMLCanvasElement {
+  const S = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = S;
+  canvas.height = S;
+  const ctx = canvas.getContext('2d')!;
+  const img = ctx.createImageData(S, S);
+  const d = img.data;
+
+  const nLeaf = makeTileNoise(6, 4241);
+  const nGap = makeTileNoise(14, 6007);
+  const nFine = makeTileNoise(32, 8123);
+  const cr = coldDecay ? 6 : 5;
+  const cg = coldDecay ? 9 : 7;
+  const cb = coldDecay ? 12 : 7;
+
+  for (let y = 0; y < S; y++) {
+    const ny = y / S;
+    for (let x = 0; x < S; x++) {
+      const nx = x / S;
+      const leaf = nLeaf(nx * 6, ny * 6) * 0.55 + nGap(nx * 14, ny * 14) * 0.45;
+      const gap = smooth01(0.54, 0.68, leaf); // 叶隙透光光斑
+      const clump = smooth01(0.42, 0.28, leaf); // 浓密叶团（更深）
+      const fine = nFine(nx * 32, ny * 32) - 0.5;
+      const a = clamp(0.42 - gap * 0.30 + clump * 0.07 + fine * 0.06, 0.08, 0.52);
+      const o = (y * S + x) * 4;
+      d[o] = cr;
+      d[o + 1] = cg;
+      d[o + 2] = cb;
+      d[o + 3] = Math.round(a * 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+/**
+ * R3 ?v-cine=b：地面高频颗粒肌理（参考 ART_DIRECTION_R3 第 3 条"炭笔在粗纸上的皴擦"）。
+ * 在基础林地反照率（256 无缝平铺）之上烘焙一份带颗粒的副本：逐像素 ±9% 亮度抖动 + 2px 级细噪 +
+ * 1–3px 明暗碎点（碎石/苔点）+ 小片落叶。明暗碎点数量与透明度大致对称，平均亮度基本不变、对比克制；
+ * 与渲染层按 GROUND_MACRO_SCALE 放大的低频湿泥斑叠加，形成"大块明暗 + 细碎肌理"。只在启动/切换 Variant 时执行一次。
+ */
+function bakeGroundGrain(base: HTMLCanvasElement, coldDecay: boolean): HTMLCanvasElement {
+  const S = base.width;
+  const c = document.createElement('canvas');
+  c.width = S;
+  c.height = S;
+  const ctx = c.getContext('2d')!;
+  ctx.drawImage(base, 0, 0);
+
+  // 1) 逐像素颗粒：独立哈希抖动（天然无缝）+ 周期 128 的 2px 级细噪（S = 256 时可整除，保证无缝）
+  const img = ctx.getImageData(0, 0, S, S);
+  const d = img.data;
+  const rng = createRng(6791);
+  const nGrain = makeTileNoise(128, 3571);
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const o = (y * S + x) * 4;
+      const k = 1 + (rng() - 0.5) * 0.18 + (nGrain((x / S) * 128, (y / S) * 128) - 0.5) * 0.16;
+      d[o] = clamp(Math.round(d[o] * k), 0, 255);
+      d[o + 1] = clamp(Math.round(d[o + 1] * k), 0, 255);
+      d[o + 2] = clamp(Math.round(d[o + 2] * k), 0, 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // 2) 1–3px 明暗碎点（碎石、苔点、泥粒），越界处 9 宫格重复绘制保证无缝
+  const light = coldDecay ? 'rgba(112, 106, 96, 0.30)' : 'rgba(104, 102, 86, 0.30)';
+  const dark = coldDecay ? 'rgba(10, 9, 8, 0.36)' : 'rgba(10, 10, 8, 0.36)';
+  for (let i = 0; i < 900; i++) {
+    const x = rng() * S;
+    const y = rng() * S;
+    const r = 0.5 + rng() * rng() * 1.2;
+    ctx.fillStyle = rng() < 0.5 ? light : dark;
+    wrapDraw(S, (ox, oy) => {
+      const px = x + ox;
+      const py = y + oy;
+      if (px < -3 || px > S + 3 || py < -3 || py > S + 3) return;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  // 3) 小片落叶（2–4px 细长椭圆，灰褐/骨白，低对比）
+  for (let i = 0; i < 240; i++) {
+    const x = rng() * S;
+    const y = rng() * S;
+    const rx = 1.2 + rng() * 1.6;
+    const ry = 0.5 + rng() * 0.6;
+    const rot = rng() * Math.PI;
+    const t = rng();
+    ctx.fillStyle =
+      t < 0.45 ? 'rgba(74, 60, 46, 0.34)' : t < 0.75 ? 'rgba(96, 90, 80, 0.24)' : 'rgba(20, 17, 14, 0.34)';
+    wrapDraw(S, (ox, oy) => {
+      const px = x + ox;
+      const py = y + oy;
+      if (px < -5 || px > S + 5 || py < -5 || py > S + 5) return;
+      ctx.beginPath();
+      ctx.ellipse(px, py, rx, ry, rot, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+  return c;
+}
+
+interface BaseAtlasParts {
+  groundAlbedo: HTMLCanvasElement;
+  groundNormalWet: HTMLCanvasElement;
+  woodAlbedo: HTMLCanvasElement;
+  woodNormalWet: HTMLCanvasElement;
+  wallLogAlbedo: HTMLCanvasElement;
+  wallRuinAlbedo: HTMLCanvasElement;
+  trunkSprites: HTMLCanvasElement[];
+}
+
+const cachedBaseByPalette: Partial<Record<'a' | 'b', BaseAtlasParts>> = {};
+const cachedAtlasByMode: Record<string, ProceduralAtlas> = {};
+
+function getBaseParts(mode: 'a' | 'b'): BaseAtlasParts {
+  const existing = cachedBaseByPalette[mode];
   if (existing) return existing;
-
   const coldDecay = mode === 'b';
   const ground = bakeGroundPair(coldDecay);
   const wood = bakeWoodPair(coldDecay);
-  const atlas: ProceduralAtlas = {
+  const parts: BaseAtlasParts = {
     groundAlbedo: ground.albedo,
     groundNormalWet: ground.normalWet,
     woodAlbedo: wood.albedo,
     woodNormalWet: wood.normalWet,
     wallLogAlbedo: bakeWallLogAlbedo(coldDecay),
     wallRuinAlbedo: bakeWallRuinAlbedo(coldDecay),
-    roofAlbedo: bakeRoofShingles(coldDecay),
-    canopySprites: [
-      bakeCanopyVariant(0, coldDecay),
-      bakeCanopyVariant(1, coldDecay),
-      bakeCanopyVariant(2, coldDecay),
-      bakeCanopyVariant(3, coldDecay),
-    ],
-    canopyTopSprites: [
-      bakeCanopyTopVariant(0, coldDecay),
-      bakeCanopyTopVariant(1, coldDecay),
-      bakeCanopyTopVariant(2, coldDecay),
-      bakeCanopyTopVariant(3, coldDecay),
-    ],
     trunkSprites: [bakeTrunkSprite(0, coldDecay), bakeTrunkSprite(1, coldDecay)],
   };
-  cachedAtlasByMode[mode] = atlas;
+  cachedBaseByPalette[mode] = parts;
+  return parts;
+}
+
+/**
+ * 获取程序化图集：按 palette（a/b）× cine（a/b）缓存。
+ * cine='a' 时与 release_v1 完全一致；cine='b' 替换屋顶、树冠并新增低频地表叠加层。
+ */
+export function getProceduralAtlas(paletteMode: 'a' | 'b' = 'b', cineMode: 'a' | 'b' = 'a'): ProceduralAtlas {
+  const mode: 'a' | 'b' = paletteMode === 'a' ? 'a' : 'b';
+  const cine = cineMode === 'b';
+  const key = `${mode}_${cine ? 'b' : 'a'}`;
+  const existing = cachedAtlasByMode[key];
+  if (existing) return existing;
+
+  const coldDecay = mode === 'b';
+  const base = getBaseParts(mode);
+  const macro = cine ? bakeGroundMacro(coldDecay) : null;
+  const atlas: ProceduralAtlas = {
+    // R3：cine=b 使用叠加高频颗粒肌理的地面副本；cine=a 与 release_v1 完全一致
+    groundAlbedo: cine ? bakeGroundGrain(base.groundAlbedo, coldDecay) : base.groundAlbedo,
+    groundNormalWet: base.groundNormalWet,
+    woodAlbedo: base.woodAlbedo,
+    woodNormalWet: base.woodNormalWet,
+    wallLogAlbedo: base.wallLogAlbedo,
+    wallRuinAlbedo: base.wallRuinAlbedo,
+    roofAlbedo: cine ? bakeRoofCine(coldDecay) : bakeRoofShingles(coldDecay),
+    canopySprites: cine
+      ? [0, 1, 2, 3].map((i) => bakeCanopyCine(i, coldDecay, false))
+      : [
+          bakeCanopyVariant(0, coldDecay),
+          bakeCanopyVariant(1, coldDecay),
+          bakeCanopyVariant(2, coldDecay),
+          bakeCanopyVariant(3, coldDecay),
+        ],
+    canopyTopSprites: cine
+      ? [0, 1, 2, 3].map((i) => bakeCanopyCine(i, coldDecay, true))
+      : [
+          bakeCanopyTopVariant(0, coldDecay),
+          bakeCanopyTopVariant(1, coldDecay),
+          bakeCanopyTopVariant(2, coldDecay),
+          bakeCanopyTopVariant(3, coldDecay),
+        ],
+    trunkSprites: base.trunkSprites,
+    groundMacroAlbedo: macro ? macro.albedo : null,
+    groundMacroWet: macro ? macro.wet : null,
+    canopyDapple: cine ? bakeCanopyDapple(coldDecay) : null,
+    cine,
+  };
+  cachedAtlasByMode[key] = atlas;
   return atlas;
 }

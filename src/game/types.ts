@@ -18,6 +18,8 @@ export interface Inventory {
   traps: number;
   weaponTier: 1 | 2; // 1 = Spiked Board, 2 = Rusted Axe
   relayParts: number; // 已拾取但尚未安装的信号中继零件数
+  /** 手枪备弹（弹匣内子弹在 engine.equip.mag；稀缺资源，部分容器少量掉落） */
+  ammo: number;
 }
 
 /** 可拖拽重型家具防线实体（单源真相：同时参与碰撞与遮挡） */
@@ -165,6 +167,8 @@ export interface BearTrap {
   y: number;
   armed: boolean;
   snaredTimer: number;
+  /** 放置时钢齿张开动画进度 0..1（equipment 推进，renderer 只读；旧数据缺省视为已张开） */
+  openT?: number;
 }
 
 export interface ActiveFlare {
@@ -204,6 +208,131 @@ export interface Enemy {
   targetBarricadeId: string | null;
   patrolX: number;
   patrolY: number;
+  /** 攻击前摇剩余秒数（>0 表示正在蓄势后仰，结束瞬间扑击结算；与 attackCd 串行） */
+  windup: number;
+  /** 本次前摇总时长（秒），供渲染计算前摇进度 */
+  windupDur: number;
+  /** 扑击前冲可视计时（秒，递减） */
+  lunge: number;
+  /** 窥伺伏低混合 0..1（engine 平滑推进，渲染只读） */
+  crouch: number;
+  /** 抓挠/扑击交替出手侧（1 / -1） */
+  clawSide: number;
+}
+
+/** 怪物死亡倒地动画实体（预分配池；结束淡出时才烘焙尸体贴花） */
+export interface DyingEnemy {
+  active: boolean;
+  kind: EnemyKind;
+  x: number;
+  y: number;
+  angle: number;
+  r: number;
+  /** 倒地方向（世界角度，通常为致命一击方向） */
+  fallDir: number;
+  /** 已过秒数 */
+  timer: number;
+  walkPhase: number;
+  seed: number;
+  decalPushed: boolean;
+}
+
+/** 乌鸦个体（预分配池，零 GC） */
+export interface Crow {
+  active: boolean;
+  /** 所属鸦群索引 */
+  flock: number;
+  state: 'ground' | 'takeoff' | 'fly';
+  x: number;
+  y: number;
+  /** 离地高度 0..1（渲染视差用） */
+  z: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  /** ground：下次动作倒计时；takeoff：错峰起飞延迟 */
+  timer: number;
+  /** 啄食动作 1→0 */
+  peck: number;
+  /** 跳步动作 1→0 */
+  hop: number;
+  /** 张喙鸣叫 1→0 */
+  caw: number;
+  wingPhase: number;
+  flyTime: number;
+  seed: number;
+}
+
+/** 鸦群（预分配池） */
+export interface CrowFlock {
+  active: boolean;
+  x: number;
+  y: number;
+  alarmed: boolean;
+  cawCd: number;
+}
+
+/** 玩家限时交互动作种类（Darkwood 式：按下开始，自动进行至完成或被打断） */
+export type PlayerActionKind = 'none' | 'search' | 'barricade' | 'harvest' | 'refuel';
+
+/** 玩家当前限时交互动作（engine.updatePlayer 唯一推进） */
+export interface PlayerAction {
+  kind: PlayerActionKind;
+  /** 已进行秒数 */
+  timer: number;
+  /** 总时长（秒） */
+  duration: number;
+  /** 目标 id：容器 / 门窗 / 幽光菇 id；加油为 'generator' */
+  targetId: string;
+  targetX: number;
+  targetY: number;
+  /** 钉板已完成锤击次数 0..3 */
+  hitsDone: number;
+  /** 搜刮翻找音效倒计时 */
+  sfxCd: number;
+  /** 搜刮材质（决定翻找音色） */
+  material: 'wood' | 'metal' | 'cloth';
+  /** 动作期间锁定朝向（平滑转向目标） */
+  faceAngle: number;
+}
+
+/** 玩家姿态混合层（engine 推进的时间平滑权重，renderer 只读，不写回） */
+export interface PlayerPose {
+  /** 行走混合 0..1 */
+  move: number;
+  /** 疾跑混合 0..1 */
+  sprint: number;
+  /** 限时交互姿态混合 0..1 */
+  action: number;
+  /** 当前/最近一次交互姿态（淡出期间保留，保证收势不跳变） */
+  actionKind: PlayerActionKind;
+  /** 最近一次交互动作进度 0..1（淡出期间冻结） */
+  actionProgress: number;
+  /** 蓄力后拉混合 0..1 */
+  charge: number;
+  /** 体力耗尽扶膝喘息混合 0..1 */
+  exhaust: number;
+  /** 体力耗尽滞回标记（<10 进入，>38 退出） */
+  exhausted: boolean;
+  /** 受击后仰计时（秒，递减） */
+  hurt: number;
+  /** 受击来向（世界角度） */
+  hurtAngle: number;
+  /** 闪避落地屈膝计时（秒，递减） */
+  land: number;
+  /** 锤击砸下瞬间计时（秒，递减） */
+  hammerImpact: number;
+  /** 满蓄微闪计时（秒，递减） */
+  chargeFull: number;
+  /** 闪避残影（3 帧环形缓冲：x/y/朝向/剩余寿命） */
+  ghostX: number[];
+  ghostY: number[];
+  ghostA: number[];
+  ghostLife: number[];
+  ghostCursor: number;
+  ghostCd: number;
+  /** 腿部步态相位（单位：步，0..2 循环；整数时刻 = 脚落地帧，与 playFootstep 同步；cos(π·gait)>0 左脚在前） */
+  gait: number;
 }
 
 export interface SoundRipple {
@@ -305,6 +434,21 @@ export interface HudSnapshot {
   backend: 'webgl2' | 'canvas2d';
   fps: number;
   entities: number;
+  /** R3 装备：当前武器与弹药（可选字段，旧快照缺省兼容） */
+  equip?: EquipHudInfo;
+}
+
+/** HUD 用装备摘要（engine/equipment.ts 生成，UI 只读） */
+export interface EquipHudInfo {
+  mode: 'torch' | 'pistol';
+  mag: number;
+  magSize: number;
+  reserve: number;
+  torchInHand: boolean;
+  torchLit: boolean;
+  /** 手中火把燃料 0..100 */
+  torchFuel: number;
+  reloading: boolean;
 }
 
 export interface PilotInput {

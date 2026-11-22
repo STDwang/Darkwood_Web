@@ -4,6 +4,8 @@ export type Lang = 'zh' | 'en';
 
 const EN_DICT: Record<string, string> = {
   '幽林余烬': 'Blackwood Ember',
+  // 标题页极小号副标题：中文模式显示英文名，英文模式反向显示中文名作为题签
+  'BLACKWOOD EMBER': '幽林余烬',
   '在黑暗吞噬庇护所前，搜集一切能活下去的东西。':
     'Scavenge everything you need before the woods swallow your shelter.',
   '开始求生': 'Start Survival',
@@ -184,6 +186,55 @@ const EN_DICT: Record<string, string> = {
   '收集信号零件 0/3 · 探索地标': 'Find Relay Parts 0/3 · Explore Landmarks',
   '收集信号零件 1/3 · 探索地标': 'Find Relay Parts 1/3 · Explore Landmarks',
   '收集信号零件 2/3 · 探索地标': 'Find Relay Parts 2/3 · Explore Landmarks',
+  // 第二轮 HUD：小地图地标缩写与无障碍分组名
+  '货车': 'Truck',
+  '锯木厂': 'Mill',
+  '营地': 'Camp',
+  '祭坛': 'Shrine',
+  '资源': 'Supplies',
+  '快捷栏': 'Quickbar',
+  // R3 内心独白浮字（key 即中文原句；见 thoughts.ts THOUGHT_TEXT）
+  '树在低语，听起来如此平静……': 'The trees whisper so calmly...',
+  '这里的空气不对劲。': 'The air here is wrong.',
+  '车上的人……都去哪儿了？': 'The people from the truck... where did they go?',
+  '锯子还在等着谁回来。': 'The saws are still waiting for someone to come back.',
+  '田地荒了很久，可脚印是新的。': 'These fields died long ago. The footprints are fresh.',
+  '每扇窗都朝着林子，像在等谁。': 'Every window faces the woods, as if waiting for someone.',
+  '钟不再响了。可我还是听见了什么。': 'The bell has stopped ringing. Yet I still hear something.',
+  '医生……他也没能救自己。': "The doctor... he couldn't save himself either.",
+  '水面下有东西在看着我。': 'Something beneath the water is watching me.',
+  '有人在那里跳舞……不，不可能。': "Someone is dancing out there... no. It can't be.",
+  '她又在雨里跳舞了。': "She's dancing in the rain again.",
+  '是谁在敲那张桌子？': 'Who keeps knocking on that table?',
+  '那把椅子……刚才是朝着桌子的。': 'That chair... it was facing the table.',
+  '灯灭了。黑暗在靠近。': 'The light is gone. The dark is closing in.',
+  '天黑了。我不该还在外面。': "It's dark. I shouldn't still be out here.",
+  '天黑了。守住这点光。': 'Night. Keep this little light burning.',
+  '我的腿快撑不住了。': 'My legs are about to give out.',
+  '血止不住……我得找东西包扎。': "The bleeding won't stop... I need to bind it.",
+  // R3 装备：火把 ⇄ 手枪
+  '火把': 'Torch',
+  '手枪': 'Pistol',
+  '射击': 'Fire',
+  '换弹': 'Reload',
+  '切换武器': 'Swap Weapon',
+  '手枪子弹': 'Pistol Rounds',
+  '按 E 捡起火把': 'Press E to Pick Up Torch',
+  '火把丢在了身侧——靠近按 E 捡回': 'Torch dropped beside you — press E nearby to pick it up',
+  '火把在地上——靠近按 E 捡回': 'Your torch is on the ground — walk over and press E',
+  '弹匣已空——按 R 换弹': 'Magazine empty — press R to reload',
+  '没有子弹了': 'Out of ammo',
+  '没有备用子弹': 'No spare rounds',
+  '火把熄灭了——按 R 用木材+燃油重新点燃': 'Torch burned out — press R to rewrap it (Wood + Fuel)',
+  '重新点燃火把需要 木材×1 + 燃油×1': 'Relighting the torch needs 1 Wood + 1 Fuel',
+  '火把重新燃起来了': 'The torch flares back to life',
+  '火把还很旺': 'The torch is still burning strong',
+  '蓄力重击与道具': 'Charged Strikes & Tools',
+  '左键挥动火把轻点快劈、长按蓄力爆发重击，右键投掷照明弹，1-4 快捷道具，C 制作，J 翻阅日志':
+    'LMB swings the torch (tap = quick strike, hold = charged heavy), RMB throws a flare, 1-4 quick items, C craft, J journal',
+  '火把与手枪': 'Torch & Pistol',
+  'Q 切换火把/手枪（切枪时火把丢在身侧继续燃烧，靠近按 E 捡回）；手枪左键射击、R 换弹；火把燃尽后按 R 用木材+燃油重新点燃':
+    'Q swaps torch/pistol (the torch is dropped beside you and keeps burning — press E to pick it up); pistol: LMB fire, R reload; a burnt-out torch is relit with R (Wood + Fuel)',
 };
 
 const STORAGE_KEY = 'blackwood_lang_v1';

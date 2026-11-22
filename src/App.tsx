@@ -24,6 +24,8 @@ import {
   TrapInkIcon,
   WeatherInkIcon,
 } from './components/InkIcons';
+import GameHud from './components/GameHud';
+import { MinimapExploreState } from './components/Minimap';
 import { AudioFX } from './game/audio';
 import { I18n, Lang } from './game/i18n';
 import { Quality, QualityTier } from './game/quality';
@@ -76,6 +78,9 @@ export default function App() {
   });
   const [moveKnob, setMoveKnob] = useState({ x: 0, y: 0 });
   const [aimKnob, setAimKnob] = useState({ x: 0, y: 0 });
+
+  // 小地图探索网格（UI 层自维护，跨 HUD 卸载/重挂保留；Minimap 检测到 engine.world 更换即新开局重置）
+  const exploreRef = useRef<MinimapExploreState | null>(null);
 
   const layersRef = useRef<LayerId[]>(layers);
   layersRef.current = layers;
@@ -188,7 +193,7 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (
         e.repeat &&
-        ['KeyF', 'KeyC', 'KeyJ', 'Tab', 'Escape', 'Digit1', 'Digit2', 'Digit3', 'Digit4'].includes(
+        ['KeyF', 'KeyC', 'KeyJ', 'KeyQ', 'KeyR', 'Tab', 'Escape', 'Digit1', 'Digit2', 'Digit3', 'Digit4'].includes(
           e.code
         )
       ) {
@@ -232,6 +237,12 @@ export default function App() {
       } else if (e.code === 'Space' && !e.repeat) {
         e.preventDefault();
         rt.engine.triggerDodge();
+      } else if (e.code === 'KeyQ') {
+        // R3：火把 ⇄ 手枪（切枪时火把丢到身侧，靠近按 E 捡回）
+        rt.engine.toggleWeapon();
+      } else if (e.code === 'KeyR') {
+        // R3：手枪换弹 / 火把模式下用木材+燃油重新点燃
+        rt.engine.reloadWeapon();
       } else if (e.code === 'Digit1') {
         rt.engine.useQuickSlot(1);
       } else if (e.code === 'Digit2') {
@@ -431,7 +442,8 @@ export default function App() {
 
   return (
     <div id="app" className="bg-[#070807] text-[#e7e2d8]">
-      <canvas id="view" ref={canvasRef} className="block w-full h-full cursor-crosshair" />
+      {/* 游戏画布：骨白圆环准星 CSS 光标（标题层/弹层覆盖画布时自动回到系统指针） */}
+      <canvas id="view" ref={canvasRef} className="block w-full h-full ember-cursor" />
 
       {/* Smooth pitch-black #veil curtain */}
       <div
@@ -442,6 +454,8 @@ export default function App() {
       />
 
       {/* TITLE SCREEN OVER LIVE RAINY FOREST */}
+      {/* 电影开场：title-seq 系列按 场景(#veil 淡出) → 标题 → 副标题 → 按钮 依次显影，总时长 ≤ 2.2s；
+          只动画透明度/模糊，按钮从第一帧起即可点击（详见 index.css） */}
       {hud?.mode === 'title' && (
         <>
           <div
@@ -457,8 +471,8 @@ export default function App() {
               paddingBottom: 'var(--gb)',
             }}
           >
-            <div className="flex items-center justify-between">
-              <span className="text-xs tracking-widest text-[#b8ae9c]/80 whitespace-nowrap">
+            <div className="title-seq title-seq--chrome flex items-center justify-between">
+              <span className="text-xs tracking-widest text-[#a89f8e]/75 whitespace-nowrap">
                 {lang === 'zh' ? '东欧暗林恐怖生存 · 实时法线光影' : 'Eastern European Survival Horror'}
               </span>
               <div className="flex items-center gap-3">
@@ -466,7 +480,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => pushLayer('dev')}
-                    className="min-h-[44px] px-3 text-xs font-medium text-[#d8be8a] hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
+                    className="min-h-[44px] px-3 text-xs font-medium text-[#c9b083] hover:text-[#ecdcbc] transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
                   >
                     <SlidersHorizontal className="w-3.5 h-3.5" />
                     <span>Variants</span>
@@ -479,7 +493,7 @@ export default function App() {
                     AudioFX.setMuted(!muted);
                   }}
                   aria-label={t('声音')}
-                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[#c7bfb0] hover:text-white transition-colors"
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[#b4ab9a] hover:text-[#ecdcbc] transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-[#b87b3b]/80"
                 >
                   {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                 </button>
@@ -487,45 +501,52 @@ export default function App() {
             </div>
 
             <div className="max-w-xl my-auto">
-              <h1
-                className="font-display text-4xl sm:text-6xl font-semibold tracking-wider text-[#f0e6d2] leading-tight drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)]"
-                style={{ textWrap: 'balance' }}
-              >
-                {t('幽林余烬')}
-              </h1>
-              <p className="mt-4 text-sm sm:text-base text-[#cec4b2]/90 max-w-md leading-relaxed">
+              {/* 标题：系统宋体/衬线 + 宽字距骨白，SVG 噪声蒙版做旧（外层负责模糊显影动画） */}
+              <div className="title-seq title-seq--1">
+                <h1
+                  className={`title-mark ${lang === 'en' ? 'is-latin' : ''}`}
+                  style={{ textWrap: 'balance' }}
+                >
+                  <span className="title-mark__ink">{t('幽林余烬')}</span>
+                </h1>
+              </div>
+              <p className="title-sub title-seq title-seq--2">{t('BLACKWOOD EMBER')}</p>
+              <p className="title-seq title-seq--3 mt-5 text-sm sm:text-base text-[#b9af9c]/85 max-w-md leading-relaxed">
                 {t('在黑暗吞噬庇护所前，搜集一切能活下去的东西。')}
               </p>
 
-              <div className="mt-8 flex flex-wrap items-center gap-4">
+              {/* 克制的文字按钮：左侧余烬点/短横线，悬停余烬微光 + 字距展开；文案与可访问名称保持不变 */}
+              <div className="title-seq title-seq--4 mt-8 flex flex-wrap items-center gap-x-6 gap-y-1 sm:gap-x-8">
                 <button
                   type="button"
                   onClick={startSurvival}
-                  className="min-h-[46px] px-7 py-2.5 bg-[#b87b3b] hover:bg-[#cc8b46] text-[#110e0a] font-semibold text-sm tracking-wide rounded transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e5b968]"
+                  className={`title-btn title-btn--primary ${lang === 'en' ? 'is-latin' : ''}`}
                 >
-                  <Play className="w-4 h-4 fill-current" />
+                  <span className="title-btn__ember" aria-hidden="true" />
                   <span>{t('开始求生')}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => pushLayer('controls')}
-                  className="min-h-[46px] px-5 py-2.5 border border-[#b8ae9c]/32 hover:border-[#d8be8a]/65 bg-black/40 text-[#efe8da] text-sm font-medium rounded transition-colors whitespace-nowrap shrink-0"
+                  className={`title-btn ${lang === 'en' ? 'is-latin' : ''}`}
                 >
-                  {t('操作说明')}
+                  <span className="title-btn__ember" aria-hidden="true" />
+                  <span>{t('操作说明')}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => pushLayer('settings')}
-                  className="min-h-[46px] px-5 py-2.5 border border-[#b8ae9c]/25 hover:border-[#d8be8a]/60 bg-black/30 text-[#c7bfb0] hover:text-white text-sm font-medium rounded transition-colors whitespace-nowrap shrink-0"
+                  className={`title-btn ${lang === 'en' ? 'is-latin' : ''}`}
                 >
-                  {t('设置')}
+                  <span className="title-btn__ember" aria-hidden="true" />
+                  <span>{t('设置')}</span>
                 </button>
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-xs text-[#a19888] gap-3">
+            <div className="title-seq title-seq--chrome flex items-center justify-between text-xs text-[#91897a] gap-3">
               <span className="hidden sm:inline">
                 {lang === 'zh'
                   ? 'WASD 移动 · 鼠标照明 · 长按 E 搜刮与加固 · 左键挥击 · 右键照明弹 · J 翻阅日志'
@@ -542,8 +563,34 @@ export default function App() {
         </>
       )}
 
-      {/* ACTIVE PLAY / HOLD HUD */}
-      {hud && (hud.mode === 'play' || hud.mode === 'hold') && (
+      {/* 电影遮幅黑边：仅标题页展开，开局（mode 离开 title）时 scaleY 平滑收起；纯装饰、不拦截点击 */}
+      {hud && (
+        <>
+          <div
+            aria-hidden="true"
+            className={`letterbox letterbox--top ${hud.mode === 'title' ? 'is-on' : ''}`}
+          />
+          <div
+            aria-hidden="true"
+            className={`letterbox letterbox--bottom ${hud.mode === 'title' ? 'is-on' : ''}`}
+          />
+        </>
+      )}
+
+      {/* ACTIVE PLAY / HOLD HUD —— paper=b：第二轮"融入世界的旧物"HUD + 实时小地图（独立组件） */}
+      {hud && (hud.mode === 'play' || hud.mode === 'hold') && usePaperUI && (
+        <GameHud
+          hud={hud}
+          t={t}
+          isDev={isDev}
+          runtimeRef={runtimeRef}
+          exploreRef={exploreRef}
+          onOpenLayer={pushLayer}
+        />
+      )}
+
+      {/* paper=a 对照组：保留旧版卡片式 HUD（暗色极简 clean-hud 样式），供 A/B 截图比对 */}
+      {hud && (hud.mode === 'play' || hud.mode === 'hold') && !usePaperUI && (
         <div
           className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between"
           style={{
@@ -558,7 +605,7 @@ export default function App() {
             <div
               className={`pointer-events-auto min-w-0 flex-1 sm:flex-initial sm:min-w-[260px] flex flex-col gap-1.5 rounded px-2.5 py-2 sm:px-3.5 sm:py-2.5 ${hudCls}`}
             >
-              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 sm:gap-2 text-xs sm:text-sm font-medium text-[#f0e6d2]">
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 sm:gap-2 text-xs sm:text-sm font-medium text-[#ddd2bc]">
                 {phaseIcon}
                 <span className="font-mono-num whitespace-nowrap">{t('第 {n} 天', { n: hud.day })}</span>
                 <span className="text-[#8a8070]" aria-hidden="true">·</span>
@@ -612,7 +659,7 @@ export default function App() {
                       ? 'text-[#c95347]'
                       : hud.generatorFuel < 20
                       ? 'text-[#de9b5c]'
-                      : 'text-[#efe6d5]'
+                      : 'text-[#d8cdb8]'
                   }
                 >
                   {hud.generatorFuel}%
@@ -622,7 +669,12 @@ export default function App() {
                 )}
               </div>
 
-              <div className="text-[11px] text-[#d8be8a]/90 leading-snug">
+              {/* 当前目标：paper 变体下改为手写日志便签样式（楷体 + 左侧细余烬线），a 变体保持原样 */}
+              <div
+                className={`text-[11px] sm:text-[12px] leading-snug ${
+                  usePaperUI ? 'hud-note' : 'text-[#d8be8a]/90'
+                }`}
+              >
                 {t(hud.objectiveText)}
               </div>
             </div>
@@ -633,7 +685,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => pushLayer('dev')}
-                  className={`min-h-[44px] px-2.5 sm:px-3 rounded text-xs font-medium text-[#e6c98e] hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${hudCls}`}
+                  className={`min-h-[44px] px-2.5 sm:px-3 rounded text-xs font-medium text-[#e6c98e] hover:text-[#ecdcbc] transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${hudCls}`}
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" />
                   <span className="font-mono-num">
@@ -646,7 +698,7 @@ export default function App() {
                 type="button"
                 onClick={() => pushLayer('journal')}
                 aria-label={t('日志')}
-                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3.5 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
+                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3.5 rounded text-xs font-medium text-[#d8cdb8] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
               >
                 <BookOpen className="w-4 h-4 text-[#c8a974]" />
                 <span className="hidden sm:inline">{t('日志')}</span>
@@ -657,7 +709,7 @@ export default function App() {
                 type="button"
                 onClick={() => pushLayer('craft')}
                 aria-label={t('制作')}
-                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3.5 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
+                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3.5 rounded text-xs font-medium text-[#d8cdb8] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
               >
                 <Hammer className="w-4 h-4 text-[#d1a464]" />
                 <span className="hidden sm:inline">{t('制作')}</span>
@@ -668,7 +720,7 @@ export default function App() {
                 type="button"
                 onClick={() => pushLayer('pause')}
                 aria-label={t('暂停')}
-                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs font-medium text-[#efe6d5] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
+                className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs font-medium text-[#d8cdb8] hover:border-[#d8be8a]/60 transition-colors whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 ${hudCls}`}
               >
                 <Pause className="w-4 h-4" />
                 <span className="hidden sm:inline">{t('暂停')}</span>
@@ -676,19 +728,31 @@ export default function App() {
             </div>
           </div>
 
-          {/* Center-top atmospheric narrative toasts */}
+          {/* Center-top atmospheric narrative toasts（日志便签式提示条，位置与尺寸不变） */}
           <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-24 z-20 flex flex-col items-center gap-1.5 w-[min(90vw,440px)]">
             {hud.toasts.map((msg) => (
               <div
                 key={msg.id}
-                className={`px-3.5 py-1.5 rounded text-xs sm:text-sm text-center backdrop-blur-xs border ${
-                  msg.tone === 'danger'
-                    ? 'bg-[#2a0f0e]/92 border-[#b03c34]/55 text-[#f2c4bf]'
-                    : msg.tone === 'warn'
-                    ? 'bg-[#271b0e]/92 border-[#c9873c]/48 text-[#f0d6b1]'
-                    : msg.tone === 'loot'
-                    ? 'bg-[#121e18]/92 border-[#5f9c7c]/42 text-[#cfe8d7]'
-                    : 'bg-[#14120f]/90 border-[#b8ae9c]/25 text-[#efe6d5]'
+                className={`px-3.5 py-1.5 rounded text-xs sm:text-sm text-center border ${
+                  usePaperUI
+                    ? `ink-note ${
+                        msg.tone === 'danger'
+                          ? 'ink-note--danger'
+                          : msg.tone === 'warn'
+                          ? 'ink-note--warn'
+                          : msg.tone === 'loot'
+                          ? 'ink-note--loot'
+                          : ''
+                      }`
+                    : `backdrop-blur-xs ${
+                        msg.tone === 'danger'
+                          ? 'bg-[#2a0f0e]/92 border-[#b03c34]/55 text-[#f2c4bf]'
+                          : msg.tone === 'warn'
+                          ? 'bg-[#271b0e]/92 border-[#c9873c]/48 text-[#f0d6b1]'
+                          : msg.tone === 'loot'
+                          ? 'bg-[#121e18]/92 border-[#5f9c7c]/42 text-[#cfe8d7]'
+                          : 'bg-[#14120f]/90 border-[#b8ae9c]/25 text-[#d8cdb8]'
+                      }`
                 }`}
               >
                 {t(msg.text)}
@@ -702,7 +766,7 @@ export default function App() {
               <div>
                 <div className="flex items-center justify-between text-xs mb-1">
                   <span className="text-[#c7bfb0]">{t('生命')}</span>
-                  <span className="font-mono-num text-[#f0e6d2]">
+                  <span className="font-mono-num font-medium text-[#ddd2bc]">
                     {hud.hp}/{hud.maxHp} · {hpStatus}
                   </span>
                 </div>
@@ -720,7 +784,7 @@ export default function App() {
                 <div>
                   <div className="flex items-center justify-between text-[11px] mb-1 text-[#a8a091]">
                     <span>{t('体力')}</span>
-                    <span className="font-mono-num">{hud.stamina}</span>
+                    <span className="font-mono-num font-medium">{hud.stamina}</span>
                   </div>
                   <div className="h-1 bg-[#1e1d19] rounded-xs overflow-hidden">
                     <div
@@ -736,7 +800,7 @@ export default function App() {
                       {t('电量')}
                     </span>
                     <span
-                      className={`font-mono-num ${
+                      className={`font-mono-num font-medium ${
                         hud.battery < 20 ? 'text-[#d96c54]' : 'text-[#d8be8a]'
                       }`}
                     >
@@ -764,7 +828,7 @@ export default function App() {
                       <ResourceInkIcon kind={item.key} className="w-3.5 h-3.5" />
                     </span>
                     <span className="text-[#b2a896]">{t(item.label)}</span>
-                    <span className="font-mono-num font-medium text-[#f0e6d2]">
+                    <span className="font-mono-num font-medium text-[#ddd2bc]">
                       {hud.inv[item.key]}
                     </span>
                   </div>
@@ -792,7 +856,7 @@ export default function App() {
                   type="button"
                   onClick={() => runtimeRef.current?.engine.useQuickSlot(1)}
                   aria-label={t('照明弹')}
-                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#efe6d5] hover:border-[#df8158]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#d8cdb8] hover:border-[#df8158]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
                 >
                   <span className="hidden sm:inline font-mono-num text-[10px] text-[#8a8070]">1</span>
                   <FlareInkIcon className="w-3.5 h-3.5 text-[#df8158]" />
@@ -804,7 +868,7 @@ export default function App() {
                   type="button"
                   onClick={() => runtimeRef.current?.engine.useQuickSlot(2)}
                   aria-label={t('草药绷带')}
-                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#efe6d5] hover:border-[#8dbb88]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#d8cdb8] hover:border-[#8dbb88]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
                 >
                   <span className="hidden sm:inline font-mono-num text-[10px] text-[#8a8070]">2</span>
                   <BandageInkIcon className="w-3.5 h-3.5 text-[#8dbb88]" />
@@ -816,7 +880,7 @@ export default function App() {
                   type="button"
                   onClick={() => runtimeRef.current?.engine.useQuickSlot(3)}
                   aria-label={t('捕兽夹')}
-                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#efe6d5] hover:border-[#a4b0b6]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#d8cdb8] hover:border-[#a4b0b6]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
                 >
                   <span className="hidden sm:inline font-mono-num text-[10px] text-[#8a8070]">3</span>
                   <TrapInkIcon className="w-3.5 h-3.5 text-[#b4bec2]" />
@@ -828,7 +892,7 @@ export default function App() {
                   type="button"
                   onClick={() => runtimeRef.current?.engine.useQuickSlot(4)}
                   aria-label={t('电池')}
-                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#efe6d5] hover:border-[#e2cb77]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
+                  className={`min-w-[44px] min-h-[44px] px-2.5 sm:px-3 rounded text-xs text-[#d8cdb8] hover:border-[#e2cb77]/70 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${hudCls}`}
                 >
                   <span className="hidden sm:inline font-mono-num text-[10px] text-[#8a8070]">4</span>
                   <ResourceInkIcon kind="battery" className="w-3.5 h-3.5 text-[#e2cb77]" />
@@ -882,6 +946,27 @@ export default function App() {
                   {hud.draggingFurniture ? t('松开') : t('搜刮')}
                 </button>
               </div>
+              {/* R3：触控切换火把/手枪（≥44px）；手枪模式下额外显示换弹 */}
+              <div className="flex items-center gap-2">
+                {hud.equip?.mode === 'pistol' && (
+                  <button
+                    type="button"
+                    aria-label={t('换弹')}
+                    onTouchStart={() => runtimeRef.current?.engine.reloadWeapon()}
+                    className="min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/88 border border-[#b8ae9c]/45 text-xs font-medium text-[#efe8da] whitespace-nowrap"
+                  >
+                    {t('换弹')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-label={t('切换武器')}
+                  onTouchStart={() => runtimeRef.current?.engine.toggleWeapon()}
+                  className="min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/88 border border-[#c9824f]/55 text-xs font-medium text-[#efe8da] whitespace-nowrap"
+                >
+                  {hud.equip?.mode === 'pistol' ? t('火把') : t('手枪')}
+                </button>
+              </div>
               <button
                 type="button"
                 onTouchStart={() => {
@@ -896,7 +981,7 @@ export default function App() {
                 }}
                 className="min-w-[52px] min-h-[52px] rounded-full bg-[#6d241f]/88 border border-[#d67a70]/60 text-xs font-medium text-[#f5e1de] whitespace-nowrap"
               >
-                {t('攻击')}
+                {hud.equip?.mode === 'pistol' ? t('射击') : t('攻击')}
               </button>
             </div>
 
@@ -1313,7 +1398,11 @@ export default function App() {
                     ['移动与闪避', 'WASD / 方向键移动，Shift 冲刺，Space 消耗体力向移动/反方向急退闪避'],
                     ['照明与视线', '鼠标控制视线锥光方向，按 F 开关手电节省电量'],
                     ['搜集、家具与防线', '长按 E 搜刮物资箱；按 E 拖拽/松开屋内家具堵门、加固门窗、装零件或加油'],
-                    ['蓄力重击与道具', '左键轻点快劈、长按蓄力爆发重击，右键投掷照明弹，1-4 快捷道具，C 制作，J 翻阅日志'],
+                    ['蓄力重击与道具', '左键挥动火把轻点快劈、长按蓄力爆发重击，右键投掷照明弹，1-4 快捷道具，C 制作，J 翻阅日志'],
+                    [
+                      '火把与手枪',
+                      'Q 切换火把/手枪（切枪时火把丢在身侧继续燃烧，靠近按 E 捡回）；手枪左键射击、R 换弹；火把燃尽后按 R 用木材+燃油重新点燃',
+                    ],
                   ].map(([title, desc]) => (
                     <div key={title} className={`p-3 rounded ${cardCls}`}>
                       <div className="font-medium text-[#f0e6d2]">{t(title)}</div>

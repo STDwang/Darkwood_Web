@@ -111,3 +111,61 @@ export function WeatherInkIcon({ kind, className = 'w-3.5 h-3.5' }: { kind: Weat
     </svg>
   );
 }
+
+// ================================================================
+// 第二轮 HUD：无框墨线图标（手绘抖动笔触，currentColor 着色，统一 24×24 视框）
+// ================================================================
+
+/** 日志：摊开的旧本子，左页两行墨迹 */
+export function JournalInkIcon({ className = 'w-5 h-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M3.4 6.3c2.9-1 5.7-.6 8.4 1.1l.1 12.1c-2.7-1.6-5.5-1.9-8.4-1.1Z" />
+      <path d="M20.6 6.1c-2.9-.9-5.8-.5-8.7 1.3l.1 12.1c2.8-1.7 5.7-2 8.7-1.2Z" />
+      <path d="M5.9 9.7c1.5-.3 2.9-.1 4.2.6M6 12.7c1.4-.2 2.7 0 4 .5M14 10.1c1.3-.5 2.6-.6 4-.3" strokeWidth="1.05" opacity="0.7" />
+    </svg>
+  );
+}
+
+/** 制作：锈锤（斜置锤头 + 木柄） */
+export function CraftInkIcon({ className = 'w-5 h-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M13.4 10.1 4.9 18.6a1.6 1.6 0 0 0 2.3 2.3l8.6-8.5" />
+      <path d="m11.9 5.6 2.7-1.8c1.6-.6 3.4-.2 4.5.9l.8.9-2 .7.3 2-1.9 1.9-2.1-.3-1.3 1.3-2.4-2.4Z" />
+      <path d="M8.1 17.3l-.9-.9" strokeWidth="1.05" opacity="0.65" />
+    </svg>
+  );
+}
+
+/** 暂停：两道粗墨竖笔 + 一圈未闭合的淡墨环 */
+export function PauseInkIcon({ className = 'w-5 h-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M9.6 7.4c-.2 3.2-.1 6.3.3 9.4" strokeWidth="2.1" />
+      <path d="M14.6 7.2c.1 3.2 0 6.4-.3 9.6" strokeWidth="2.1" />
+      <path d="M12.1 2.9c5.1-.1 9.1 3.9 9 9.1-.1 5-4.2 9-9.2 8.9-5-.1-8.9-4.2-8.8-9.2.1-3.3 1.9-6.2 4.7-7.7" strokeWidth="1.05" opacity="0.5" />
+    </svg>
+  );
+}
+
+/** 手电：铁皮筒身 + 灯头 + 开关钮 */
+export function FlashlightInkIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M8.3 3.6h7.3l-1.1 5.1.1 10.7c0 .8-.6 1.3-1.5 1.3h-2c-.9 0-1.5-.5-1.5-1.3l.1-10.7Z" />
+      <path d="M9.3 8.7h5.2" />
+      <path d="M12 12.1v2.7" strokeWidth="1.9" />
+    </svg>
+  );
+}
+
+/** 炉火 / 发电机：双层火舌 */
+export function FlameInkIcon({ className = 'w-3.5 h-3.5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M12 21c-3.6 0-6-2.4-6-5.6 0-3 2.1-4.6 3.2-6.9.4 1.4 1.2 2.3 2.1 2.7-.2-3 .9-5.8 3.1-7.7-.2 2.9 1.2 4.6 2.6 6.4 1 1.3 1.6 2.7 1.6 4.4 0 3.9-2.9 6.7-6.6 6.7Z" />
+      <path d="M12 18.4c-1.3 0-2.2-.9-2.2-2.1 0-1 .8-1.8 1.4-2.7.3.9 1 1.3 1.6 1.4.6.6 1.1 1.2 1.1 2 0 .8-.8 1.4-1.9 1.4Z" strokeWidth="1.1" opacity="0.7" />
+    </svg>
+  );
+}
