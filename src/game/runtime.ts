@@ -1,0 +1,224 @@
+// Runtime loop & standardized window.__game headless testing contract (penpen-gamePlus-skill §05)
+
+import { AudioFX } from './audio';
+import { FIXED_DT, GameEngine } from './engine';
+import { I18n } from './i18n';
+import { Quality } from './quality';
+import { GameRenderer } from './renderer';
+import { PilotInput, TimePhase, WeatherKind } from './types';
+import { Variants } from './variants';
+
+export interface UiBridge {
+  getState: () => string;
+  isModalOpen: () => boolean;
+  layerTop: () => string | null;
+  startGame: () => void;
+  setMenu: (open: boolean) => void;
+}
+
+export class GameRuntime {
+  readonly engine: GameEngine;
+  readonly renderer: GameRenderer;
+  private canvas: HTMLCanvasElement;
+  private rafId = 0;
+  private lastTime = 0;
+  private accum = 0;
+  private manualMode = false;
+  private destroyed = false;
+  private uiBridge: UiBridge | null = null;
+  private onFirstFrame: (() => void) | null = null;
+  private firstFrameFired = false;
+  private unsubs: Array<() => void> = [];
+
+  constructor(canvas: HTMLCanvasElement, onFirstFrame?: () => void) {
+    this.canvas = canvas;
+    this.onFirstFrame = onFirstFrame ?? null;
+    this.engine = new GameEngine(19847);
+    this.renderer = new GameRenderer(canvas);
+
+    const params = new URLSearchParams(window.location.search);
+    this.manualMode = params.has('manual');
+
+    this.handleResize();
+    window.addEventListener('resize', this.handleResize);
+
+    // Re-size offscreen FBOs & re-render immediately when Quality or Variants change in hold mode
+    this.unsubs.push(Quality.subscribe(() => this.handleResize()));
+    this.unsubs.push(
+      Variants.subscribe(() => {
+        if (this.engine.mode === 'hold' || this.engine.mode === 'title') {
+          this.renderer.render(this.engine);
+        }
+      })
+    );
+
+    document.addEventListener('visibilitychange', this.handleVisibility);
+
+    this.exposeHeadlessHandle();
+
+    this.renderer.render(this.engine);
+    this.notifyFirstFrame();
+
+    if (!this.manualMode) {
+      this.lastTime = performance.now();
+      this.rafId = requestAnimationFrame(this.loop);
+    }
+  }
+
+  setUiBridge(bridge: UiBridge) {
+    this.uiBridge = bridge;
+  }
+
+  private notifyFirstFrame() {
+    if (this.firstFrameFired) return;
+    this.firstFrameFired = true;
+    this.onFirstFrame?.();
+  }
+
+  private handleResize = () => {
+    const rect = this.canvas.getBoundingClientRect();
+    const w = rect.width || window.innerWidth;
+    const h = rect.height || window.innerHeight;
+    this.renderer.resize(w, h);
+    if (this.engine.mode === 'hold' || this.engine.mode === 'title') {
+      this.renderer.render(this.engine);
+    }
+  };
+
+  private handleVisibility = () => {
+    if (document.hidden && this.engine.mode === 'play') {
+      this.uiBridge?.setMenu(true);
+    }
+  };
+
+  private loop = (now: number) => {
+    if (this.destroyed) return;
+    const rawFrameMs = now - this.lastTime;
+    this.lastTime = now;
+    const clampedSec = Math.min(rawFrameMs / 1000, 0.1);
+
+    const jsStart = performance.now();
+    this.accum += clampedSec;
+    let steps = 0;
+    while (this.accum >= FIXED_DT && steps < 5) {
+      this.engine.step(FIXED_DT, this.renderer.width, this.renderer.height);
+      this.accum -= FIXED_DT;
+      steps++;
+    }
+    if (steps === 5) this.accum = 0;
+
+    this.renderer.render(this.engine);
+    const jsMs = performance.now() - jsStart;
+
+    if (rawFrameMs > 0) {
+      this.engine.fps = this.engine.fps * 0.9 + (1000 / rawFrameMs) * 0.1;
+      Quality.reportFrame(rawFrameMs, jsMs);
+    }
+
+    this.rafId = requestAnimationFrame(this.loop);
+  };
+
+  stepFrame(dt = FIXED_DT, draw = true, pilotInput?: PilotInput) {
+    this.engine.step(dt, this.renderer.width, this.renderer.height, pilotInput);
+    if (draw) this.renderer.render(this.engine);
+  }
+
+  simulate(
+    seconds: number,
+    steerFn?: (t: number) => PilotInput,
+    opts: { draw?: boolean } = {}
+  ) {
+    const draw = opts.draw ?? false;
+    const steps = Math.max(1, Math.round(seconds / FIXED_DT));
+    const prevNoDraw = this.renderer.drawDisabled;
+    if (!draw) this.renderer.setNoDraw(true);
+    for (let i = 0; i < steps; i++) {
+      const inp = steerFn ? steerFn(this.engine.simTime) : undefined;
+      this.engine.step(FIXED_DT, this.renderer.width, this.renderer.height, inp);
+      if (draw) this.renderer.render(this.engine);
+    }
+    this.renderer.setNoDraw(prevNoDraw);
+    return this.getStats();
+  }
+
+  getStats() {
+    return {
+      backend: this.renderer.activeBackend,
+      drawCalls: this.renderer.lastDrawCalls,
+      entities: this.engine.enemies.length + this.engine.flares.length + this.engine.traps.length,
+      mode: this.engine.mode,
+      day: this.engine.day,
+      phase: this.engine.phase,
+      weather: this.engine.weather.kind,
+      hp: Math.round(this.engine.player.hp),
+      x: Math.round(this.engine.player.x),
+      y: Math.round(this.engine.player.y),
+      containersLooted: this.engine.containersLooted,
+      fps: Math.round(this.engine.fps),
+    };
+  }
+
+  private exposeHeadlessHandle() {
+    const api = {
+      boot: async () => {
+        this.handleResize();
+        this.renderer.render(this.engine);
+        return 'ok';
+      },
+      frame: (dt = FIXED_DT) => this.stepFrame(dt, true),
+      sim: (seconds: number, steerFn?: (t: number) => PilotInput, opts?: { draw?: boolean }) =>
+        this.simulate(seconds, steerFn, opts),
+      noDraw: (on = true) => this.renderer.setNoDraw(on),
+      reset: (seed = 19847, startPlaying = true) => {
+        this.engine.reset(seed, startPlaying);
+        this.renderer.render(this.engine);
+      },
+      tod: (phase: TimePhase) => {
+        this.engine.jumpTimeOfDay(phase);
+        this.renderer.render(this.engine);
+      },
+      weather: (kind: WeatherKind) => {
+        this.engine.jumpWeather(kind);
+        this.renderer.render(this.engine);
+      },
+      set: (path: string, value: unknown) => {
+        if (path === 'Quality.tier' && typeof value === 'number') {
+          Quality.setTier(value as 0 | 1 | 2, false);
+        } else if (path.startsWith('Variants.') && typeof value === 'string') {
+          Variants.set(path.slice('Variants.'.length), value);
+        } else if (path === 'I18n.lang' && (value === 'zh' || value === 'en')) {
+          I18n.setLang(value);
+        }
+        this.renderer.render(this.engine);
+      },
+      pilot: () => this.engine.createPilot(),
+      ui: () => ({
+        state: this.uiBridge?.getState() ?? this.engine.mode,
+        open: this.uiBridge?.isModalOpen() ?? false,
+        layerTop: () => this.uiBridge?.layerTop() ?? null,
+        go: () => this.uiBridge?.startGame(),
+        menu: (open: boolean) => this.uiBridge?.setMenu(open),
+      }),
+      shot: async () => this.canvas.toDataURL('image/png'),
+      stats: () => this.getStats(),
+      m: {
+        Game: this.engine,
+        Render: this.renderer,
+        Quality,
+        Variants,
+        I18n,
+        AudioFX,
+      },
+    };
+
+    (window as unknown as { __game: typeof api }).__game = api;
+  }
+
+  destroy() {
+    this.destroyed = true;
+    cancelAnimationFrame(this.rafId);
+    window.removeEventListener('resize', this.handleResize);
+    document.removeEventListener('visibilitychange', this.handleVisibility);
+    this.unsubs.forEach((u) => u());
+  }
+}
