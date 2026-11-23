@@ -414,6 +414,7 @@ export default function App() {
   };
 
   const usePaperUI = Variants.val.paper !== 'a';
+  const guidanceMode = isDev && Variants.val.guidance === 'b' ? 'reduced' : 'full';
   const hudCls = usePaperUI ? 'paper-hud' : 'clean-hud';
   const panelCls = usePaperUI ? 'paper-panel' : 'clean-panel';
   const cardCls = usePaperUI ? 'paper-card' : 'clean-card';
@@ -583,6 +584,7 @@ export default function App() {
           hud={hud}
           t={t}
           isDev={isDev}
+          guidanceMode={guidanceMode}
           runtimeRef={runtimeRef}
           exploreRef={exploreRef}
           onOpenLayer={pushLayer}
@@ -593,6 +595,7 @@ export default function App() {
       {hud && (hud.mode === 'play' || hud.mode === 'hold') && !usePaperUI && (
         <div
           className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between"
+          data-guidance-mode={guidanceMode}
           style={{
             paddingLeft: 'var(--gl)',
             paddingRight: 'var(--gr)',
@@ -670,13 +673,16 @@ export default function App() {
               </div>
 
               {/* 当前目标：paper 变体下改为手写日志便签样式（楷体 + 左侧细余烬线），a 变体保持原样 */}
-              <div
-                className={`text-[11px] sm:text-[12px] leading-snug ${
-                  usePaperUI ? 'hud-note' : 'text-[#d8be8a]/90'
-                }`}
-              >
-                {t(hud.objectiveText)}
-              </div>
+              {guidanceMode === 'full' && (
+                <div
+                  className={`text-[11px] sm:text-[12px] leading-snug ${
+                    usePaperUI ? 'hud-note' : 'text-[#d8be8a]/90'
+                  }`}
+                  data-hud="objective"
+                >
+                  {t(hud.objectiveText)}
+                </div>
+              )}
             </div>
 
             {/* Right Utility Actions (Journal, Craft, Pause, Dev) */}
@@ -1451,6 +1457,7 @@ export default function App() {
                       <div className="text-xs text-[#a8a091] mb-1.5">
                         {t(v.label)}{' '}
                         <span className="font-mono-num text-[#777165]">?v-{v.name}</span>
+                        {v.reloadOnChange && <span className="text-[#777165] ml-1">· 切换后重载</span>}
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         {v.options.map(([optId, optLabel]) => {

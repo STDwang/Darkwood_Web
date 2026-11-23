@@ -7,6 +7,7 @@
 
 import { LootContainer, MovableFurniture, RectObstacle } from './types';
 import { Vec2, dist } from './util';
+import { Variants } from './variants';
 
 export type RoomKind =
   | 'living'
@@ -489,6 +490,43 @@ function entry(b: Building, oxl: number, oyl: number, ixl: number, iyl: number) 
   b.entryIn = { x: b.x + ixl, y: b.y + iyl };
 }
 
+function scaleRect(rect: { x: number; y: number; w: number; h: number }, cx: number, cy: number, factor: number) {
+  rect.x = cx + (rect.x - cx) * factor;
+  rect.y = cy + (rect.y - cy) * factor;
+  rect.w *= factor;
+  rect.h *= factor;
+}
+
+function scalePoint(point: Vec2, cx: number, cy: number, factor: number) {
+  point.x = cx + (point.x - cx) * factor;
+  point.y = cy + (point.y - cy) * factor;
+}
+
+function scaleBuildingGeometry(b: Building, factor: number) {
+  const cx = b.x + b.w * 0.5;
+  const cy = b.y + b.h * 0.5;
+  scaleRect(b, cx, cy, factor);
+  b.t *= factor;
+  scalePoint(b.entryOut, cx, cy, factor);
+  scalePoint(b.entryIn, cx, cy, factor);
+  for (const r of b.rooms) scaleRect(r, cx, cy, factor);
+  for (const w of b.windows) scaleRect(w, cx, cy, factor);
+  for (const p of b.props) scaleRect(p, cx, cy, factor);
+  for (const w of b.walls) scaleRect(w, cx, cy, factor);
+  for (const d of b.doorSpecs) scaleRect(d, cx, cy, factor);
+  for (const l of b.lightSpecs) {
+    scalePoint(l, cx, cy, factor);
+    l.switchX = cx + (l.switchX - cx) * factor;
+    l.switchY = cy + (l.switchY - cy) * factor;
+    l.radius *= factor;
+  }
+  for (const c of b.containerSpecs) {
+    scalePoint(c, cx, cy, factor);
+    c.r *= factor;
+  }
+  for (const m of b.movableSpecs) scaleRect(m, cx, cy, factor);
+}
+
 function yard(list: BuildingProp[], walls: RectObstacle[], kind: string, x: number, y: number, w: number, h: number, rot = 0) {
   const p = makeProp(kind, x, y, w, h, rot, (list.length * 61 + 7) % 1013);
   list.push(p);
@@ -943,6 +981,9 @@ export function createBuildingLayouts(hideoutRect: RectLike, sawmillRect: RectLi
     buildTowerHut(),
     buildRailHut(),
   ];
+  for (const b of buildings) {
+    if (b.hasEntry && Variants.val.homes !== 'a') scaleBuildingGeometry(b, 1.16);
+  }
   let doorCursor = 0;
   let lightCursor = 0;
   for (let i = 0; i < buildings.length; i++) {

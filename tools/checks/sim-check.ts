@@ -4,7 +4,7 @@
 import { FIXED_DT, GameEngine } from '../../src/game/engine';
 import { dist } from '../../src/game/util';
 import { computeVisibilityPolygon } from '../../src/game/visibility';
-import { GENERATOR_POS, HIDEOUT_RECT, WORLD_HALF, resolveWorldCollision } from '../../src/game/world';
+import { GENERATOR_POS, HIDEOUT_RECT, WORLD_HALF, isPointIndoors, resolveWorldCollision } from '../../src/game/world';
 import { THOUGHT_GLOBAL_GAP, THOUGHT_MAX, THOUGHT_RISE, ThoughtSystem } from '../../src/game/thoughts';
 
 function assert(cond: boolean, msg: string) {
@@ -25,6 +25,35 @@ async function main() {
     assert(shift < 22, `Container ${c.id} overlaps solid geometry by ${shift.toFixed(1)}px`);
   }
   console.log(`✓ Clearance gate passed (${engine.world.containers.length} loot containers verified)`);
+
+  // 1a. 可进入建筑：从标注的室外入口沿实际碰撞几何走入室内
+  {
+    const accessible = engine.world.buildings.filter((b) => b.hasEntry);
+    assert(accessible.length > 0, 'World should contain buildings with marked entrances');
+    for (const b of accessible) {
+      const dx = b.entryIn.x - b.entryOut.x;
+      const dy = b.entryIn.y - b.entryOut.y;
+      const steps = Math.ceil(Math.hypot(dx, dy) / 3);
+      let px = b.entryOut.x;
+      let py = b.entryOut.y;
+      for (let k = 1; k <= steps; k++) {
+        const t = k / steps;
+        const moved = resolveWorldCollision(
+          engine.world,
+          b.entryOut.x + dx * t,
+          b.entryOut.y + dy * t,
+          12,
+          false,
+          undefined,
+          true
+        );
+        px = moved.x;
+        py = moved.y;
+      }
+      assert(isPointIndoors(px, py), `Player could not enter ${b.id} through its marked entrance`);
+    }
+    console.log(`✓ Building entry gate passed (${accessible.length} marked entrances)`);
+  }
 
   // 1b. Feedback-to-Gate：夜里钉死全部门板后，玩家仍须能从门外走进庇护所，怪物仍被完好门板阻挡
   {
@@ -440,11 +469,17 @@ async function main() {
     engine.enemies.length = 0;
     const flocks = engine.crowFlocks.filter((f) => f.active);
     assert(flocks.length >= 3 && flocks.length <= 6, `Expected 3-6 daytime crow flocks, got ${flocks.length}`);
-    const fl = flocks[0];
+    const fl = flocks.find((f) =>
+      engine.crows.some((c) => c.active && c.flock === engine.crowFlocks.indexOf(f) && c.state === 'perched')
+    ) ?? flocks[0];
     const fi = engine.crowFlocks.indexOf(fl);
     const members = () => engine.crows.filter((c) => c.active && c.flock === fi).length;
     const startCount = members();
     assert(startCount >= 2 && startCount <= 6, `Crow flock should hold 2-6 birds (got ${startCount})`);
+    assert(
+      engine.crows.some((c) => c.active && c.flock === fi && c.state === 'perched'),
+      'A daytime flock should include a tree-perched crow'
+    );
     engine.player.x = fl.x + 60;
     engine.player.y = fl.y;
     engine.player.vx = 0;

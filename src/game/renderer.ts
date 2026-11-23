@@ -4136,6 +4136,7 @@ export class GameRenderer {
 
     // 2. 运动学参数（R3：步态相位 pose.gait 由 engine 按真实位移推进，整数时刻 = 前脚落地帧，与 playFootstep 同步）
     const eqp = engine.equip;
+    const improvedMotion = Variants.val.motion !== 'a';
     const gArm = gestureRightArm(eqp, this.eqArmScratch);
     const gHand = gestureLeftHand(eqp, this.eqHandScratch);
     const gCrouch = gestureCrouch(eqp);
@@ -4344,6 +4345,9 @@ export class GameRenderer {
       rAng = lerp(rAng, ga, gArm.w);
       rLen = lerp(rLen, gl, gArm.w);
     }
+    const torchRunW = improvedMotion && eqp.torchInHand ? sprintW * (1 - actW) * (1 - gArm.w) * (1 - aimW) : 0;
+    rAng += (Math.cos(gaitPhase - 0.72) * 0.2 + Math.sin(gaitPhase * 2 + 0.35) * 0.07) * torchRunW;
+    rLen += Math.sin(gaitPhase - 0.5) * 1.25 * torchRunW;
 
     // 左臂（手电）：与右臂反向摆动；疾跑时摆幅加大（中心后移，俯视可读跑姿）
     let lX = clamp(lerp(13, 6, sprintW) - stride * (2.5 + sprintW * 6.5), -7, 17) - chargeW * 3;
@@ -4366,7 +4370,10 @@ export class GameRenderer {
       lY = lerp(lY, gHand.y, gHand.w);
     }
 
-    const twist = torsoTwist * (1 - actW) + gArm.twist;
+    const twist =
+      torsoTwist * (1 - actW) +
+      gArm.twist +
+      (improvedMotion ? stride * sprintW * 0.06 * (1 - actW) : 0);
     const leanX = lean * 0.6;
     ctx.rotate(twist);
     ctx.translate(leanX, 0);
@@ -4463,14 +4470,22 @@ export class GameRenderer {
     ctx.strokeStyle = '#3a4234';
     ctx.lineWidth = 5.6;
     ctx.lineCap = 'round';
+    const rElbowX = rLen * 0.52;
+    const rElbowY = 2 + stride * sprintW * 2.4;
     ctx.beginPath();
     ctx.moveTo(0, 0);
+    if (improvedMotion) ctx.lineTo(rElbowX, rElbowY);
     ctx.lineTo(rLen, 2);
     ctx.stroke();
     ctx.fillStyle = '#241b14';
     ctx.beginPath();
     ctx.arc(rLen, 2, 3.2, 0, Math.PI * 2);
     ctx.fill();
+    if (improvedMotion) {
+      ctx.beginPath();
+      ctx.arc(rElbowX, rElbowY, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // 手中武器（R3：右手火把——木柄 + 浸油布头，Tier2 柄上绑锈斧头；手枪模式改为单手持枪）
     // 火把：搜刮/采摘时仍握在手中；钉板/加油需要双手时斜插在身侧地上（plantW），火焰位置随之连续过渡
@@ -4980,6 +4995,9 @@ export class GameRenderer {
         ctx.stroke();
       }
 
+      ctx.save();
+      ctx.translate(-1, 0);
+      if (Variants.val.creature !== 'a') ctx.rotate(Math.sin(time * 2.2 + e.id) * 0.08 + stride * 0.07);
       ctx.fillStyle = flash ? '#9e3129' : '#171512';
       ctx.strokeStyle = '#070706';
       ctx.lineWidth = 2;
@@ -4994,22 +5012,61 @@ export class GameRenderer {
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
+      ctx.restore();
 
       ctx.save();
       ctx.translate(-windE * 2 + lungeW * 2, 0);
-      ctx.fillStyle = '#2d241d';
-      ctx.beginPath();
-      ctx.ellipse(5, 0, 8.5, 7.5, 0, 0, Math.PI * 2);
-      ctx.fill();
-      const glow = (0.72 + Math.sin(time * 6 + e.id) * 0.28) * (dying ? alive : 1) + windE * 0.25;
-      ctx.fillStyle = `rgba(242, 106, 68, ${clamp(glow, 0, 1).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.arc(9.5, -4.2, 2.3, 0, Math.PI * 2);
-      ctx.moveTo(11.8, 4.2);
-      ctx.arc(9.5, 4.2, 2.3, 0, Math.PI * 2);
-      ctx.moveTo(7.7, 0.5);
-      ctx.arc(6.2, 0.5, 1.5, 0, Math.PI * 2);
-      ctx.fill();
+      if (Variants.val.creature === 'a') {
+        ctx.fillStyle = '#2d241d';
+        ctx.beginPath();
+        ctx.ellipse(5, 0, 8.5, 7.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const glow = (0.72 + Math.sin(time * 6 + e.id) * 0.28) * (dying ? alive : 1) + windE * 0.25;
+        ctx.fillStyle = `rgba(242, 106, 68, ${clamp(glow, 0, 1).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(9.5, -4.2, 2.3, 0, Math.PI * 2);
+        ctx.moveTo(11.8, 4.2);
+        ctx.arc(9.5, 4.2, 2.3, 0, Math.PI * 2);
+        ctx.moveTo(7.7, 0.5);
+        ctx.arc(6.2, 0.5, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.rotate(Math.sin(time * 3.1 + e.id) * 0.07 + twitch * 0.025);
+        const bloomOpen = clamp(0.18 + windE * 0.5 + lungeW * 0.55 + clawLunge * 0.012, 0, 1);
+        ctx.translate(7, 0);
+        for (let petal = 0; petal < 5; petal++) {
+          ctx.save();
+          ctx.rotate((petal * Math.PI * 2) / 5 + Math.sin(time * 1.7 + e.id + petal) * 0.05);
+          ctx.fillStyle = flash ? '#9e3129' : petal % 2 === 0 ? '#3d3024' : '#29261d';
+          ctx.strokeStyle = '#110e0b';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.quadraticCurveTo(5 + bloomOpen * 2, -3.2, 9 + bloomOpen * 5, 0);
+          ctx.quadraticCurveTo(5 + bloomOpen * 2, 3.2, 0, 0);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(177, 115, 77, 0.36)';
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.moveTo(1, 0);
+          ctx.lineTo(7 + bloomOpen * 2, 0);
+          ctx.stroke();
+          ctx.restore();
+        }
+        ctx.fillStyle = '#120a08';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 3.2 + bloomOpen * 2.5, 2.4 + bloomOpen * 1.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const glow = (0.72 + Math.sin(time * 6 + e.id) * 0.28) * (dying ? alive : 1) + windE * 0.25;
+        ctx.fillStyle = `rgba(242, 106, 68, ${clamp(glow, 0, 1).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(0, -0.8, 1.05, 0, Math.PI * 2);
+        ctx.moveTo(1.05, 0.8);
+        ctx.arc(0, 0.8, 1.05, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.restore();
     } else {
       // --- TWISTED STALKER / CHOMPER ---
@@ -5547,10 +5604,21 @@ export class GameRenderer {
       ctx.scale(s * 1.35, s * 1.35);
       ctx.globalAlpha = 1 - z * 0.45;
 
-      if (c.state === 'ground') {
-        const hopLift = Math.sin(c.hop * Math.PI) * 0.12;
+      if (c.state === 'ground' || c.state === 'perched') {
+        const perched = c.state === 'perched';
+        const hopLift = perched ? 0 : Math.sin(c.hop * Math.PI) * 0.12;
         const peckK = Math.sin(c.peck * Math.PI);
         ctx.scale(1 + hopLift, 1 + hopLift);
+        if (perched) {
+          ctx.strokeStyle = '#080807';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.moveTo(-6, 3.5);
+          ctx.lineTo(6, 3.5);
+          ctx.moveTo(-1, 3.5);
+          ctx.lineTo(-3, 5.2);
+          ctx.stroke();
+        }
         // 尾羽（小扇形）
         ctx.fillStyle = '#050505';
         ctx.beginPath();

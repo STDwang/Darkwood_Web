@@ -242,7 +242,7 @@ export interface Crow {
   active: boolean;
   /** 所属鸦群索引 */
   flock: number;
-  state: 'ground' | 'takeoff' | 'fly';
+  state: 'ground' | 'perched' | 'takeoff' | 'fly';
   x: number;
   y: number;
   /** 离地高度 0..1（渲染视差用） */

@@ -30,6 +30,7 @@ interface GameHudProps {
   hud: HudSnapshot;
   t: TFn;
   isDev: boolean;
+  guidanceMode: 'full' | 'reduced';
   runtimeRef: { current: GameRuntime | null };
   exploreRef: { current: MinimapExploreState | null };
   onOpenLayer: (id: HudLayer) => void;
@@ -213,7 +214,15 @@ function InkBar({
   );
 }
 
-export default function GameHud({ hud, t, isDev, runtimeRef, exploreRef, onOpenLayer }: GameHudProps) {
+export default function GameHud({
+  hud,
+  t,
+  isDev,
+  guidanceMode,
+  runtimeRef,
+  exploreRef,
+  onOpenLayer,
+}: GameHudProps) {
   const phaseLabel = hud.phase === 'night' ? t('黑夜') : hud.phase === 'dusk' ? t('黄昏') : t('白昼');
   const weatherLabel =
     hud.weather === 'storm' ? t('雷暴') : hud.weather === 'drizzle' ? t('细雨') : t('浓雾');
@@ -258,6 +267,7 @@ export default function GameHud({ hud, t, isDev, runtimeRef, exploreRef, onOpenL
         hud.dangerLevel >= 65 ? 'is-threat' : ''
       }`}
       aria-live="polite"
+      data-guidance-mode={guidanceMode}
     >
       {/* ================= 顶部：左上时段 / 右上图标 + 小地图 ================= */}
       <div className="hud2-top">
@@ -295,7 +305,11 @@ export default function GameHud({ hud, t, isDev, runtimeRef, exploreRef, onOpenL
           </div>
 
           {/* 当前目标：保留手写日志便签样式 */}
-          <div className="hud-note hud2-objective">{t(hud.objectiveText)}</div>
+          {guidanceMode === 'full' && (
+            <div className="hud-note hud2-objective" data-hud="objective">
+              {t(hud.objectiveText)}
+            </div>
+          )}
         </div>
 
         <div className="hud2-tr">
@@ -351,9 +365,11 @@ export default function GameHud({ hud, t, isDev, runtimeRef, exploreRef, onOpenL
           </div>
 
           {/* 实时小地图：纯装饰 canvas（pointer-events:none / aria-hidden / 无 DOM 文字） */}
-          <div className="hud2-minimap" aria-hidden="true" data-hud="minimap">
-            <Minimap runtimeRef={runtimeRef} exploreRef={exploreRef} />
-          </div>
+          {guidanceMode === 'full' && (
+            <div className="hud2-minimap" aria-hidden="true" data-hud="minimap">
+              <Minimap runtimeRef={runtimeRef} exploreRef={exploreRef} />
+            </div>
+          )}
         </div>
       </div>
 

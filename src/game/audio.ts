@@ -4012,6 +4012,29 @@ class SoundEngine {
     shot.seal();
   }
 
+  playFlashlightSwitch(on: boolean, spatial?: SpatialAudioOpts): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const route = this.createSpatialRoute(spatial);
+    const shot = new OneShot();
+    shot.addAll(route.nodes);
+    const scale = clamp(route.gainScale, 0.08, 1);
+    const out = route.input;
+    this.mechClick(ctx, shot, out, now, 0.055 * scale, on ? 3100 : 2600, 0.005);
+    this.tone(ctx, shot, out, 'triangle', now + 0.006, on ? 920 : 760, on ? 620 : 510, 0.0001, 0.035, 0.025 * scale);
+    if (this.pinkBuf) {
+      const src = this.noiseSource(ctx, shot, this.pinkBuf, now + 0.004, 0.07);
+      const bp = this.filt(ctx, shot, 'bandpass', on ? 1700 : 1250, 1.1, now + 0.004);
+      const g = this.amp(ctx, shot, 0.0001, now + 0.004);
+      this.perc(g.gain, now + 0.004, 0.035 * scale, 0.002, 0.045);
+      src.connect(bp);
+      bp.connect(g);
+      g.connect(out);
+    }
+    shot.seal();
+  }
+
   playFlareHiss() {
     const ctx = this.ctx;
     const master = this.masterGain;
@@ -4035,7 +4058,7 @@ class SoundEngine {
    * → 振幅撕裂抖动 → 三个并联共振峰带通（F1/F2/F3 随"张嘴"滑动）+ 胸腔低通
    * 远距离由空间路由自动加低通与更多混响；保留 StereoPanner 方位与隔墙闷化
    */
-  playMonsterSnarl(proximity: number, spatial?: SpatialAudioOpts) {
+  playMonsterSnarl(proximity: number, spatial?: SpatialAudioOpts, kind: 'stalker' | 'hound' | 'banshee' = 'stalker') {
     const ctx = this.ctx;
     if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
     const now = ctx.currentTime;
@@ -4044,10 +4067,12 @@ class SoundEngine {
     shot.addAll(route.nodes);
     const effectiveProx = spatial ? Math.max(proximity * 0.5, route.gainScale) : proximity;
     const vol = clamp(effectiveProx * 0.25, 0.04, 0.25);
-    const dur = clamp(0.48 + Math.random() * 0.34 + proximity * 0.12, 0.45, 0.95);
+    const durationBase = kind === 'hound' ? 0.28 : kind === 'banshee' ? 0.72 : 0.48;
+    const durationRange = kind === 'hound' ? 0.24 : kind === 'banshee' ? 0.42 : 0.34;
+    const dur = clamp(durationBase + Math.random() * durationRange + proximity * 0.12, 0.25, 1.18);
     const end = now + dur;
     const stopAt = end + 0.05;
-    const f0 = rnd(68, 102);
+    const f0 = kind === 'hound' ? rnd(88, 142) : kind === 'banshee' ? rnd(52, 86) : rnd(68, 102);
 
     // —— 声门激励 ——
     const glottis = this.oscSource(ctx, shot, 'sawtooth', f0 * rnd(1.05, 1.18), now, stopAt);
@@ -4092,11 +4117,24 @@ class SoundEngine {
 
     // —— 声道共振峰（并联带通）+ 胸腔低通 ——
     const env = this.amp(ctx, shot, 0.0001, now);
-    const formants: Array<{ f: number; q: number; g: number }> = [
-      { f: rnd(380, 520), q: 6, g: 2.0 },
-      { f: rnd(900, 1250), q: 8, g: 1.3 },
-      { f: rnd(2250, 2700), q: 10, g: 0.6 },
-    ];
+    const formants: Array<{ f: number; q: number; g: number }> =
+      kind === 'hound'
+        ? [
+            { f: rnd(480, 680), q: 5.5, g: 1.8 },
+            { f: rnd(1180, 1580), q: 7, g: 1.5 },
+            { f: rnd(2500, 3200), q: 9, g: 0.8 },
+          ]
+        : kind === 'banshee'
+        ? [
+            { f: rnd(260, 390), q: 7, g: 2.2 },
+            { f: rnd(720, 1080), q: 9, g: 1.5 },
+            { f: rnd(1800, 2450), q: 12, g: 0.9 },
+          ]
+        : [
+            { f: rnd(380, 520), q: 6, g: 2.0 },
+            { f: rnd(900, 1250), q: 8, g: 1.3 },
+            { f: rnd(2250, 2700), q: 10, g: 0.6 },
+          ];
     for (let i = 0; i < formants.length; i++) {
       const fm = formants[i];
       const bp = this.filt(ctx, shot, 'bandpass', fm.f * 0.85, fm.q, now);
@@ -4113,8 +4151,19 @@ class SoundEngine {
     chest.connect(chestG);
     chestG.connect(env);
 
-    env.gain.linearRampToValueAtTime(vol, now + 0.05);
-    env.gain.linearRampToValueAtTime(vol * 0.8, now + dur * 0.6);
+    if (kind === 'hound') {
+      env.gain.linearRampToValueAtTime(vol, now + 0.035);
+      env.gain.linearRampToValueAtTime(vol * 0.18, now + dur * 0.38);
+      env.gain.linearRampToValueAtTime(vol * 0.68, now + dur * 0.48);
+    } else if (kind === 'banshee') {
+      env.gain.linearRampToValueAtTime(vol * 0.32, now + dur * 0.18);
+      env.gain.linearRampToValueAtTime(vol, now + dur * 0.38);
+      env.gain.linearRampToValueAtTime(vol * 0.2, now + dur * 0.52);
+      env.gain.linearRampToValueAtTime(vol * 0.72, now + dur * 0.67);
+    } else {
+      env.gain.linearRampToValueAtTime(vol, now + 0.05);
+      env.gain.linearRampToValueAtTime(vol * 0.8, now + dur * 0.6);
+    }
     env.gain.exponentialRampToValueAtTime(0.0001, end);
     env.connect(route.input);
     shot.seal();
@@ -5714,7 +5763,11 @@ class SoundEngine {
    * 老式拨动开关：拨杆压簧的轻预咔 + 翻转"咔哒"（胶木壳体短衰减）+ 壳体闷响；
    * 开灯 = 灯丝点亮的极细"叮" + 微弱 100Hz 嗡声缓起后渐弱；关灯 = 嗡声收束 + 灯丝冷却的细小"嗒"
    */
-  playLightSwitch(on: boolean, spatial?: SpatialAudioOpts): void {
+  playLightSwitch(
+    on: boolean,
+    spatial?: SpatialAudioOpts,
+    kind: 'pendant' | 'oil' | 'desk' | 'candle' = 'pendant'
+  ): void {
     const ctx = this.ctx;
     if (!ctx || !this.masterGain || !this.whiteBuf || this.muted || this.pageHidden) return;
     const now = ctx.currentTime;
@@ -5723,6 +5776,24 @@ class SoundEngine {
     shot.addAll(route.nodes);
     const sc = clamp(route.gainScale, 0.08, 1);
     const out = route.input;
+    if (kind === 'oil' || kind === 'candle') {
+      const duration = on ? 0.16 : 0.12;
+      const src = this.noiseSource(ctx, shot, on ? this.whiteBuf : this.pinkBuf ?? this.whiteBuf, now, duration + 0.03);
+      const bp = this.filt(ctx, shot, 'bandpass', on ? rnd(1800, 2800) : rnd(700, 1100), on ? 0.8 : 1.1, now);
+      const g = this.amp(ctx, shot, 0.0001, now);
+      this.perc(g.gain, now, (on ? 0.08 : 0.045) * sc, 0.004, duration);
+      src.connect(bp);
+      bp.connect(g);
+      g.connect(out);
+      if (on) {
+        this.mechClick(ctx, shot, out, now + 0.035, 0.045 * sc, rnd(2200, 3100), 0.006);
+        this.tone(ctx, shot, out, 'triangle', now + 0.055, rnd(460, 620), rnd(300, 410), 0.0001, 0.09, 0.025 * sc);
+      } else {
+        this.tone(ctx, shot, out, 'sine', now + 0.015, rnd(520, 760), rnd(170, 260), 0.0001, 0.07, 0.018 * sc);
+      }
+      shot.seal();
+      return;
+    }
     this.mechClick(ctx, shot, out, now + 0.002, 0.04 * sc, on ? 2600 : 2300, 0.006);
     const t1 = now + rnd(0.012, 0.022);
     this.mechClick(ctx, shot, out, t1, 0.16 * sc, (on ? 1900 : 1650) * rnd(0.96, 1.04), 0.014);
@@ -6143,6 +6214,39 @@ class SoundEngine {
       osc.connect(g);
       g.connect(master);
     });
+    shot.seal();
+  }
+
+  playLootPickup(
+    material: 'wood' | 'metal' | 'cloth' | 'flesh' | 'organic',
+    spatial?: SpatialAudioOpts
+  ): void {
+    const ctx = this.ctx;
+    const noise = material === 'cloth' ? this.whiteBuf : this.pinkBuf;
+    if (!ctx || !this.masterGain || !noise || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const route = this.createSpatialRoute(spatial);
+    const shot = new OneShot();
+    shot.addAll(route.nodes);
+    const scale = clamp(route.gainScale, 0.08, 1);
+    const duration = material === 'cloth' ? 0.22 : material === 'organic' ? 0.16 : 0.11;
+    const src = this.noiseSource(ctx, shot, noise, now, duration + 0.03);
+    const filterHz =
+      material === 'metal' ? rnd(1800, 2700) : material === 'cloth' ? rnd(1500, 2300) : material === 'flesh' ? rnd(420, 680) : rnd(700, 1250);
+    const bp = this.filt(ctx, shot, 'bandpass', filterHz, material === 'metal' ? 1.8 : 1.1, now);
+    const g = this.amp(ctx, shot, 0.0001, now);
+    this.perc(g.gain, now, (material === 'cloth' ? 0.055 : 0.075) * scale, 0.003, duration);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(route.input);
+
+    if (material === 'metal') {
+      this.tone(ctx, shot, route.input, 'sine', now + 0.006, rnd(720, 980), rnd(430, 620), 0.0001, 0.095, 0.035 * scale);
+      this.mechClick(ctx, shot, route.input, now + rnd(0.018, 0.035), 0.028 * scale, rnd(2500, 3400), 0.008);
+    } else if (material === 'wood' || material === 'flesh' || material === 'organic') {
+      const base = material === 'wood' ? rnd(150, 210) : material === 'flesh' ? rnd(85, 130) : rnd(190, 280);
+      this.tone(ctx, shot, route.input, 'triangle', now, base, base * (material === 'wood' ? 0.62 : 0.48), 0.0001, duration, (material === 'wood' ? 0.045 : 0.035) * scale);
+    }
     shot.seal();
   }
 

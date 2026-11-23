@@ -75,6 +75,20 @@ function assertNoIssues(label, issues) {
   );
 }
 
+async function assertGuidance(page, expectedMode, expectedVisible) {
+  const actual = await page.evaluate(() => ({
+    mode: document.querySelector('[data-guidance-mode]')?.getAttribute('data-guidance-mode'),
+    objective: Boolean(document.querySelector('[data-hud="objective"]')),
+    minimap: Boolean(document.querySelector('[data-hud="minimap"]')),
+  }));
+  assert(
+    actual.mode === expectedMode &&
+      actual.objective === expectedVisible &&
+      actual.minimap === expectedVisible,
+    `引导变体应为 ${expectedMode}（目标/地图=${expectedVisible}），实际为 ${JSON.stringify(actual)}`
+  );
+}
+
 async function main() {
   const server = await ensureDevServer();
   const browser = await launchBrowser();
@@ -96,6 +110,7 @@ async function main() {
     await page.waitForTimeout(150);
     const playStats = await page.evaluate(() => window.__game.stats());
     assert(playStats.mode === 'play', `开局后应为 play，实际为 ${playStats.mode}`);
+    await assertGuidance(page, 'full', true);
 
     // 模拟 3 秒
     const simStats = await page.evaluate(() => window.__game.sim(3));
@@ -199,7 +214,7 @@ async function main() {
     const page2d = await ctx2d.newPage();
     const issues2d = attachWatchers(page2d);
 
-    await page2d.goto(`${server.url}/?v-shader=a`, { waitUntil: 'networkidle' });
+    await page2d.goto(`${server.url}/?v-shader=a&v-guidance=b`, { waitUntil: 'networkidle' });
     await waitForGameReady(page2d);
     await page2d.evaluate(() => {
       window.__game.ui().go();
@@ -212,9 +227,29 @@ async function main() {
       stats2d.backend === 'canvas2d',
       `?v-shader=a 应回退至 canvas2d，实际为 ${stats2d.backend}`
     );
+    await assertGuidance(page2d, 'full', true);
     assertNoIssues('canvas2d-fallback', issues2d);
     console.log(`✓ Canvas2D 回退通过 (backend=${stats2d.backend}, 0 error, 0 404, 0 外链)`);
     await ctx2d.close();
+
+    // 弱引导 A/B 仅在明确启用开发模式时生效
+    const ctxDev = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const pageDev = await ctxDev.newPage();
+    const issuesDev = attachWatchers(pageDev);
+    await pageDev.goto(`${server.url}/?dev&v-guidance=b`, { waitUntil: 'networkidle' });
+    await waitForGameReady(pageDev);
+    await pageDev.evaluate(() => window.__game.ui().go());
+    await pageDev.waitForTimeout(150);
+    await assertGuidance(pageDev, 'reduced', false);
+
+    await pageDev.goto(`${server.url}/?dev&v-guidance=a`, { waitUntil: 'networkidle' });
+    await waitForGameReady(pageDev);
+    await pageDev.evaluate(() => window.__game.ui().go());
+    await pageDev.waitForTimeout(150);
+    await assertGuidance(pageDev, 'full', true);
+    assertNoIssues('dev-guidance-variants', issuesDev);
+    console.log('✓ 目标/小地图引导 A/B 变体仅在开发模式启用');
+    await ctxDev.close();
   } finally {
     await browser.close();
     await server.stop();

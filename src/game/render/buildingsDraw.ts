@@ -10,6 +10,7 @@ import type { GpuLight } from '../webglComposer';
 import { Building, BuildingLight, BuildingProp, InteriorDoor, isLightLit, lightFlicker } from '../buildings';
 import { Vec2 } from '../util';
 import { computeVisibilityPolygon, hasLineOfSight } from '../visibility';
+import { Variants } from '../variants';
 
 // 视口（每次调用前设置，避免闭包分配）
 let vL = 0;
@@ -971,6 +972,20 @@ function drawWindow(ctx: CanvasRenderingContext2D, w: { x: number; y: number; w:
   ctx.fillStyle = 'rgba(70, 82, 86, 0.22)';
   if (horiz) ctx.fillRect(w.x + 2, w.y + w.h * 0.35, w.w - 4, w.h * 0.3);
   else ctx.fillRect(w.x + w.w * 0.35, w.y + 2, w.w * 0.3, w.h - 4);
+  if (Variants.val.homes !== 'a') {
+    ctx.strokeStyle = 'rgba(130, 146, 145, 0.52)';
+    ctx.lineWidth = 1.4;
+    ctx.strokeRect(w.x + 2, w.y + 2, w.w - 4, w.h - 4);
+    ctx.beginPath();
+    if (horiz) {
+      ctx.moveTo(w.x + w.w * 0.5, w.y + 1);
+      ctx.lineTo(w.x + w.w * 0.5, w.y + w.h - 1);
+    } else {
+      ctx.moveTo(w.x + 1, w.y + w.h * 0.5);
+      ctx.lineTo(w.x + w.w - 1, w.y + w.h * 0.5);
+    }
+    ctx.stroke();
+  }
   // 残留碎玻璃锯齿
   ctx.fillStyle = 'rgba(150, 165, 168, 0.3)';
   for (let i = 0; i < 3; i++) {
@@ -1138,6 +1153,34 @@ export function drawBuildingFixtures(
   for (let i = 0; i < bl.length; i++) {
     const b = bl[i];
     if (b.id === 'mill' || !buildingVisible(b, 40)) continue;
+    if (b.hasEntry && Variants.val.homes !== 'a') {
+      const dx = b.entryIn.x - b.entryOut.x;
+      const dy = b.entryIn.y - b.entryOut.y;
+      const midX = (b.entryIn.x + b.entryOut.x) * 0.5;
+      const midY = (b.entryIn.y + b.entryOut.y) * 0.5;
+      ctx.save();
+      ctx.translate(midX, midY);
+      ctx.rotate(Math.atan2(dy, dx));
+      ctx.fillStyle = 'rgba(141, 103, 61, 0.38)';
+      ctx.fillRect(-7, -22, 14, 44);
+      ctx.strokeStyle = 'rgba(210, 170, 105, 0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(-7, -22);
+      ctx.lineTo(7, -22);
+      ctx.moveTo(-7, 22);
+      ctx.lineTo(7, 22);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(221, 183, 118, 0.68)';
+      ctx.beginPath();
+      ctx.moveTo(-22, -5);
+      ctx.lineTo(-13, 0);
+      ctx.lineTo(-22, 5);
+      ctx.lineTo(-19, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
     for (let k = 0; k < b.props.length; k++) {
       const p = b.props[k];
       if (GROUND_KINDS[p.kind] !== undefined) continue;

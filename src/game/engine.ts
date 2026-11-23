@@ -845,7 +845,15 @@ export class GameEngine {
       return;
     }
     this.player.flashlightOn = !this.player.flashlightOn;
-    AudioFX.playClick(this.player.flashlightOn);
+    if (Variants.val.foley === 'a') AudioFX.playClick(this.player.flashlightOn);
+    else {
+      AudioFX.playFlashlightSwitch(this.player.flashlightOn, {
+        worldX: this.player.x,
+        worldY: this.player.y,
+        listenerX: this.player.x,
+        listenerY: this.player.y,
+      });
+    }
     this.emitHud();
   }
 
@@ -1058,7 +1066,15 @@ export class GameEngine {
     }
     this.inv.bandages--;
     this.player.hp = Math.min(this.player.maxHp, this.player.hp + 45);
-    AudioFX.playLootChime();
+    if (Variants.val.foley === 'a') AudioFX.playLootChime();
+    else {
+      AudioFX.playLootPickup('cloth', {
+        worldX: this.player.x,
+        worldY: this.player.y,
+        listenerX: this.player.x,
+        listenerY: this.player.y,
+      });
+    }
     this.pushToast('绷带止住了伤口，恢复了生命。', 'loot');
     this.emitHud();
   }
@@ -1298,7 +1314,8 @@ export class GameEngine {
         listenerX: p.x,
         listenerY: p.y,
       };
-      AudioFX.playLightSwitch(l.on, spatial);
+      if (Variants.val.foley === 'a') AudioFX.playLightSwitch(l.on, spatial);
+      else AudioFX.playLightSwitch(l.on, spatial, l.kind);
       if (l.on && l.broken) {
         this.spawnBurst(l.x, l.y, 5, 'spark', '#d8d2b8');
         this.pushToast('咔哒一声……灯泡早就坏了。', 'info');
@@ -2425,7 +2442,17 @@ export class GameEngine {
     // R3：少量手枪子弹（确定性分配，保持稀缺）
     const ammoPart = equipLootBonus(this, c);
     if (ammoPart) parts.push(ammoPart);
-    AudioFX.playLootChime();
+    if (Variants.val.foley === 'a') AudioFX.playLootChime();
+    else {
+      const pickupMaterial = c.kind === 'toolbox' ? 'metal' : c.kind === 'backpack' ? 'cloth' : c.kind === 'corpse' ? 'flesh' : 'wood';
+      AudioFX.playLootPickup(pickupMaterial, {
+        worldX: c.x,
+        worldY: c.y,
+        listenerX: this.player.x,
+        listenerY: this.player.y,
+        muffled: isPointInHideout(c.x, c.y) !== isPointInHideout(this.player.x, this.player.y),
+      });
+    }
     this.spawnBurst(c.x, c.y, 10, 'ember', '#d8b46e');
     this.pushToast(`${I18n.t('获得了')} ${parts.join(' · ')}`, 'loot');
     this.emitHud();
@@ -2622,7 +2649,16 @@ export class GameEngine {
     node.harvested = true;
     this.inv.essence++;
     this.essenceCollected++;
-    AudioFX.playLootChime();
+    if (Variants.val.foley === 'a') AudioFX.playLootChime();
+    else {
+      AudioFX.playLootPickup('organic', {
+        worldX: node.x,
+        worldY: node.y,
+        listenerX: this.player.x,
+        listenerY: this.player.y,
+        muffled: isPointInHideout(node.x, node.y) !== isPointInHideout(this.player.x, this.player.y),
+      });
+    }
     this.spawnBurst(node.x, node.y, 12, 'spore', '#7ad8c5');
     this.pushToast(`${I18n.t('获得了')} ${I18n.t('幽光菇')} ×1`, 'loot');
     this.addJournal('森林的异变菌体', '采摘到散发微弱青绿荧光的奇异菌菇，可用于合成强效应急电池。');
@@ -2784,6 +2820,20 @@ export class GameEngine {
       const res = resolveWorldCollision(this.world, x, y, 16, false);
       if (dist(res.x, res.y, x, y) > 1) continue;
 
+      let perchTree: (typeof this.world.trees)[number] | null = null;
+      let perchDistance = 240;
+      for (let k = 0; k < this.world.trees.length; k++) {
+        const tree = this.world.trees[k];
+        const d = dist(tree.x, tree.y, x, y);
+        const away = Math.atan2(tree.y - p.y, tree.x - p.x);
+        const perchRadius = Math.max(12, tree.canopyR * 0.52);
+        const perchX = tree.x + Math.cos(away) * perchRadius;
+        const perchY = tree.y + Math.sin(away) * perchRadius;
+        if (d >= perchDistance || dist(perchX, perchY, p.x, p.y) < 165) continue;
+        perchTree = tree;
+        perchDistance = d;
+      }
+
       const f = this.crowFlocks[fi];
       f.active = true;
       f.x = x;
@@ -2797,10 +2847,19 @@ export class GameEngine {
         if (c.active) continue;
         c.active = true;
         c.flock = fi;
-        c.state = 'ground';
-        c.x = x + (r() - 0.5) * 56;
-        c.y = y + (r() - 0.5) * 44;
-        c.z = 0;
+        const perched = placed === 0 && perchTree !== null;
+        c.state = perched ? 'perched' : 'ground';
+        if (perched && perchTree) {
+          const away = Math.atan2(perchTree.y - p.y, perchTree.x - p.x);
+          const perchRadius = Math.max(12, perchTree.canopyR * 0.52);
+          c.x = perchTree.x + Math.cos(away) * perchRadius;
+          c.y = perchTree.y + Math.sin(away) * perchRadius;
+          c.z = 0.28;
+        } else {
+          c.x = x + (r() - 0.5) * 56;
+          c.y = y + (r() - 0.5) * 44;
+          c.z = 0;
+        }
         c.vx = 0;
         c.vy = 0;
         c.angle = r() * Math.PI * 2;
@@ -2827,9 +2886,10 @@ export class GameEngine {
     let count = 0;
     for (let i = 0; i < this.crows.length; i++) {
       const c = this.crows[i];
-      if (!c.active || c.flock !== fi || c.state !== 'ground') continue;
+      if (!c.active || c.flock !== fi || (c.state !== 'ground' && c.state !== 'perched')) continue;
       count++;
       c.state = 'takeoff';
+      c.z = Math.max(c.z, 0.28);
       c.timer = r() * 0.3;
       const away = Math.atan2(c.y - sy, c.x - sx) + (r() - 0.5) * 0.9;
       const spd = 150 + r() * 70;
@@ -2886,7 +2946,7 @@ export class GameEngine {
         if (dP < 640) {
           for (let i = 0; i < this.crows.length; i++) {
             const c = this.crows[i];
-            if (c.active && c.flock === fi && c.state === 'ground' && r() < 0.5) {
+            if (c.active && c.flock === fi && (c.state === 'ground' || c.state === 'perched') && r() < 0.5) {
               c.caw = 1;
               AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 640), false);
               break;
@@ -2901,12 +2961,18 @@ export class GameEngine {
       const c = this.crows[i];
       if (!c.active) continue;
       c.caw = Math.max(0, c.caw - dt * 2.5);
-      if (c.state === 'ground') {
+      if (c.state === 'ground' || c.state === 'perched') {
         c.peck = Math.max(0, c.peck - dt * 3.2);
         c.hop = Math.max(0, c.hop - dt * 4.5);
         const f = this.crowFlocks[c.flock];
         if (!f.alarmed && dist(c.x, c.y, p.x, p.y) < scareR) {
           this.alarmFlock(c.flock, p.x, p.y, true);
+        } else if (c.state === 'perched') {
+          c.timer -= dt;
+          if (c.timer <= 0) {
+            c.angle += (r() - 0.5) * 0.5;
+            c.timer = 1.4 + r() * 2.8;
+          }
         } else {
           c.timer -= dt;
           if (c.timer <= 0) {
@@ -3175,7 +3241,11 @@ export class GameEngine {
                   muffled: true,
                 };
                 AudioFX.playWoodScrape(stalkSpatial);
-                AudioFX.playMonsterSnarl(clamp(1 - dToPlayer / 380, 0.15, 0.75), stalkSpatial);
+                AudioFX.playMonsterSnarl(
+                  clamp(1 - dToPlayer / 380, 0.15, 0.75),
+                  stalkSpatial,
+                  Variants.val.foley === 'a' ? 'stalker' : e.kind
+                );
               }
             } else if (bestBar.hp > 0 && dBar < 46) {
               e.state = 'attack_barricade';
@@ -3320,7 +3390,7 @@ export class GameEngine {
             listenerX: p.x,
             listenerY: p.y,
             muffled: isPointInHideout(e.x, e.y) !== isPointInHideout(p.x, p.y),
-          });
+          }, Variants.val.foley === 'a' ? 'stalker' : e.kind);
         }
       }
 
@@ -3347,7 +3417,13 @@ export class GameEngine {
               p.hitFlash = 0.35;
               this.shake = Math.min(14, this.shake + 8);
               AudioFX.playImpact('flesh');
-              AudioFX.playMonsterSnarl(0.95);
+              AudioFX.playMonsterSnarl(0.95, {
+                worldX: e.x,
+                worldY: e.y,
+                listenerX: p.x,
+                listenerY: p.y,
+                muffled: isPointInHideout(e.x, e.y) !== isPointInHideout(p.x, p.y),
+              }, Variants.val.foley === 'a' ? 'stalker' : e.kind);
               this.spawnBurst(p.x, p.y, 12, 'blood', '#8f1515');
               this.pushDecal({
                 kind: 'splatter',
@@ -3386,7 +3462,7 @@ export class GameEngine {
           listenerX: p.x,
           listenerY: p.y,
           muffled: isPointInHideout(e.x, e.y) !== isPointInHideout(p.x, p.y),
-        });
+        }, Variants.val.foley === 'a' ? 'stalker' : e.kind);
       }
     }
 
