@@ -50,10 +50,10 @@ export const QUALITY_PRESETS: Record<QualityTier, QualityPreset> = {
     tier: 2,
     label: '高',
     maxDpr: 2.0,
-    lightScale: 0.92,
+    lightScale: 1.0,
     particleScale: 1.0,
     rainScale: 1.0,
-    fogLayers: 3,
+    fogLayers: 2,
     penumbraSamples: 5,
     puddleReflections: true,
     maxLights: 12,
@@ -62,7 +62,7 @@ export const QUALITY_PRESETS: Record<QualityTier, QualityPreset> = {
   },
 };
 
-const STORAGE_KEY = 'blackwood_quality_v2';
+const STORAGE_KEY = 'blackwood_quality_v3';
 
 function detectInitialTier(): QualityTier {
   try {
@@ -78,8 +78,8 @@ function detectInitialTier(): QualityTier {
   } catch {
     // ignore
   }
-  const coarse = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
-  return coarse ? 1 : 2;
+  // 默认始终开启高画质（保证清晰度与完整光影细节）
+  return 2;
 }
 
 function isGovernorEnabled(): boolean {
@@ -128,24 +128,22 @@ export const Quality = {
 
   reportFrame(frameMs: number, jsMs: number) {
     if (!govEnabled) return;
-    // Ignore isolated JS GC spikes so we don't mistakenly blame GPU
+    // 默认保持清晰高画质：绝不因短暂波动偷偷降低分辨率缩放或持久化降档
     if (jsMs > 14 && frameMs - jsMs < 10) return;
 
-    if (frameMs > 26) {
+    if (frameMs > 44) {
       slowFrames++;
       smoothSeconds = 0;
-      if (slowFrames >= 45) {
+      if (slowFrames >= 120) {
         slowFrames = 0;
-        if (resScale > 0.78) {
-          resScale = 0.75;
-        } else if (currentTier > 0) {
-          this.setTier((currentTier - 1) as QualityTier, true);
+        if (currentTier > 1) {
+          this.setTier((currentTier - 1) as QualityTier, false);
         }
       }
-    } else if (frameMs < 18.5) {
+    } else if (frameMs < 20) {
       slowFrames = Math.max(0, slowFrames - 2);
       smoothSeconds += frameMs / 1000;
-      if (smoothSeconds >= 60) {
+      if (smoothSeconds >= 30) {
         smoothSeconds = 0;
         if (resScale < 1.0) {
           resScale = 1.0;

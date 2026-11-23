@@ -964,52 +964,76 @@ function drawSolidProp(ctx: CanvasRenderingContext2D, p: BuildingProp, t: number
   ctx.restore();
 }
 
+/**
+ * 建筑窗户绘制：严格对标《Darkwood》原版高精双轨金属/木窗框（浅灰双轨槽 + 突出窗台 + 冷灰碎玻璃 + 可选斜钉封板）
+ * 与可进入大门形成鲜明材质与几何区分：窗户偏冷银灰双轨且略高出地面，门为暖褐厚木门廊与宽门槛
+ */
 function drawWindow(ctx: CanvasRenderingContext2D, w: { x: number; y: number; w: number; h: number; orientation: string; boarded: number; seed: number }) {
   const horiz = w.orientation === 'h';
-  // 窗框 + 窗台
-  ctx.fillStyle = '#1b140e';
-  ctx.fillRect(w.x, w.y, w.w, w.h);
-  ctx.fillStyle = 'rgba(70, 82, 86, 0.22)';
-  if (horiz) ctx.fillRect(w.x + 2, w.y + w.h * 0.35, w.w - 4, w.h * 0.3);
-  else ctx.fillRect(w.x + w.w * 0.35, w.y + 2, w.w * 0.3, w.h - 4);
-  if (Variants.val.homes !== 'a') {
-    ctx.strokeStyle = 'rgba(130, 146, 145, 0.52)';
-    ctx.lineWidth = 1.4;
-    ctx.strokeRect(w.x + 2, w.y + 2, w.w - 4, w.h - 4);
-    ctx.beginPath();
-    if (horiz) {
-      ctx.moveTo(w.x + w.w * 0.5, w.y + 1);
-      ctx.lineTo(w.x + w.w * 0.5, w.y + w.h - 1);
-    } else {
-      ctx.moveTo(w.x + 1, w.y + w.h * 0.5);
-      ctx.lineTo(w.x + w.w - 1, w.y + w.h * 0.5);
-    }
-    ctx.stroke();
+  // 外扩旧灰水泥/木质窗台底座（让窗框从纯黑墙面中清晰浮出）
+  ctx.fillStyle = '#5a5e5a';
+  if (horiz) {
+    ctx.fillRect(w.x - 1, w.y - 2.5, w.w + 2, w.h + 5);
+    // 窗台顶部受光微高光与深黑槽腔
+    ctx.fillStyle = '#787d78';
+    ctx.fillRect(w.x, w.y - 2, w.w, 2.2);
+    ctx.fillRect(w.x, w.y + w.h - 0.2, w.w, 2.2);
+    ctx.fillStyle = '#101313';
+    ctx.fillRect(w.x + 2, w.y + 1.5, w.w - 4, w.h - 3);
+    // Darkwood 标志性清晰双轨推拉窗槽线（对标原版特写图）
+    ctx.fillStyle = '#9aa09b';
+    ctx.fillRect(w.x + 2, w.y + w.h * 0.28, w.w - 4, 1.8);
+    ctx.fillRect(w.x + 2, w.y + w.h * 0.62, w.w - 4, 1.8);
+    // 中央窗棂竖挺
+    ctx.fillStyle = '#3c403e';
+    ctx.fillRect(w.x + w.w * 0.5 - 1.5, w.y + 1, 3, w.h - 2);
+    ctx.strokeStyle = '#070808';
+    ctx.lineWidth = 1.6;
+    ctx.strokeRect(w.x - 1, w.y - 2.5, w.w + 2, w.h + 5);
+  } else {
+    ctx.fillRect(w.x - 2.5, w.y - 1, w.w + 5, w.h + 2);
+    ctx.fillStyle = '#787d78';
+    ctx.fillRect(w.x - 2, w.y, 2.2, w.h);
+    ctx.fillRect(w.x + w.w - 0.2, w.y, 2.2, w.h);
+    ctx.fillStyle = '#101313';
+    ctx.fillRect(w.x + 1.5, w.y + 2, w.w - 3, w.h - 4);
+    // 双轨窗槽线
+    ctx.fillStyle = '#9aa09b';
+    ctx.fillRect(w.x + w.w * 0.28, w.y + 2, 1.8, w.h - 4);
+    ctx.fillRect(w.x + w.w * 0.62, w.y + 2, 1.8, w.h - 4);
+    // 中央窗棂横挺
+    ctx.fillStyle = '#3c403e';
+    ctx.fillRect(w.x + 1, w.y + w.h * 0.5 - 1.5, w.w - 2, 3);
+    ctx.strokeStyle = '#070808';
+    ctx.lineWidth = 1.6;
+    ctx.strokeRect(w.x - 2.5, w.y - 1, w.w + 5, w.h + 2);
   }
-  // 残留碎玻璃锯齿
-  ctx.fillStyle = 'rgba(150, 165, 168, 0.3)';
+
+  // 残留冷青灰碎玻璃锯齿
+  ctx.fillStyle = 'rgba(168, 188, 190, 0.42)';
   for (let i = 0; i < 3; i++) {
     const f = h01(w.seed, i);
     if (horiz) {
-      const x = w.x + 3 + f * (w.w - 6);
+      const x = w.x + 4 + f * (w.w - 8);
       ctx.beginPath();
-      ctx.moveTo(x, w.y + w.h * 0.5);
-      ctx.lineTo(x + 3, w.y + w.h * 0.5 - 1);
-      ctx.lineTo(x + 1, w.y + w.h * 0.5 + 2);
+      ctx.moveTo(x, w.y + w.h * 0.48);
+      ctx.lineTo(x + 4, w.y + w.h * 0.48 - 2);
+      ctx.lineTo(x + 1.5, w.y + w.h * 0.48 + 3);
       ctx.fill();
     } else {
-      const y = w.y + 3 + f * (w.h - 6);
+      const y = w.y + 4 + f * (w.h - 8);
       ctx.beginPath();
-      ctx.moveTo(w.x + w.w * 0.5, y);
-      ctx.lineTo(w.x + w.w * 0.5 - 1, y + 3);
-      ctx.lineTo(w.x + w.w * 0.5 + 2, y + 1);
+      ctx.moveTo(w.x + w.w * 0.48, y);
+      ctx.lineTo(w.x + w.w * 0.48 - 2, y + 4);
+      ctx.lineTo(w.x + w.w * 0.48 + 3, y + 1.5);
       ctx.fill();
     }
   }
-  // 钉死的木板（斜钉、长短不一）
+
+  // 钉死的木板（斜钉、粗厚旧木板 + 锈铁钉头）
   for (let i = 0; i < w.boarded; i++) {
     const f = (i + 0.5) / Math.max(1, w.boarded);
-    const tilt = (h01(w.seed, i + 10) - 0.5) * 0.35;
+    const tilt = (h01(w.seed, i + 10) - 0.5) * 0.36;
     ctx.save();
     if (horiz) {
       ctx.translate(w.x + w.w * f, w.y + w.h * 0.5);
@@ -1018,28 +1042,43 @@ function drawWindow(ctx: CanvasRenderingContext2D, w: { x: number; y: number; w:
       ctx.translate(w.x + w.w * 0.5, w.y + w.h * f);
       ctx.rotate(tilt);
     }
-    ctx.fillStyle = '#4a3826';
+    ctx.fillStyle = '#533d28';
     ctx.strokeStyle = '#0d0907';
-    ctx.lineWidth = 1;
-    const len = (horiz ? w.h : w.w) + 10;
-    ctx.fillRect(-len * 0.5, -3, len, 6);
-    ctx.strokeRect(-len * 0.5, -3, len, 6);
-    ctx.fillStyle = '#7a7e7a';
-    ctx.fillRect(-len * 0.5 + 2, -1, 1.5, 1.5);
-    ctx.fillRect(len * 0.5 - 3.5, -1, 1.5, 1.5);
+    ctx.lineWidth = 1.2;
+    const len = (horiz ? w.h : w.w) + 12;
+    ctx.fillRect(-len * 0.5, -3.4, len, 6.8);
+    ctx.strokeRect(-len * 0.5, -3.4, len, 6.8);
+    ctx.fillStyle = '#8b8f8a';
+    ctx.fillRect(-len * 0.5 + 2.5, -1, 1.8, 1.8);
+    ctx.fillRect(len * 0.5 - 4.3, -1, 1.8, 1.8);
     ctx.restore();
   }
-  // 截断面近黑边
-  ctx.strokeStyle = '#070808';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(w.x + 0.5, w.y + 0.5, w.w - 1, w.h - 1);
 }
 
+/**
+ * 建筑门扇绘制：外门配宽厚磨损木门槛 + 醒目重木门扇 + 金属合页/拉手，与冷灰双轨窗框截然不同
+ */
 function drawDoor(ctx: CanvasRenderingContext2D, d: InteriorDoor, t: number) {
   const horiz = d.orientation === 'h';
-  // 门槛
-  ctx.fillStyle = 'rgba(12, 9, 7, 0.75)';
-  ctx.fillRect(d.x, d.y, d.w, d.h);
+  // 宽厚磨损木门槛（横贯门洞，外门更宽更亮以便玩家一眼锁定可进入的入口）
+  ctx.fillStyle = d.exterior ? '#594530' : '#3b2e21';
+  if (horiz) {
+    ctx.fillRect(d.x - 1, d.y - (d.exterior ? 2 : 0), d.w + 2, d.h + (d.exterior ? 4 : 0));
+    // 门槛木板接缝与踩踏磨损高光
+    ctx.fillStyle = d.exterior ? 'rgba(138, 114, 84, 0.45)' : 'rgba(98, 82, 62, 0.30)';
+    ctx.fillRect(d.x + 2, d.y + d.h * 0.28, d.w - 4, d.h * 0.44);
+    ctx.strokeStyle = '#120d09';
+    ctx.lineWidth = 1.1;
+    ctx.strokeRect(d.x - 1, d.y - (d.exterior ? 2 : 0), d.w + 2, d.h + (d.exterior ? 4 : 0));
+  } else {
+    ctx.fillRect(d.x - (d.exterior ? 2 : 0), d.y - 1, d.w + (d.exterior ? 4 : 0), d.h + 2);
+    ctx.fillStyle = d.exterior ? 'rgba(138, 114, 84, 0.45)' : 'rgba(98, 82, 62, 0.30)';
+    ctx.fillRect(d.x + d.w * 0.28, d.y + 2, d.w * 0.44, d.h - 4);
+    ctx.strokeStyle = '#120d09';
+    ctx.lineWidth = 1.1;
+    ctx.strokeRect(d.x - (d.exterior ? 2 : 0), d.y - 1, d.w + (d.exterior ? 4 : 0), d.h + 2);
+  }
+
   // 门扇绕合页旋转：开合动画 openT 0..1，撞门时抖动
   let hx = 0;
   let hy = 0;
@@ -1062,24 +1101,43 @@ function drawDoor(ctx: CanvasRenderingContext2D, d: InteriorDoor, t: number) {
   ctx.save();
   ctx.translate(hx, hy);
   ctx.rotate(ang);
-  ctx.fillStyle = 'rgba(4, 3, 2, 0.45)';
-  ctx.fillRect(2, -1, len - 3, 6);
-  ctx.fillStyle = d.exterior ? '#3f2f20' : '#3a2b1d';
+  // 门扇投影
+  ctx.fillStyle = 'rgba(4, 3, 2, 0.52)';
+  ctx.fillRect(2, -1, len - 2, 7.5);
+  // 厚实做旧橡木门扇（外门略厚且带木筋高光，远距离清晰可辨）
+  const leafThick = d.exterior ? 6.4 : 5.0;
+  ctx.fillStyle = d.exterior ? '#6b4d32' : '#4f3a26';
   ctx.strokeStyle = '#0b0806';
-  ctx.lineWidth = 1.4;
-  ctx.fillRect(1, -2.5, len - 3, 5);
-  ctx.strokeRect(1, -2.5, len - 3, 5);
-  ctx.fillStyle = '#6a6a62';
-  ctx.fillRect(len - 9, -1, 3, 2);
+  ctx.lineWidth = 1.5;
+  ctx.fillRect(1, -leafThick * 0.5, len - 2, leafThick);
+  ctx.strokeRect(1, -leafThick * 0.5, len - 2, leafThick);
+  // 门扇顶面木纹高光条
+  ctx.fillStyle = d.exterior ? 'rgba(176, 142, 98, 0.42)' : 'rgba(140, 112, 78, 0.28)';
+  ctx.fillRect(3, -leafThick * 0.5 + 1.1, len - 6, 1.5);
+  // 金属合页与醒目黄铜/旧铁门把手（双侧凸出，俯视可一眼认出是门）
+  ctx.fillStyle = '#434642';
+  ctx.fillRect(2, -leafThick * 0.5 - 1, 4, leafThick + 2);
+  ctx.fillStyle = d.exterior ? '#c4a86e' : '#8b8572';
+  ctx.fillRect(len - 10, -leafThick * 0.5 - 2.2, 4.5, leafThick + 4.4);
+  ctx.strokeStyle = '#120f0b';
+  ctx.lineWidth = 0.9;
+  ctx.strokeRect(len - 10, -leafThick * 0.5 - 2.2, 4.5, leafThick + 4.4);
   ctx.restore();
-  // 门框立柱（近黑截断）
-  ctx.fillStyle = '#070808';
+
+  // 厚重门框木立柱（略亮于纯黑墙体，形成清晰门套轮廓）
+  ctx.fillStyle = d.exterior ? '#3b2b1d' : '#1b1510';
+  ctx.strokeStyle = '#070808';
+  ctx.lineWidth = 1.2;
   if (horiz) {
-    ctx.fillRect(d.x - 2, d.y, 3, d.h);
-    ctx.fillRect(d.x + d.w - 1, d.y, 3, d.h);
+    ctx.fillRect(d.x - 4, d.y - 2, 5, d.h + 4);
+    ctx.strokeRect(d.x - 4, d.y - 2, 5, d.h + 4);
+    ctx.fillRect(d.x + d.w - 1, d.y - 2, 5, d.h + 4);
+    ctx.strokeRect(d.x + d.w - 1, d.y - 2, 5, d.h + 4);
   } else {
-    ctx.fillRect(d.x, d.y - 2, d.w, 3);
-    ctx.fillRect(d.x, d.y + d.h - 1, d.w, 3);
+    ctx.fillRect(d.x - 2, d.y - 4, d.w + 4, 5);
+    ctx.strokeRect(d.x - 2, d.y - 4, d.w + 4, 5);
+    ctx.fillRect(d.x - 2, d.y + d.h - 1, d.w + 4, 5);
+    ctx.strokeRect(d.x - 2, d.y + d.h - 1, d.w + 4, 5);
   }
 }
 
@@ -1153,7 +1211,8 @@ export function drawBuildingFixtures(
   for (let i = 0; i < bl.length; i++) {
     const b = bl[i];
     if (b.id === 'mill' || !buildingVisible(b, 40)) continue;
-    if (b.hasEntry && Variants.val.homes !== 'a') {
+    if (b.hasEntry) {
+      // 写实建筑门廊台阶 + 踩踏泥路引导（向外清晰伸出屋檐之外，确保室外一眼辨识可进入的建筑大门）
       const dx = b.entryIn.x - b.entryOut.x;
       const dy = b.entryIn.y - b.entryOut.y;
       const midX = (b.entryIn.x + b.entryOut.x) * 0.5;
@@ -1161,24 +1220,31 @@ export function drawBuildingFixtures(
       ctx.save();
       ctx.translate(midX, midY);
       ctx.rotate(Math.atan2(dy, dx));
-      ctx.fillStyle = 'rgba(141, 103, 61, 0.38)';
-      ctx.fillRect(-7, -22, 14, 44);
-      ctx.strokeStyle = 'rgba(210, 170, 105, 0.55)';
-      ctx.lineWidth = 1.5;
+      // 门外踩踏磨损浅土引道（-x 为门外方向，+x 为门内方向）
+      ctx.fillStyle = 'rgba(92, 82, 66, 0.24)';
       ctx.beginPath();
-      ctx.moveTo(-7, -22);
-      ctx.lineTo(7, -22);
-      ctx.moveTo(-7, 22);
-      ctx.lineTo(7, 22);
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(221, 183, 118, 0.68)';
-      ctx.beginPath();
-      ctx.moveTo(-22, -5);
-      ctx.lineTo(-13, 0);
-      ctx.lineTo(-22, 5);
-      ctx.lineTo(-19, 0);
-      ctx.closePath();
+      ctx.ellipse(-34, 0, 26, 26, 0, 0, Math.PI * 2);
       ctx.fill();
+      // 4 块向外突出的破旧做旧木门廊台阶板（完整露出屋檐，极强建筑入口辨识度）
+      ctx.fillStyle = 'rgba(4, 3, 2, 0.58)';
+      ctx.fillRect(-38, -26, 30, 56);
+      for (let p = 0; p < 4; p++) {
+        const px = -38 + p * 7.4;
+        ctx.fillStyle = p % 2 === 1 ? '#6e583f' : '#5e4a35';
+        ctx.fillRect(px, -26, 6.5, 52);
+        ctx.strokeStyle = '#120d09';
+        ctx.lineWidth = 1.1;
+        ctx.strokeRect(px, -26, 6.5, 52);
+        // 磨损高亮木纹（让大门台阶在阴郁环境里自然醒目）
+        ctx.fillStyle = 'rgba(176, 152, 118, 0.32)';
+        ctx.fillRect(px + 1, -16, 4.0, 32);
+      }
+      // 门槛处的破旧麻布迎门踏垫
+      ctx.fillStyle = '#534535';
+      ctx.strokeStyle = '#18130e';
+      ctx.lineWidth = 1.2;
+      ctx.fillRect(-11, -17, 13, 34);
+      ctx.strokeRect(-11, -17, 13, 34);
       ctx.restore();
     }
     for (let k = 0; k < b.props.length; k++) {

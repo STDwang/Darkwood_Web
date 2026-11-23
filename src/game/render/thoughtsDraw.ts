@@ -16,9 +16,9 @@ const LINE_H = 22;
 const MAX_W = 250;
 /** 两条同时显示时的额外间隙 */
 const STACK_GAP = 6;
-/** 锚点：相对角色中心的左上偏移（≈ 75px） */
-const ANCHOR_DX = -44;
-const ANCHOR_DY = -60;
+/** 锚点：相对角色中心的头顶偏上偏移（对标原版截图 2 头顶叙事浮字） */
+const ANCHOR_DX = 0;
+const ANCHOR_DY = -48;
 /** 屏幕安全边距 */
 const SAFE = 10;
 /** 主美定调：原作浮字为干净无衬线体；Windows 上宋体 16px 加描边过细，

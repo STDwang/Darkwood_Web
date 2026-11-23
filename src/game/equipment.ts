@@ -263,16 +263,16 @@ export const FLAME_PHYS = {
   whooshSpeed: 420,
 };
 
-/** 火把点光源参数（renderer 推入 GpuLight 时读取） */
+/** 火把点光源参数（renderer 推入 GpuLight 时读取：浓郁暖橘近身光池，与冷白远射聚焦手电形成鲜明反差） */
 export const TORCH_LIGHT = {
-  radius: 150,
-  intensity: 1.15,
-  groundRadius: 132,
-  groundIntensity: 0.95,
+  radius: 188,
+  intensity: 1.55,
+  groundRadius: 158,
+  groundIntensity: 1.25,
   muzzleRadius: 270,
   muzzleIntensity: 3.2,
   /** 被视为"照亮敌人"的半径 */
-  revealRadius: 138,
+  revealRadius: 175,
 };
 
 // ---------------------------------------------------------------------------
@@ -1133,9 +1133,10 @@ function baseTorchArm(engine: GameEngine, out: ArmPose) {
     } else a = lerp(endA, 0.25, easeInOut((prog - 0.72) / 0.28));
     twist = a * 0.3;
   } else {
-    // 行走/疾跑摆臂（与 renderer 一致：左脚在前时右臂前摆）
+    // 严格对照《Darkwood》原作：无论行走还是疾跑，持火把的右臂稳稳端举在右前方，绝不前后挥动！仅随步频有极微小颠簸
     const g = Math.cos(Math.PI * p.pose.gait) * p.pose.move;
-    a = lerp(a - g * 0.16, -1.15 + g * 0.95, p.pose.sprint * (1 - ch));
+    const steadySway = g * (0.025 + p.pose.sprint * 0.02);
+    a = lerp(0.24 - steadySway, 1.28 * dir, ch);
   }
   out.a = a;
   out.len = 13;

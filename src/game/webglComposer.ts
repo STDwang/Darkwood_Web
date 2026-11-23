@@ -40,8 +40,10 @@ export interface WebGLFrameUniforms {
   nightAmt?: number;
   // 手电树影电影级着色（?v-cine=b 且 ?v-shade=b）：距离相关软半影 + 冷色本影 + 暖色半影边 + 叶隙斑驳 + 体积暗柱
   shadeMode?: boolean;
-  // R3 协调曝光（?v-cine=b 且 ?v-tone=b）：锥外仅轻度降亮去饱和、手电/暖光按昼夜降增益、暗部提亮、白昼减弱暗角与枝杈框
+  // R3 协调曝光（?v-cine=b 且 ?v-tone=b）：Darkwood 锐利 V 锥 + 近身暖光环 + 锥外冷灰记忆柔焦 + 夜间恐惧径向暗影
   tone?: boolean;
+  // 危险/理智压迫强度 0..1（驱动夜间径向恐惧拉伸与微暗角脉动）
+  danger?: number;
   lights: GpuLight[];
 }
 
@@ -84,6 +86,7 @@ uniform int uCine;
 uniform float uNightAmt;
 uniform int uShadeMode;
 uniform int uTone;
+uniform float uDanger;
 
 uniform int uLightCount;
 uniform vec4 uLightPosRad[12];   // xy = screen pos, z = radius, w = intensity
@@ -325,15 +328,9 @@ void main() {
   vec2 centered = vUv - 0.5;
   float edgeDist = length(centered);
   vec3 albedo;
-  if (uCine == 1) {
-    // 电影级：屏幕边缘极轻微径向色差（角落约 1px），受伤时叠加原有水平血色色差
-    vec2 cdir = uv - 0.5;
-    vec2 caOff = cdir * (0.0016 * edgeDist) + vec2(uBloodDread * 0.0032 * edgeDist, 0.0);
-    albedo.r = texture(uAlbedo, uv + caOff).r;
-    albedo.g = texture(uAlbedo, uv).g;
-    albedo.b = texture(uAlbedo, uv - caOff).b;
-  } else if (uBloodDread > 0.08) {
-    float ca = uBloodDread * 0.0032 * edgeDist;
+  if (uBloodDread > 0.08) {
+    // 仅受伤时开启微弱血色色差，常态保持零色差极致锐利清晰
+    float ca = uBloodDread * 0.0030 * edgeDist;
     albedo.r = texture(uAlbedo, uv + vec2(ca, 0.0)).r;
     albedo.g = texture(uAlbedo, uv).g;
     albedo.b = texture(uAlbedo, uv - vec2(ca, 0.0)).b;
@@ -389,14 +386,18 @@ void main() {
     vec4 cc = uLightColChan[i];
     vec4 cn = uLightCone[i];
 
-    // R3 协调曝光：高环境光下手电（R）与吊灯/火光/照明弹/菌光（G 与无遮挡）降低增益，锥内与光池不过曝、明暗过渡更协调；
-    // 强度 ≥ 3.6 的瞬时强光（如枪口焰）不降增益，3.0–3.6 之间平滑过渡；近身微光圈（B）不变
+    // Darkwood 真实光影曝光：保留锥内清晰反差与火把/油灯暖琥珀层次，仅防过曝截断
     float lw = pr.w;
     if (toneOn) {
       if (cc.a < 0.5) {
-        lw *= mix(0.36, 0.32, nA);
+        // 视野锥/手电主光：白昼清亮通透，黑夜聚焦切开深暗
+        lw *= mix(0.68, 0.78, nA);
       } else if (cc.a < 1.5 || cc.a > 2.5) {
-        lw *= mix(mix(0.35, 0.48, nA), 1.0, smoothstep(3.0, 3.6, pr.w));
+        // 吊灯 / 火把 / 照明弹 / 篝火：浓郁琥珀暖光
+        lw *= mix(mix(0.64, 0.88, nA), 1.0, smoothstep(3.0, 3.6, pr.w));
+      } else {
+        // 角色近身 360° 柔和暖白/暖黄光环
+        lw *= mix(0.95, 1.15, nA);
       }
     }
 
@@ -405,34 +406,33 @@ void main() {
     if (d > pr.z) continue;
 
     float normD = d / pr.z;
-    // R3 tone：手电距离衰减指数 1.55 -> 0.8（光斑更大更平，远端不骤暗），配合上面的降增益保持 p95 不超限
-    float atten = pow(clamp(1.0 - normD, 0.0, 1.0), (toneOn && cc.a < 0.5) ? 0.8 : 1.55);
+    // 视野锥中远段保持充足辨识度，近身光环柔滑过渡，无阴影小磷光（cc.a > 2.5）使用高次柔边衰减杜绝硬圆盘感
+    float attenPow = (cc.a < 0.5) ? 0.92 : (cc.a > 2.5) ? 2.45 : (cc.a > 1.5) ? 1.45 : 1.38;
+    float atten = pow(clamp(1.0 - normD, 0.0, 1.0), attenPow);
 
     float spot = 1.0;
     if (cn.z > -1.5) {
       vec2 dirToPx = d > 0.001 ? toPx / d : cn.xy;
       float cosAng = dot(dirToPx, cn.xy);
       if (toneOn && cc.a < 0.5) {
-        // R3"雾中柔边大光斑"（ART_DIRECTION_R3 第 1 条）：按角度做宽羽化（核心边 -0.18..+0.16rad）+ 低频噪声扰动外沿，
-        // 锥外再留一圈宽余晖（到 半角 + 0.34rad 归零；渲染层手电遮挡多边形同步放宽到 半角 + 0.36rad，不会被多边形硬切）
+        // Darkwood 标志性锐利 V 字视野锥：边界干净利落（极窄抗锯齿羽化），极微弱外溢避免生硬锯齿
         float ang = acos(clamp(cosAng, -1.0, 1.0));
         float halfA = acos(clamp(cn.z, -1.0, 1.0));
-        float wob = (vnoise(vec2(ang * 7.0 + uTime * 0.12, d * 0.011 - uTime * 0.05)) - 0.5) * 0.16;
-        float core = 1.0 - smoothstep(halfA - 0.18, halfA + 0.16, ang + wob);
-        float halo = (1.0 - smoothstep(halfA - 0.05, halfA + 0.34, ang)) * 0.26;
+        float edgeSharp = mix(0.032, 0.055, nA);
+        float core = 1.0 - smoothstep(halfA - edgeSharp * 0.45, halfA + edgeSharp, ang);
+        float halo = (1.0 - smoothstep(halfA - 0.01, halfA + 0.11, ang)) * mix(0.06, 0.14, nA);
         spot = max(core, halo);
       } else {
-        spot = smoothstep(cn.z - 0.07, cn.z + 0.08, cosAng);
+        spot = smoothstep(cn.z - 0.045, cn.z + 0.045, cosAng);
       }
       if (spot <= 0.001) continue;
     }
 
-    // R3：手电光色向"骨白"收敛（暖黄成分减半），受光区更单色；火光/吊灯/照明弹保持原有暖色
+    // 严格保留各自光源真实色温：手电筒保持冷白/骨白聚焦光束，火把保持浓郁暖橘火光，绝不互相混洗
     vec3 lc = cc.rgb;
-    if (toneOn && cc.a < 0.5) lc = mix(cc.rgb, vec3(1.0, 0.95, 0.86), 0.55);
 
     float vis = 1.0;
-    // 电影级手电树影（uShadeMode）：仅手电（R 通道）走距离相关软半影搜索，吊灯/火光/照明弹/近身微光保持原路径
+    // 电影级手电树影：保留贴近树干/墙体的锐利深黑影柱，远端柔和过渡，杜绝墙后漏光
     bool shadeFlash = (uShadeMode == 1 && cc.a < 0.5);
     float shLen = 0.0;
     float visWide = 1.0;
@@ -442,19 +442,18 @@ void main() {
       if (uPenumbraSamples > 1) {
         float rawR = texture(uShadow, uv).r;
         vec4 fs = flashShadowSoft(screenPx, pr.xy, rawR);
-        // 光锥两侧径向边界（遮挡多边形比光斑宽约 0.06rad）不是树影：在边界附近退回原始遮挡，避免沿径向边缘出现抖动噪点
         float cA = dot(toPx / max(d, 0.001), cn.xy);
         float sinC = sqrt(max(1.0 - cn.z * cn.z, 0.0));
-        // cos(半角 + δ)：δ 比渲染层遮挡多边形外扩量小 0.025rad（R2：外扩 0.06 -> δ 0.035；R3 tone：外扩 0.36 -> δ 0.335）
-        float edgeCos = toneOn ? cn.z * 0.94441 - sinC * 0.32867 : cn.z * 0.99939 - sinC * 0.034993;
-        float wEdge = smoothstep(edgeCos - 0.012, edgeCos + 0.012, cA);
-        vis = mix(rawR, fs.x, wEdge);
+        // 遮挡多边形外扩 0.05rad -> 边界保护取 0.03rad
+        float edgeCos = cn.z * 0.99955 - sinC * 0.029995;
+        float wEdge = smoothstep(edgeCos - 0.010, edgeCos + 0.010, cA);
+        // 强化 Darkwood 放射状长黑影的 crisp 锐度：半影更紧致
+        vis = mix(rawR, mix(rawR, fs.x, 0.62), wEdge);
         shLen = fs.y;
         visWide = mix(rawR, fs.z, wEdge);
         broadOcc = fs.w;
         coneEdgeW = wEdge;
       } else {
-        // 流畅档：不做遮挡搜索，沿用基础采样；阴影长度取中等估计值、按宽遮挡保守处理（只染色不填亮，杜绝透墙漏光）
         vis = shadowVis.r;
         shLen = 120.0;
         visWide = vis;
@@ -464,91 +463,69 @@ void main() {
     else if (cc.a < 1.5) vis = shadowVis.g;
     else if (cc.a < 2.5) vis = shadowVis.b;
 
-    // 电影级手电本影不能直接跳过：本影内仍需叠加冷色填充光
     if (vis <= 0.003 && !shadeFlash) continue;
 
-    vec3 L = normalize(vec3(-toPx.x, -toPx.y, 78.0));
-    float ndl = max(dot(N, L), 0.16);
+    vec3 L = normalize(vec3(-toPx.x, -toPx.y, 72.0));
+    float ndl = max(dot(N, L), 0.14);
 
     float spec = 0.0;
     if (uPuddleReflections == 1 && activeWet > 0.16) {
       vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
-      float shininess = mix(16.0, 52.0, puddleMask);
-      spec = pow(max(dot(N, H), 0.0), shininess) * activeWet * 1.15;
+      float shininess = mix(18.0, 56.0, puddleMask);
+      spec = pow(max(dot(N, H), 0.0), shininess) * activeWet * 1.25;
     }
 
     vec3 contrib = lc * lw * atten * spot * vis;
-    directLight += contrib * (ndl * 1.22 + spec);
+    directLight += contrib * (ndl * 1.26 + spec);
 
     if (shadeFlash) {
-      float baseI = lw * atten * spot; // 未遮挡时该点的手电强度
+      float baseI = lw * atten * spot;
       float umbra = 1.0 - vis;
-      float fade = smoothstep(14.0, 320.0, shLen);
+      float fade = smoothstep(24.0, 340.0, shLen);
       vec2 dirToLight = d > 0.001 ? -toPx / d : -cn.xy;
       float dap = leafDapple(worldPx, dirToLight);
-      // 本影不是纯黑：偏冷深蓝绿灰；紧贴树干最深（树干影），沿阴影长度被环境光与雾逐步填充淡出，远段叶隙斑驳部分透光；
-      // 墙体等宽遮挡后方只保留极弱冷色（×0.12），不做叶隙透光；光锥径向边界之外不填充
-      // R3 tone：墙体等大遮挡物后方的冷蓝灰本影由 ×0.12 提到 ×0.32（半透明、暗区内结构可辨，ART_DIRECTION_R3 第 6 条）
-      float fill = (0.05 + 0.17 * fade + 0.12 * dap * fade * (1.0 - broadOcc)) * (1.0 + 0.15 * uFogDensity + 0.30 * uRain) * mix(1.0, toneOn ? 0.32 : 0.12, broadOcc) * coneEdgeW;
+      // 墙体与树干后方保持深邃压迫黑影（墙后严禁漏光），仅远段树影留极微冷灰透气
+      float fill = (0.018 + 0.075 * fade + 0.06 * dap * fade * (1.0 - broadOcc)) * (1.0 + 0.18 * uRain) * mix(1.0, 0.08, broadOcc) * coneEdgeW;
       directLight += umbraTintColor() * baseI * umbra * fill * (0.55 + 0.45 * ndl);
-      // 半影边缘极轻的暖色溢出（手电光色），在 vis = 0.5 处最强
       float fringe = 4.0 * vis * (1.0 - vis);
-      directLight += lc * vec3(1.0, 0.80, 0.55) * baseI * fringe * 0.07;
+      directLight += lc * vec3(1.0, 0.84, 0.62) * baseI * fringe * 0.045;
     }
 
-    // 累计真实光照可见度（用于视野锥外冷灰记忆迷雾过渡）
-    float lightReveal = atten * spot * vis * (cc.a < 0.5 ? 1.55 : cc.a < 1.5 ? 1.35 : 0.85);
+    // 累计真实光照可见度（用于视野锥内外锐利分界：锥内高清有色，锥外冷灰朦胧记忆层）
+    float lightReveal = atten * spot * vis * (cc.a < 0.5 ? 2.45 : cc.a < 1.5 ? 1.85 : 1.55);
     directVis = max(directVis, clamp(lightReveal, 0.0, 1.0));
 
     if (cn.w > 0.01) {
       float mist = fbm(worldPx * 0.011 + vec2(uTime * 0.18, -uTime * 0.11));
       vec3 scatSrc = contrib;
       if (shadeFlash) {
-        // 体积暗柱：雾/雨中光锥被树干切开；散射取更宽的软化可见度，并沿阴影长度被侧向散射缓慢回填（强度克制）
-        float sVis = max(mix(vis, visWide, 0.6), smoothstep(30.0, 360.0, shLen) * 0.35 * (1.0 - broadOcc) * coneEdgeW);
-        scatSrc = lc * lw * atten * spot * sVis * (1.0 + uRain * 0.15);
+        float sVis = max(mix(vis, visWide, 0.45), smoothstep(40.0, 360.0, shLen) * 0.18 * (1.0 - broadOcc) * coneEdgeW);
+        scatSrc = lc * lw * atten * spot * sVis * (1.0 + uRain * 0.18);
       }
-      volumetricScatter += scatSrc * cn.w * (0.40 + mist * 0.80) * (0.52 + uFogDensity * 0.62);
+      volumetricScatter += scatSrc * cn.w * (0.34 + mist * 0.68) * (0.42 + uFogDensity * 0.48);
     }
 
-    // 强点光源（吊灯、篝火、火盆、照明弹）处叠加极克制的水平微眩光（Subtle Anamorphic Glare）
-    if (cn.z < -1.5 && cc.a < 1.5 && pr.w >= 1.8) {
-      float gx = abs(toPx.x) / max(pr.z * 0.55, 60.0);
-      float gy = abs(toPx.y) / 9.5;
+    // 强点光源（吊灯、篝火、火盆、照明弹）处叠加克制微眩光
+    if (cn.z < -1.5 && cc.a < 1.5 && pr.w >= 1.6) {
+      float gx = abs(toPx.x) / max(pr.z * 0.52, 56.0);
+      float gy = abs(toPx.y) / 9.0;
       float streak = exp(-gx * 2.5 - gy * 1.65) * vis;
-      float coreGlow = exp(-d / 28.0) * vis * 0.45;
-      glareAccum += cc.rgb * (streak * 0.14 + coreGlow * 0.12) * clamp(lw * 0.35, 0.4, 1.1);
+      float coreGlow = exp(-d / 26.0) * vis * 0.48;
+      glareAccum += cc.rgb * (streak * 0.12 + coreGlow * 0.15) * clamp(lw * 0.35, 0.4, 1.1);
     }
   }
 
-  // 视野锥外冷灰记忆迷雾（Darkwood 灵魂：锥外退化为冷灰暗影，锥内与光源区锐利通透）
+  // Darkwood 灵魂：阴郁且极度清晰！锥内高清自然色彩，锥外转为深沉冷灰青记忆层（不做模糊柔焦，保持建筑/地面/枯枝刀刻般清晰）
   vec3 effectiveAlbedo = surfaceAlbedo;
   vec3 effectiveAmbient = ambientLight;
-  // R3 tone：受光区近乎单色（ART_DIRECTION_R3 第 2 条）——反照率向"骨白—灰褐"再降饱和 42%（白昼）–50%（黑夜）；
-  // 明显偏红的警示/血迹/锈红像素按红色主导度保留原色（火光的暖色来自光色本身，不受影响）
-  vec3 monoAlbedo = surfaceAlbedo;
-  if (toneOn) {
-    float gA = dot(surfaceAlbedo, vec3(0.299, 0.587, 0.114));
-    float redDom = (surfaceAlbedo.r - max(surfaceAlbedo.g, surfaceAlbedo.b)) / max(surfaceAlbedo.r, 0.02);
-    float warmKeep = smoothstep(0.22, 0.45, redDom);
-    monoAlbedo = mix(surfaceAlbedo, vec3(gA) * vec3(1.05, 1.0, 0.92), mix(0.42, 0.50, nA) * (1.0 - warmKeep));
-    effectiveAlbedo = monoAlbedo;
-  }
   if (uVisionFog == 1) {
+    float reveal = smoothstep(0.05, 0.30, directVis);
     float gray = dot(surfaceAlbedo, vec3(0.299, 0.587, 0.114));
-    vec3 memoryCold = vec3(gray) * vec3(0.84, 0.88, 0.94);
-    if (toneOn) {
-      // R3：锥内外过渡更宽更柔；锥外白昼仅轻微冷灰降饱和（22%）+ 18% 亮度衰减，地形/树/建筑完全可读；
-      // 黑夜去饱和 60%、亮度衰减 20%（配合抬高的夜间环境光下限，锥外暗但树冠与路的轮廓可辨）
-      float reveal = smoothstep(0.02, 0.75, directVis);
-      effectiveAlbedo = mix(mix(monoAlbedo, memoryCold, mix(0.22, 0.60, nA)), monoAlbedo, reveal);
-      effectiveAmbient *= mix(mix(0.82, 0.80, nA), 1.0, reveal);
-    } else {
-      float reveal = smoothstep(0.06, 0.62, directVis);
-      effectiveAlbedo = mix(mix(surfaceAlbedo, memoryCold, 0.78), surfaceAlbedo, reveal);
-      // 压深锥外环境暗部，拉开白昼/黄昏/黑夜电影级明暗对比（R2 / ?v-tone=a 对照组）
-      effectiveAmbient *= mix(0.42, 1.0, reveal);
-    }
+    // 锥外深沉冷灰石板色（对标用户原版截图：阴郁、深冷、依然清晰锐利）
+    vec3 memoryCold = vec3(gray) * vec3(0.76, 0.84, 0.88);
+    float desatAmt = mix(0.76, 0.92, nA);
+    effectiveAlbedo = mix(mix(surfaceAlbedo, memoryCold, desatAmt), surfaceAlbedo, reveal);
+    effectiveAmbient *= mix(mix(0.42, 0.20, nA), 1.0, reveal);
   }
 
   // 数值安全红线：在 ACES 之前严格 clamp，杜绝 NaN/Inf 黑块
@@ -556,7 +533,8 @@ void main() {
   volumetricScatter = clamp(volumetricScatter, vec3(0.0), vec3(3.5));
   glareAccum = clamp(glareAccum, vec3(0.0), vec3(1.0));
 
-  vec3 color = effectiveAlbedo * totalLight + volumetricScatter * 0.20 + glareAccum;
+  // 克制体积散射（0.06），避免泛灰发白，确保画面阴郁通透且细节锐利
+  vec3 color = effectiveAlbedo * totalLight + volumetricScatter * 0.06 + glareAccum * 0.72;
 
   // 东欧油画帆布织纹与胶片颗粒
   if (uEnableGrain == 1 && uCine == 0) {
@@ -566,63 +544,66 @@ void main() {
   }
 
   if (uCine == 1) {
-    // 夜晚轻微曝光呼吸（两个错频正弦，均值为 1，幅度约 ±4%）
-    float breath = 1.0 + clamp(uNightAmt, 0.0, 1.0) * (0.028 * sin(uTime * 0.63) + 0.012 * sin(uTime * 1.71 + 1.3));
+    // 夜晚轻微曝光呼吸（幅度克制）
+    float breath = 1.0 + clamp(uNightAmt, 0.0, 1.0) * (0.022 * sin(uTime * 0.63) + 0.010 * sin(uTime * 1.71 + 1.3));
     color *= breath;
-    // 极弱的油画织纹（仅保留肌理暗示，避免压过胶片颗粒）
-    if (uEnableGrain == 1) {
-      color += vec3(sin(worldPx.x * 1.6) * sin(worldPx.y * 1.6) * 0.005) * (0.3 + length(color) * 0.5);
-    }
   }
 
   // 数值安全红线：所有累加项在 ACES 之前再次 clamp 至有限区间
   color = clamp(color, vec3(0.0), vec3(12.0));
 
-  // ACES Filmic 色调映射
-  color = acesFilm(color * 1.10);
+  // ACES Filmic 色调映射（高对比、深沉暗部、细腻暖高光）
+  color = acesFilm(color * 1.16);
 
   if (uColdPalette == 1) {
-    // 东欧冷腐油画色彩收敛：压低绿通道溢出、收束过饱和暖光、暗部注入冷灰青阴影
+    // Darkwood 东欧阴郁油画色彩收敛：保留苔藓绿、枯草黄与火光暖红，仅做自然胶片去饱和（14%）和冷青暗部注入
     float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    color = mix(vec3(lum), color, 0.70);
-    // 抑制绿通道显著高于红蓝通道的塑料感
-    float gCap = max(color.r, color.b) + 0.010;
-    color.g = mix(color.g, min(color.g, gCap), 0.75);
-    float shadowMask = clamp(1.0 - lum * 2.6, 0.0, 0.50);
-    color = mix(color, color * vec3(0.92, 0.96, 1.04), shadowMask);
+    color = mix(vec3(lum), color, 0.86);
+    float shadowMask = clamp(1.0 - lum * 2.5, 0.0, 0.45);
+    color = mix(color, color * vec3(0.89, 0.96, 1.04), shadowMask);
   } else {
     color = mix(color, color * vec3(0.93, 0.98, 1.04), clamp(1.0 - dot(color, vec3(0.3, 0.6, 0.1)) * 2.2, 0.0, 0.45));
   }
 
   if (uCine == 1) {
-    // 电影级分离调色：冷灰偏青暗部 + 病态赭黄高光（两组色调均做亮度归一，不改变整体曝光）
+    // 胶片分离调色：冷青暗部 + 微微做旧暖高光
     float lumS = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    float wShadow = 1.0 - smoothstep(0.02, 0.30, lumS);
-    float wHigh = smoothstep(0.30, 0.80, lumS);
-    vec3 coldTint = vec3(0.90, 1.00, 1.07) / 0.98379;  // 0.98379 = dot(tint, Rec.709 亮度权重)，保持亮度不变
-    vec3 ochreTint = vec3(1.10, 1.00, 0.78) / 1.00538; // 1.00538 = dot(tint, Rec.709 亮度权重)
-    color *= mix(vec3(1.0), coldTint, wShadow * 0.55);
-    // R3 tone：高光赭黄减弱（0.45 -> 0.22），受光区更接近"骨白—灰褐"单色
-    color *= mix(vec3(1.0), ochreTint, wHigh * (toneOn ? 0.22 : 0.45));
+    float wShadow = 1.0 - smoothstep(0.02, 0.28, lumS);
+    float wHigh = smoothstep(0.32, 0.82, lumS);
+    vec3 coldTint = vec3(0.88, 1.00, 1.08) / 0.98026;
+    vec3 ochreTint = vec3(1.08, 1.00, 0.84) / 1.0054;
+    color *= mix(vec3(1.0), coldTint, wShadow * 0.48);
+    color *= mix(vec3(1.0), ochreTint, wHigh * 0.24);
 
-    // R3 协调曝光：ACES 趾部提亮（幂 0.88 白昼 / 0.90 黑夜），把"死黑"抬进 12–40 的暗而可读区间，高光几乎不变
+    // 胶片微对比塑形：微压暗部、保持通透中亮调
     if (toneOn) {
-      color = pow(clamp(color, vec3(0.0), vec3(1.0)), vec3(mix(0.88, 0.90, nA)));
+      color = pow(clamp(color, vec3(0.0), vec3(1.0)), vec3(mix(0.94, 0.97, nA)));
     }
 
-    // 更有压迫感的暗角：画面中心保持干净，边缘与四角更深（R3：白昼起点外移、四角仅压到 72%，黑夜保留到 25%）
-    float vigStart = toneOn ? mix(0.52, 0.42, nA) : 0.40;
-    float vigFloor = toneOn ? mix(0.72, 0.25, nA) : 0.12;
-    float vigC = 1.0 - smoothstep(vigStart, 0.80, edgeDist);
+    // 压迫暗角：白昼柔和包围，黑夜沉重聚焦（对标截图 9, 10, 11, 12）
+    float vigStart = mix(0.46, 0.34, nA);
+    float vigFloor = mix(0.42, 0.08, nA);
+    float vigC = 1.0 - smoothstep(vigStart, 0.78, edgeDist);
     color *= mix(vigFloor, 1.0, vigC);
-    // R3 tone：夜晚暗角不是 #000，而是极轻的冷灰雾（ART_DIRECTION_R3 第 7 条；绝对量 ≤ 0.024，不改变 dark 统计口径）
-    if (toneOn) color += vec3(0.016, 0.019, 0.024) * (1.0 - vigC) * nA;
 
-    // 屏幕边缘黑色枝杈/根须剪影框（白昼稍弱、黑夜近乎纯黑；R3 白昼仅 15% 淡影、黑夜 80%）
-    float frameK = toneOn ? mix(0.15, 0.80, nA) : mix(0.55, 0.90, nA);
+    // Darkwood 标志性夜间/高危径向恐惧暗影拉丝（对标截图 12）
+    float terror = clamp(uDanger * 0.85 + nA * 0.38, 0.0, 1.0);
+    if (terror > 0.15 && edgeDist > 0.26) {
+      float radAng = atan(centered.y, centered.x);
+      float streakN = vnoise(vec2(radAng * 14.0, edgeDist * 2.2 - uTime * 0.28));
+      float streakN2 = vnoise(vec2(radAng * 27.0 + 3.1, edgeDist * 1.5 + uTime * 0.19));
+      float streak = smoothstep(0.42, 0.88, streakN * 0.65 + streakN2 * 0.35);
+      float edgeEnv = smoothstep(0.28, 0.72, edgeDist);
+      // 极轻的径向冷白微丝 + 深黑拉丝压迫（截图 12 的噩梦压迫氛围）
+      color *= 1.0 - edgeEnv * (0.45 + 0.35 * streak) * terror * 0.65;
+      color += vec3(0.10, 0.12, 0.13) * edgeEnv * pow(streak, 3.0) * terror * 0.35;
+    }
+
+    // 极克制的屏幕外缘暗枝剪影（主枯枝已在世界空间绘制，此处只保留极弱暗框呼吸）
+    float frameK = mix(0.06, 0.32, nA);
     color *= 1.0 - rootFrameMask(vUv, uTime) * frameK;
 
-    // 少量浮尘：稀疏的缓慢漂移微粒，仅在已受光区域可见
+    // 少量受光浮尘
     vec2 dg = screenPx / 86.0 + vec2(uTime * 0.11, uTime * 0.045);
     vec2 dcell = floor(dg);
     float dh = hash21(dcell + 17.0);
@@ -632,19 +613,18 @@ void main() {
       float dd = length(fract(dg) - dpos);
       float mote = 1.0 - smoothstep(0.0, 0.035, dd);
       float litLum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-      color += vec3(0.86, 0.80, 0.68) * mote * 0.05 * smoothstep(0.04, 0.30, litLum);
+      color += vec3(0.92, 0.84, 0.70) * mote * 0.065 * smoothstep(0.04, 0.28, litLum);
     }
 
-    // 细胶片颗粒：零均值、按亮度加权（纯黑处不抬升黑位）
+    // 胶片微颗粒
     if (uEnableGrain == 1) {
       float lumG = dot(color, vec3(0.2126, 0.7152, 0.0722));
       float g1 = hash21(screenPx + fract(uTime * 23.0) * 97.0) - 0.5;
       float g2 = hash21(screenPx * 1.37 + fract(uTime * 17.0) * 61.0) - 0.5;
-      float gAmt = 0.030 * smoothstep(0.015, 0.22, lumG) * (1.0 - 0.5 * smoothstep(0.5, 0.95, lumG));
+      float gAmt = 0.034 * smoothstep(0.015, 0.22, lumG) * (1.0 - 0.45 * smoothstep(0.55, 0.95, lumG));
       color += vec3((g1 + g2) * 0.5 * gAmt);
     }
   } else {
-    // 有机暗角压边（release_v1 旧版）
     float vig = smoothstep(0.88, 0.26, edgeDist);
     color *= mix(0.20, 1.0, vig);
   }
@@ -731,6 +711,7 @@ export class WebGL2Composer {
       'uNightAmt',
       'uShadeMode',
       'uTone',
+      'uDanger',
       'uLightCount',
       'uLightPosRad',
       'uLightColChan',
@@ -839,6 +820,7 @@ export class WebGL2Composer {
     gl.uniform1f(this.uniforms.uNightAmt, Number.isFinite(u.nightAmt) ? Math.min(1, Math.max(0, u.nightAmt as number)) : 0);
     gl.uniform1i(this.uniforms.uShadeMode, u.shadeMode && u.cine ? 1 : 0);
     gl.uniform1i(this.uniforms.uTone, u.tone && u.cine ? 1 : 0);
+    gl.uniform1f(this.uniforms.uDanger, Number.isFinite(u.danger) ? Math.min(1, Math.max(0, u.danger as number)) : 0);
 
     const count = Math.min(12, u.lights.length);
     for (let i = 0; i < count; i++) {

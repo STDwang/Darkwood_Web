@@ -207,6 +207,14 @@ export interface PlayerState {
   dodgeDirY: number;
   /** 本步是否真实处于疾跑（updatePlayer 每步写入；runtime 只读，用于呼吸/心跳等音频驱动） */
   isSprinting: boolean;
+  /** Darkwood 翻越窗户状态（>0 表示正在翻越窗框；期间越过窗框碰撞并播放全身跨窗动画） */
+  vaultTimer: number;
+  vaultDur: number;
+  vaultFromX: number;
+  vaultFromY: number;
+  vaultToX: number;
+  vaultToY: number;
+  vaultAngle: number;
   /** 当前限时交互动作（单一状态机，updatePlayer 推进） */
   action: PlayerAction;
   /** 姿态混合层（engine 推进，renderer 只读） */
@@ -482,6 +490,13 @@ export class GameEngine {
       dodgeDirX: 0,
       dodgeDirY: 0,
       isSprinting: false,
+      vaultTimer: 0,
+      vaultDur: 0.48,
+      vaultFromX: 0,
+      vaultFromY: 0,
+      vaultToX: 0,
+      vaultToY: 0,
+      vaultAngle: 0,
       action: {
         kind: 'none',
         timer: 0,
@@ -1006,7 +1021,24 @@ export class GameEngine {
         e.windup = 0;
         e.attackCd = Math.max(e.attackCd, 0.45);
       }
-      this.spawnBurst(e.x, e.y, heavy ? 18 : 11, 'blood', '#7c1717');
+      // 强化 Darkwood 沉重打击感：沿挥击方向喷射高速血雾与大颗粒凝固血滴
+      this.spawnBurst(e.x, e.y, heavy ? 22 : 14, 'blood', '#7c1717');
+      const sprayN = Math.round((heavy ? 10 : 6) * Quality.preset.particleScale);
+      for (let sp = 0; sp < sprayN; sp++) {
+        const pt = this.particles.alloc();
+        const spreadA = toEnemy + (this.rng() - 0.5) * 0.72;
+        const speed = (heavy ? 145 : 95) + this.rng() * 115;
+        pt.active = true;
+        pt.x = e.x + Math.cos(toEnemy) * 5;
+        pt.y = e.y + Math.sin(toEnemy) * 5;
+        pt.vx = Math.cos(spreadA) * speed;
+        pt.vy = Math.sin(spreadA) * speed;
+        pt.size = heavy ? 1.8 + this.rng() * 2.4 : 1.3 + this.rng() * 1.8;
+        pt.life = 0.24 + this.rng() * 0.22;
+        pt.maxLife = pt.life;
+        pt.color = sp % 2 === 0 ? '#6e1111' : '#961e1c';
+        pt.kind = 'blood';
+      }
       this.pushDecal({
         kind: 'splatter',
         x: e.x + Math.cos(toEnemy) * (heavy ? 18 : 14),
@@ -1017,7 +1049,7 @@ export class GameEngine {
       });
 
       if (e.hp <= 0) {
-        this.spawnBurst(e.x, e.y, heavy ? 24 : 18, 'blood', '#560d0d');
+        this.spawnBurst(e.x, e.y, heavy ? 26 : 18, 'blood', '#560d0d');
         this.pushDecal({
           kind: 'blood',
           x: e.x,
@@ -1035,10 +1067,10 @@ export class GameEngine {
 
     if (hitSomething) {
       this.crowAlarmAt(p.x, p.y, 300, true);
-      this.hitStop = heavy ? 0.055 : 0.042;
-      this.shake = Math.min(14, this.shake + (heavy ? 9.5 : isAxe ? 7.5 : 5));
+      this.hitStop = heavy ? 0.068 : 0.045;
+      this.shake = Math.min(16, this.shake + (heavy ? 11.5 : isAxe ? 8.5 : 5.8));
       AudioFX.playImpact('flesh');
-      this.emitRipple(p.x, p.y, heavy ? 165 : 130, 'rgba(214, 108, 92, 0.48)');
+      this.emitRipple(p.x, p.y, heavy ? 175 : 135, 'rgba(214, 108, 92, 0.52)');
     }
   }
 
@@ -1171,8 +1203,8 @@ export class GameEngine {
     if (this.mode !== 'play') return;
     const p = this.player;
 
-    // 0. 限时动作进行中：再次按 E 不重复触发（动作自动进行至完成或被打断）
-    if (p.action.kind !== 'none') return;
+    // 0. 限时动作或翻窗进行中：再次按 E 不重复触发
+    if (p.action.kind !== 'none' || p.vaultTimer > 0) return;
 
     // 1. 若正在拖拽家具，按 E 立刻松开
     if (this.draggedFurnitureId) {
@@ -1260,9 +1292,21 @@ export class GameEngine {
       if (fx.type !== 0 && this.toggleBuildingFixture(fx)) return;
     }
 
+    // 4c. Darkwood 招牌动作：翻越未封死的窗户（对标原版截图 4）
+    const vaultWin = this.findNearestVaultWindow(46);
+    if (vaultWin) {
+      this.startWindowVault(vaultWin.cx, vaultWin.cy, vaultWin.orientation);
+      return;
+    }
+
     // 5. 钉木板加固/修复：约 1.6s、3 次锤击（完成时才扣木材）
     const bar = this.findNearestBarricade(64);
     if (bar && bar.hp < bar.maxHp) {
+      // 若庇护所窗户已彻底无木板（hp <= 0）且玩家身上木材不足，允许直接翻越窗户逃生
+      if (bar.kind === 'window' && bar.hp <= 0 && this.inv.wood < 2) {
+        this.startWindowVault(bar.x + bar.w * 0.5, bar.y + bar.h * 0.5, bar.orientation);
+        return;
+      }
       if (this.inv.wood < 2) {
         this.pushToast('无木材加固！', 'warn');
         return;
@@ -1433,6 +1477,64 @@ export class GameEngine {
       }
     }
     return best;
+  }
+
+  /** 查找附近可翻越的未封死建筑窗户（boarded === 0） */
+  private findNearestVaultWindow(
+    maxDist: number
+  ): { cx: number; cy: number; orientation: 'h' | 'v' } | null {
+    const p = this.player;
+    let best: { cx: number; cy: number; orientation: 'h' | 'v' } | null = null;
+    let bestD = maxDist;
+    const buildings = this.world.buildings;
+    for (let i = 0; i < buildings.length; i++) {
+      const wins = buildings[i].windows;
+      for (let k = 0; k < wins.length; k++) {
+        const w = wins[k];
+        if (w.boarded > 0) continue;
+        const cx = w.x + w.w * 0.5;
+        const cy = w.y + w.h * 0.5;
+        const d = dist(p.x, p.y, cx, cy);
+        if (d < bestD) {
+          bestD = d;
+          best = { cx, cy, orientation: w.orientation };
+        }
+      }
+    }
+    return best;
+  }
+
+  /** 启动 Darkwood 标志性全身翻窗动画（对标原版截图 4） */
+  private startWindowVault(cx: number, cy: number, orientation: 'h' | 'v') {
+    const p = this.player;
+    const reach = 34;
+    let toX = cx;
+    let toY = cy;
+    if (orientation === 'h') {
+      const sign = p.y < cy ? 1 : -1;
+      toY = cy + sign * reach;
+      toX = cx;
+    } else {
+      const sign = p.x < cx ? 1 : -1;
+      toX = cx + sign * reach;
+      toY = cy;
+    }
+    p.vaultDur = 0.52;
+    p.vaultTimer = p.vaultDur;
+    p.vaultFromX = p.x;
+    p.vaultFromY = p.y;
+    p.vaultToX = toX;
+    p.vaultToY = toY;
+    p.vaultAngle = Math.atan2(toY - p.y, toX - p.x);
+    p.angle = p.vaultAngle;
+    p.vx = 0;
+    p.vy = 0;
+    p.isCharging = false;
+    p.chargeTimer = 0;
+    this.cancelAction();
+    this.stopChargeAudio();
+    (AudioFX as unknown as { playWindowVault?: () => void }).playWindowVault?.();
+    this.emitRipple(cx, cy, 115, 'rgba(204, 188, 156, 0.45)');
   }
 
   private findNearestBarricade(maxDist: number): BarricadeSlot | null {
@@ -2058,21 +2160,41 @@ export class GameEngine {
 
     const prevX = p.x;
     const prevY = p.y;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
+    if (p.vaultTimer > 0) {
+      // 翻窗期间：平滑缓动跨越窗台（不与窗框碰撞卡住），落地瞬间执行碰撞保底与落地屈膝
+      p.vaultTimer = Math.max(0, p.vaultTimer - dt);
+      const prog = 1 - p.vaultTimer / Math.max(0.01, p.vaultDur);
+      const ease = prog * prog * (3 - 2 * prog);
+      p.x = p.vaultFromX + (p.vaultToX - p.vaultFromX) * ease;
+      p.y = p.vaultFromY + (p.vaultToY - p.vaultFromY) * ease;
+      p.angle = p.vaultAngle;
+      p.vx = 0;
+      p.vy = 0;
+      if (p.vaultTimer <= 0) {
+        const landed = resolveWorldCollision(this.world, p.x, p.y, p.r, true, undefined, true);
+        p.x = landed.x;
+        p.y = landed.y;
+        pose.land = 0.24;
+        AudioFX.playDodgeLand(getSurfaceAt(this.world, p.x, p.y));
+        this.spawnBurst(p.x, p.y, 6, 'dust', '#8c8372');
+      }
+    } else {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
 
-    // Constraints Last（拖拽时先跳过正被抓取的家具，随后对家具解算并防夹死）
-    const resolved = resolveWorldCollision(
-      this.world,
-      p.x,
-      p.y,
-      p.r,
-      true,
-      draggedFurn?.id,
-      true
-    );
-    p.x = resolved.x;
-    p.y = resolved.y;
+      // Constraints Last（拖拽时先跳过正被抓取的家具，随后对家具解算并防夹死）
+      const resolved = resolveWorldCollision(
+        this.world,
+        p.x,
+        p.y,
+        p.r,
+        true,
+        draggedFurn?.id,
+        true
+      );
+      p.x = resolved.x;
+      p.y = resolved.y;
+    }
 
     // 拖拽家具平滑跟随玩家身前并执行世界碰撞解算，防止穿墙或夹死玩家
     if (draggedFurn) {
@@ -2294,6 +2416,19 @@ export class GameEngine {
     const torchPrompt = equipPrompt(this);
     if (torchPrompt) {
       this.currentPrompt = torchPrompt;
+      return;
+    }
+
+    // 翻越未封死窗户交互提示
+    const vaultWin = this.findNearestVaultWindow(46);
+    if (vaultWin) {
+      this.currentPrompt = {
+        label: '按 E 翻越窗户',
+        worldX: vaultWin.cx,
+        worldY: vaultWin.cy - 22,
+        progress: 0,
+        hold: false,
+      };
       return;
     }
 

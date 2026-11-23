@@ -39,6 +39,14 @@ import { GpuLight, WebGL2Composer } from './webglComposer';
 import { drawHauntsAlbedo, drawHauntsOverlay } from './render/hauntsDraw';
 import { drawThoughts } from './render/thoughtsDraw';
 import {
+  buildingHasLitLight,
+  drawBuildingFixtures,
+  drawBuildingGround,
+  drawBuildingOverhead,
+  isEnemyLitByBuildingLights,
+  pushBuildingLights,
+} from './render/buildingsDraw';
+import {
   CAMPFIRE_POS,
   GENERATOR_POS,
   HIDEOUT_BRAZIER_POS,
@@ -165,6 +173,14 @@ export class GameRenderer {
   private rockScratch = new Float64Array(32);
   // 缝隙体积光的纵向衰减渐变：定义在局部单位长度坐标（x: 0..1）上，所有光束共享，仅创建一次
   private shaftGrad: CanvasGradient | null = null;
+  // Darkwood 精绘东欧波斯椭圆旧地毯离屏缓存（首次绘制烘焙一次，零每帧开销）
+  private persianRugCanvas: HTMLCanvasElement | null = null;
+  // 室内吊灯物理钟摆摇晃状态（受雷暴/震屏/玩家走过激发，带动光斑与阴影同步摇曳）
+  private lampSwingX = new Float32Array(2);
+  private lampSwingY = new Float32Array(2);
+  private lampVelX = new Float32Array(2);
+  private lampVelY = new Float32Array(2);
+  private lampLastT = -1;
   // ?v-shade=b：叶隙斑驳的半透明冠影图案（世界锚定）
   private canopyDapplePat: CanvasPattern | null = null;
 
@@ -338,7 +354,9 @@ export class GameRenderer {
     this.canvas.width = Math.floor(this.width * this.dpr);
     this.canvas.height = Math.floor(this.height * this.dpr);
 
-    const scale = Quality.preset.lightScale * Quality.dynamicScale;
+    // 高画质下按 dpr（最高 1.5x）锐利渲染，彻底告别模糊拉伸；中/低画质沿用 lightScale
+    const clarityDpr = Quality.tier >= 2 ? Math.min(this.dpr, 1.5) : 1.0;
+    const scale = Quality.preset.lightScale * Quality.dynamicScale * clarityDpr;
     this.renderW = Math.max(320, Math.floor(this.width * scale));
     this.renderH = Math.max(200, Math.floor(this.height * scale));
 
@@ -346,8 +364,9 @@ export class GameRenderer {
     this.albedoCanvas.height = this.renderH;
     this.normalCanvas.width = this.renderW;
     this.normalCanvas.height = this.renderH;
-    this.shadowCanvas.width = Math.max(240, Math.floor(this.renderW * 0.75));
-    this.shadowCanvas.height = Math.max(150, Math.floor(this.renderH * 0.75));
+    // 阴影遮罩分辨率与 G-Buffer 齐平，让墙壁/窗洞/树干投下的 Darkwood 视野锥边界与影柱极度锐利
+    this.shadowCanvas.width = this.renderW;
+    this.shadowCanvas.height = this.renderH;
 
     this.fallbackLightCanvas.width = this.shadowCanvas.width;
     this.fallbackLightCanvas.height = this.shadowCanvas.height;
@@ -529,7 +548,8 @@ export class GameRenderer {
     const viewT = cy - H * 0.5;
     const viewR = viewL + W;
     const viewB = viewT + H;
-    const coneHalfRad = Variants.val.cone === 'a' ? (39 * Math.PI) / 180 : (31 * Math.PI) / 180;
+    // Darkwood 原版视野扇区张角约 88°–102°（清晰利落的 V 形视野切割）
+    const coneHalfRad = Variants.val.cone === 'a' ? (51 * Math.PI) / 180 : (43 * Math.PI) / 180;
 
     let draws = 0;
 
@@ -598,8 +618,9 @@ export class GameRenderer {
         nightAmt: this.getNightAmount(engine),
         // ?v-shade=b（仅 cine=b 生效）：手电树影距离相关软半影 + 冷色本影 + 暖色半影边 + 叶隙斑驳 + 体积暗柱
         shadeMode: this.cineOn && Variants.val.shade !== 'a',
-        // ?v-tone=b（仅 cine=b 生效）：R3 协调曝光
+        // ?v-tone=b（仅 cine=b 生效）：Darkwood 锐利视野锥曝光
         tone: this.isToneOn(),
+        danger: clamp(engine.dangerLevel / 100 + engine.haunts.level * 0.5, 0, 1),
         lights: this.gpuLights,
       });
 
@@ -660,21 +681,19 @@ export class GameRenderer {
   private getAmbientRGB(engine: GameEngine): { r: number; g: number; b: number } {
     const cold = Variants.val.palette !== 'a';
     if (this.isToneOn()) {
-      // R3 协调曝光：白昼衰减放缓；黄昏从白昼末尾平滑过渡到夜色；
-      // 夜间环境光下限 0.044 -> 约 0.26（冷蓝灰月光，配合着色器锥外 80% 与 ACES 趾部提亮，锥外暗但树冠与路的轮廓可辨）
-      // 数值按 check_log 22:22 真机 palette 实测回校（真机比 numpy 仿真 dark 低约 0.15、L 高约 2）
+      // Darkwood 昼夜基调：白昼阴郁清晰但保持锥内外明显明暗层次；黄昏冷青铁锈暮色；黑夜深邃压迫，靠火光与手电切开黑暗
       const t = engine.getPhaseProgress();
       if (engine.phase === 'day') {
         return cold
-          ? { r: lerp(0.52, 0.45, t), g: lerp(0.5, 0.43, t), b: lerp(0.48, 0.42, t) }
-          : { r: lerp(0.43, 0.37, t), g: lerp(0.46, 0.39, t), b: lerp(0.41, 0.35, t) };
+          ? { r: lerp(0.56, 0.48, t), g: lerp(0.58, 0.49, t), b: lerp(0.54, 0.47, t) }
+          : { r: lerp(0.48, 0.41, t), g: lerp(0.52, 0.44, t), b: lerp(0.45, 0.39, t) };
       }
       if (engine.phase === 'dusk') {
         return cold
-          ? { r: lerp(0.46, 0.24, t), g: lerp(0.41, 0.25, t), b: lerp(0.37, 0.3, t) }
-          : { r: lerp(0.38, 0.2, t), g: lerp(0.36, 0.22, t), b: lerp(0.32, 0.25, t) };
+          ? { r: lerp(0.48, 0.19, t), g: lerp(0.44, 0.21, t), b: lerp(0.40, 0.25, t) }
+          : { r: lerp(0.41, 0.16, t), g: lerp(0.39, 0.18, t), b: lerp(0.34, 0.21, t) };
       }
-      return cold ? { r: 0.24, g: 0.26, b: 0.31 } : { r: 0.2, g: 0.22, b: 0.26 };
+      return cold ? { r: 0.13, g: 0.16, b: 0.19 } : { r: 0.11, g: 0.14, b: 0.17 };
     }
     if (engine.phase === 'day') {
       const t = engine.getPhaseProgress();
@@ -744,27 +763,84 @@ export class GameRenderer {
       draws++;
     }
 
-    // 2. Winding rutted mud trails connecting Hideout to the 4 landmarks
+    // 2. Darkwood 有机磨损林间泥径（彻底告别死板等宽“柏油直路”：柔边泥土侵蚀 + 零散碎石车辙 + 局部腐朽枕木）
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    for (const path of engine.world.paths) {
-      ctx.strokeStyle = 'rgba(42, 33, 22, 0.62)';
-      ctx.lineWidth = path.width;
-      ctx.beginPath();
-      path.points.forEach((pt, idx) => {
-        if (idx === 0) ctx.moveTo(pt.x, pt.y);
-        else ctx.lineTo(pt.x, pt.y);
-      });
+    for (let pi = 0; pi < engine.world.paths.length; pi++) {
+      const path = engine.world.paths[pi];
+      if (path.maxX < viewL - 40 || path.minX > viewR + 40 || path.maxY < viewT - 40 || path.minY > viewB + 40) {
+        continue;
+      }
+      // 构建柔和弯曲的中点二次贝塞尔路径，消除折线拐角机械感
+      const traceSoftPath = () => {
+        const pts = path.points;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        if (pts.length === 2) {
+          ctx.lineTo(pts[1].x, pts[1].y);
+        } else {
+          for (let i = 1; i < pts.length - 1; i++) {
+            const mx = (pts[i].x + pts[i + 1].x) * 0.5;
+            const my = (pts[i].y + pts[i + 1].y) * 0.5;
+            ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+          }
+          ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+        }
+      };
+
+      // 外围柔化枯泥过渡带（低不透明度大宽度，让路径边缘自然融进林地草泥）
+      traceSoftPath();
+      ctx.strokeStyle = 'rgba(48, 42, 33, 0.22)';
+      ctx.lineWidth = path.width * 1.18;
       ctx.stroke();
 
-      // Subtle cart wheel ruts along mud trail center
-      ctx.strokeStyle = 'rgba(24, 19, 13, 0.34)';
-      ctx.lineWidth = path.width * 0.56;
+      // 中层被踩实的潮湿暗土与干裂土芯
+      traceSoftPath();
+      ctx.strokeStyle = 'rgba(38, 33, 26, 0.34)';
+      ctx.lineWidth = path.width * 0.68;
       ctx.stroke();
 
-      ctx.strokeStyle = 'rgba(66, 53, 37, 0.35)';
-      ctx.lineWidth = path.width * 0.28;
+      // 中心微弱车辙沟壑（双细线轻微错开，不再画死黑粗边）
+      traceSoftPath();
+      ctx.strokeStyle = 'rgba(22, 19, 15, 0.20)';
+      ctx.lineWidth = path.width * 0.26;
       ctx.stroke();
+
+      // 沿泥径稀疏散落碎石与局部破旧防滑木板（参考原版截图 2、6 的木板栈桥质感）
+      for (let s = 0; s < path.points.length - 1; s++) {
+        const a = path.points[s];
+        const b = path.points[s + 1];
+        const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+        if (segLen < 20) continue;
+        const ang = Math.atan2(b.y - a.y, b.x - a.x);
+        const nx = -(b.y - a.y) / segLen;
+        const ny = (b.x - a.x) / segLen;
+        for (let d = 28; d < segLen - 20; d += 54) {
+          const px = a.x + ((b.x - a.x) * d) / segLen;
+          const py = a.y + ((b.y - a.y) * d) / segLen;
+          if (px < viewL - 40 || px > viewR + 40 || py < viewT - 40 || py > viewB + 40) continue;
+          const h = Math.sin(pi * 31.7 + s * 13.3 + d * 0.19) * 43758.5453;
+          const rnd = h - Math.floor(h);
+          if (rnd < 0.22) {
+            // 局部腐朽旧木板（跨泥泞处）
+            ctx.save();
+            ctx.translate(px, py);
+            ctx.rotate(ang + Math.PI * 0.5 + (rnd - 0.11) * 0.6);
+            ctx.fillStyle = 'rgba(54, 46, 36, 0.52)';
+            ctx.fillRect(-13, -3.2, 26, 5.5);
+            ctx.fillStyle = 'rgba(14, 12, 10, 0.45)';
+            ctx.fillRect(-13, 1.5, 26, 1.2);
+            ctx.restore();
+          } else {
+            // 碎石与浅泥斑点
+            const off = (rnd - 0.5) * path.width * 0.65;
+            ctx.fillStyle = rnd > 0.6 ? 'rgba(92, 86, 74, 0.30)' : 'rgba(26, 23, 19, 0.35)';
+            ctx.beginPath();
+            ctx.ellipse(px + nx * off, py + ny * off, 2.5 + rnd * 3.5, 1.6 + rnd * 2.0, ang, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
       draws += 3;
     }
 
@@ -790,9 +866,12 @@ export class GameRenderer {
       draws++;
     }
 
-    // 3b. Lived-in Hideout interior furnishings & POI environmental storytelling props (under decals/entities!)
-    if (viewR > HIDEOUT_RECT.x - 40 && viewL < HIDEOUT_RECT.x + HIDEOUT_RECT.w + 40 &&
-        viewB > HIDEOUT_RECT.y - 40 && viewT < HIDEOUT_RECT.y + HIDEOUT_RECT.h + 40) {
+    // 3b. 全地图 14 栋建筑地面层（房间地板、低对比叙事污渍、铁轨、沼泽积水与栈道，在贴花与实体之下）
+    draws += drawBuildingGround(ctx, engine, viewL, viewT, viewR, viewB, this.woodAlbedoPat);
+
+    // 3c. Lived-in Hideout interior furnishings & POI environmental storytelling props (under decals/entities!)
+    if (viewR > HIDEOUT_RECT.x - 90 && viewL < HIDEOUT_RECT.x + HIDEOUT_RECT.w + 90 &&
+        viewB > HIDEOUT_RECT.y - 90 && viewT < HIDEOUT_RECT.y + HIDEOUT_RECT.h + 90) {
       this.drawHideoutInterior(ctx, engine);
       draws += 6;
     }
@@ -1004,55 +1083,37 @@ export class GameRenderer {
       draws++;
     }
 
-    // 13. 多面苔石、林地斑驳树影（Dappled Ground Shadow）、盘根黑色枯枝与爪状板根树干
+    // 12b. 全地图 14 栋建筑陈设层（固体家具、全部窗户、全部内外门扇与门廊、灯座、院落围栏/水井/墓碑/矿车/旧木船）
+    //      与 world.walls 中所有 table 碰撞体一一对应，彻底消除隐形空气墙并清晰区分大门与窗户
+    draws += drawBuildingFixtures(ctx, engine, viewL, viewT, viewR, viewB);
+
+    // 13. 多面苔石、自然林地骨骼枝影、双层立体匍匐枯根与 256px 盘根树干
     const windFactor = 1 + engine.weather.rainIntensity * 1.35;
     const swayShadowOn = Quality.preset.canopySway;
 
-    // 批量绘制随风微微偏移的深邃斑驳地面投影（单次 fill 零 drawCall 膨胀）
-    // ?v-shade=b：冠影改为半透明叶隙斑驳图案（偏冷深蓝绿灰、叶团深/叶隙透光，平均不透明度略低于旧版 0.44）
-    const dappleShadow = this.cineOn && Variants.val.shade !== 'a' && this.canopyDapplePat !== null;
-    ctx.fillStyle = dappleShadow && this.canopyDapplePat ? this.canopyDapplePat : 'rgba(4, 5, 5, 0.44)';
-    ctx.beginPath();
-    const lobedShadow = this.cineOn;
+    // 柔和真实的地面枯枝树影（淘汰生硬实心大圆椭圆：先铺极淡软冠影，再叠真实分形枝杈倒影，随风轻晃）
+    ctx.save();
     for (const t of engine.world.trees) {
-      if (t.x < viewL - 140 || t.x > viewR + 140 || t.y < viewT - 140 || t.y > viewB + 140) continue;
-      const sxOff = swayShadowOn ? Math.sin(engine.simTime * (0.85 * windFactor) + t.phase) * (4.2 * windFactor) : 0;
-      const syOff = swayShadowOn ? Math.cos(engine.simTime * (0.68 * windFactor) + t.phase) * (2.6 * windFactor) : 0;
-      const shX = t.x + 16 + sxOff;
-      const shY = t.y + 18 + syOff;
-      if (lobedShadow) {
-        // ?v-cine=b：3 个错位旋转椭圆在同一路径内合成（nonzero 并集）为多瓣不规则冠影，取代单一规则椭圆
-        const R = t.canopyR;
-        const la = t.phase * 3.1;
-        const lox = Math.cos(la) * R * 0.3;
-        const loy = Math.sin(la) * R * 0.24;
-        // 复用预分配缓冲，避免每帧每棵树新建数组
-        const lobes = this.lobeScratch;
-        lobes[0] = shX; lobes[1] = shY; lobes[2] = R * 0.8; lobes[3] = R * 0.66; lobes[4] = t.phase * 0.5;
-        lobes[5] = shX + lox; lobes[6] = shY + loy; lobes[7] = R * 0.6; lobes[8] = R * 0.48; lobes[9] = t.phase * 1.3 + 0.6;
-        lobes[10] = shX - lox * 0.85 + loy * 0.6;
-        lobes[11] = shY - loy * 0.9 - lox * 0.5;
-        lobes[12] = R * 0.56;
-        lobes[13] = R * 0.44;
-        lobes[14] = t.phase * 0.9 - 0.8;
-        for (let k = 0; k < 15; k += 5) {
-          const ex = lobes[k];
-          const ey = lobes[k + 1];
-          const rx = lobes[k + 2];
-          const ry = lobes[k + 3];
-          const rot = lobes[k + 4];
-          ctx.moveTo(ex + Math.cos(rot) * rx, ey + Math.sin(rot) * rx);
-          ctx.ellipse(ex, ey, rx, ry, rot, 0, Math.PI * 2);
-        }
-      } else {
-        ctx.moveTo(shX + t.canopyR * 0.96, shY);
-        ctx.ellipse(shX, shY, t.canopyR * 0.96, t.canopyR * 0.78, t.phase * 0.5, 0, Math.PI * 2);
-      }
+      const shSize = t.canopyR * (this.cineOn ? 3.55 : 2.35);
+      const pad = shSize * 0.55 + 36;
+      if (t.x < viewL - pad || t.x > viewR + pad || t.y < viewT - pad || t.y > viewB + pad) continue;
+      const sxOff = swayShadowOn ? Math.sin(engine.simTime * (0.86 * windFactor) + t.phase + t.x * 0.004) * (4.4 * windFactor) : 0;
+      const syOff = swayShadowOn ? Math.cos(engine.simTime * (0.68 * windFactor) + t.phase + t.y * 0.004) * (2.8 * windFactor) : 0;
+      const shX = t.x + 20 + sxOff;
+      const shY = t.y + 24 + syOff;
+      const sprite = this.atlas.canopySprites[t.id % this.atlas.canopySprites.length];
+      ctx.save();
+      ctx.globalAlpha = engine.phase === 'night' ? 0.16 : 0.22;
+      ctx.translate(shX, shY);
+      ctx.rotate(t.phase + 0.14);
+      ctx.scale(1.06, 0.92);
+      ctx.drawImage(sprite, -shSize * 0.5, -shSize * 0.5, shSize, shSize);
+      ctx.restore();
     }
-    ctx.fill();
+    ctx.restore();
     draws++;
 
-    // 在庇护所墙角、废墟边缘与老树周围点缀盘根错节的黑色枯枝根须（单次 stroke 批处理）
+    // 在庇护所墙角、废墟边缘与老树周围点缀双层立体匍匐枯根须（暗投影 + 灰褐枯根脊）
     this.drawCreepingBlackRoots(ctx, engine, viewL, viewT, viewR, viewB);
     draws++;
 
@@ -1067,18 +1128,17 @@ export class GameRenderer {
     }
 
     for (const t of engine.world.trees) {
-      const pad = t.trunkR * 2.8 + 12;
+      const pad = t.trunkR * 3.8 + 16;
       if (t.x < viewL - pad || t.x > viewR + pad || t.y < viewT - pad || t.y > viewB + pad) continue;
-      // 极外缘且远离玩家的树干被树冠与暗角完全遮蔽，跳过冗余绘制以保持低 drawCalls
       if (
-        Math.abs(t.x - camX) > W * 0.48 &&
-        Math.abs(t.y - camY) > H * 0.48 &&
-        dist(engine.player.x, engine.player.y, t.x, t.y) > t.canopyR + 28
+        Math.abs(t.x - camX) > W * 0.50 &&
+        Math.abs(t.y - camY) > H * 0.50 &&
+        dist(engine.player.x, engine.player.y, t.x, t.y) > t.canopyR + 34
       ) {
         continue;
       }
       const sprite = this.atlas.trunkSprites[t.id % this.atlas.trunkSprites.length];
-      const size = t.trunkR * 5.2;
+      const size = t.trunkR * 6.4;
       ctx.save();
       ctx.translate(t.x, t.y);
       ctx.rotate(t.phase);
@@ -1134,34 +1194,49 @@ export class GameRenderer {
     // 16a'. 砸桌女人 / 座椅 / 桌面物件（屋内异象；屋顶之前绘制以便被屋顶遮住）
     draws += drawHauntsAlbedo(ctx, engine, viewL, viewT, viewR, viewB);
 
-    // 16b. Overhead Hanging Shelter Lamp Fixtures (above player head when indoors!)
+    // 16b. Overhead Hanging Shelter Lamp Fixtures（带物理钟摆摇晃 + 灯线透视拉扯）
     if (engine.hideoutRoofAlpha < 0.85 &&
         viewR > HIDEOUT_RECT.x && viewL < HIDEOUT_RECT.x + HIDEOUT_RECT.w &&
         viewB > HIDEOUT_RECT.y && viewT < HIDEOUT_RECT.y + HIDEOUT_RECT.h) {
       const lit = engine.generatorOn && engine.generatorFuel > 0;
-      for (const lamp of SHELTER_LAMPS) {
+      for (let li = 0; li < SHELTER_LAMPS.length; li++) {
+        const lamp = SHELTER_LAMPS[li];
+        const sx = this.lampSwingX[li] || 0;
+        const sy = this.lampSwingY[li] || 0;
+        const lx = lamp.x + sx;
+        const ly = lamp.y + sy;
         ctx.save();
-        ctx.translate(lamp.x, lamp.y);
-        // Enamel iron hanging lamp shade
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
+        // 悬挂电线（从天花板锚点连向摇晃中的灯罩）
+        ctx.strokeStyle = 'rgba(14, 14, 13, 0.72)';
+        ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.arc(2, 3, 9, 0, Math.PI * 2);
+        ctx.moveTo(lamp.x, lamp.y);
+        ctx.lineTo(lx, ly);
+        ctx.stroke();
+        ctx.translate(lx, ly);
+        // 搪瓷铁灯罩与投影
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.36)';
+        ctx.beginPath();
+        ctx.arc(2 + sx * 0.4, 3 + sy * 0.4, 9.5, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#252925';
-        ctx.strokeStyle = '#0e100e';
+        ctx.fillStyle = '#242724';
+        ctx.strokeStyle = '#0c0d0c';
         ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.arc(0, 0, 7.5, 0, Math.PI * 2);
+        ctx.arc(0, 0, 7.6, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
-        // Warm glowing filament bulb center
-        ctx.fillStyle = lit ? '#ffe6a8' : '#3d3c36';
+        // 暖色灯丝灯泡核
+        ctx.fillStyle = lit ? '#ffebb8' : '#3d3c36';
         ctx.beginPath();
         ctx.arc(0, 0, 3.2, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       }
     }
+
+    // 16c. 其他建筑室内顶灯层（玩家进入对应建筑、屋顶渐隐时可见）
+    draws += drawBuildingOverhead(ctx, engine, viewL, viewT, viewR, viewB);
 
     // 17. 世界粒子（鲜血、木屑、火星余烬、热烟、林间孢子、手电浮尘、雨滴反弹水花）
     for (let i = 0; i < engine.particles.count; i++) {
@@ -1217,50 +1292,70 @@ export class GameRenderer {
       this.drawRoofCutaway(ctx, SAWMILL_ROOF_RECT, engine.sawmillRoofAlpha, false, engine.simTime, false);
       draws++;
     }
+    // 18b. 全地图所有可进入 POI 房屋的屋顶渐隐层（屋顶内收至外墙内侧，确保外墙银灰双轨窗框与暖褐大门门廊始终完整外露、一眼辨识）
+    const bList = engine.world.buildings;
+    for (let bi = 0; bi < bList.length; bi++) {
+      const b = bList[bi];
+      if (b.externalRoof) continue;
+      if (b.x + b.w < viewL - 40 || b.x > viewR + 40 || b.y + b.h < viewT - 40 || b.y > viewB + 40) continue;
+      const ra = engine.buildingRoofAlpha[bi] === undefined ? 1 : engine.buildingRoofAlpha[bi];
+      if (ra <= 0.02) continue;
+      const inset = Math.max(8, b.t - 2);
+      this.drawRoofCutaway(
+        ctx,
+        { x: b.x + inset, y: b.y + inset, w: Math.max(24, b.w - inset * 2), h: Math.max(24, b.h - inset * 2) },
+        ra,
+        buildingHasLitLight(engine, bi),
+        engine.simTime,
+        b.chimney
+      );
+      draws++;
+    }
 
-    // 19. 电影级双层高度视差树冠 + 相位错开的受风波浪摇曳（杜绝刚体旋转）
+    // 19. Darkwood 巨型骨骼枯枝树冠网络（双层高度视差 + 相位错开风摆 + 玩家穿行透明渐隐）
     const swayOn = Quality.preset.canopySway;
     const stormWind = 1 + engine.weather.rainIntensity * 1.55;
     for (const t of engine.world.trees) {
-      const cPad = t.canopyR * 1.32 + 24;
+      const size = t.canopyR * (this.cineOn ? 3.85 : 2.58);
+      const cPad = size * 0.56 + 28;
       if (t.x < viewL - cPad || t.x > viewR + cPad || t.y < viewT - cPad || t.y > viewB + cPad) continue;
       const dPlayer = dist(engine.player.x, engine.player.y, t.x, t.y);
-      const canopyAlpha = dPlayer < t.canopyR + 18 ? 0.22 : 0.94;
+      const fadeR = t.canopyR * 1.35 + 22;
+      const canopyAlpha = dPlayer < fadeR ? lerp(0.24, 0.96, clamp((dPlayer - 32) / Math.max(1, fadeR - 32), 0, 1)) : 0.96;
       const variantIdx = t.id % this.atlas.canopySprites.length;
-      const size = t.canopyR * 2.58;
 
-      // 第一层：底层大暗冠（较低视差 + 沉重主波浪摇曳）
-      const waveBase = swayOn ? Math.sin(engine.simTime * (0.92 * stormWind) + t.phase + t.x * 0.004) : 0;
-      const waveBaseY = swayOn ? Math.cos(engine.simTime * (0.74 * stormWind) + t.phase + t.y * 0.004) : 0;
-      const baseSwayX = waveBase * (4.0 * stormWind);
-      const baseSwayY = waveBaseY * (2.6 * stormWind);
-      const baseParaX = clamp((t.x - camX) * 0.048, -22, 22);
-      const baseParaY = clamp((t.y - camY) * 0.048, -22, 22);
+      // 第一层：底层巨型骨骼枯枝树冠（较低视差 + 沉重主波浪摇曳）
+      const waveBase = swayOn ? Math.sin(engine.simTime * (0.86 * stormWind) + t.phase + t.x * 0.004) : 0;
+      const waveBaseY = swayOn ? Math.cos(engine.simTime * (0.68 * stormWind) + t.phase + t.y * 0.004) : 0;
+      const baseSwayX = waveBase * (4.6 * stormWind);
+      const baseSwayY = waveBaseY * (3.0 * stormWind);
+      const baseParaX = clamp((t.x - camX) * 0.055, -28, 28);
+      const baseParaY = clamp((t.y - camY) * 0.055, -28, 28);
 
       const baseSprite = this.atlas.canopySprites[variantIdx];
       ctx.save();
       ctx.globalAlpha = canopyAlpha;
       ctx.translate(t.x + baseSwayX + baseParaX, t.y + baseSwayY + baseParaY);
-      ctx.rotate(t.phase);
+      ctx.rotate(t.phase + waveBase * 0.015);
       ctx.drawImage(baseSprite, -size * 0.5, -size * 0.5, size, size);
       ctx.restore();
       draws++;
 
-      // 第二层：顶层细枝冠（中近景主视野绘制双层高度视差 + 相位错开的波浪起伏，边缘暗角外跳过以保预算）
-      if (Math.abs(t.x - camX) < W * 0.42 && Math.abs(t.y - camY) < H * 0.46) {
-        const waveTop = swayOn ? Math.sin(engine.simTime * (1.38 * stormWind) + t.phase + 1.55 + t.x * 0.006) : 0;
-        const waveTopY = swayOn ? Math.cos(engine.simTime * (1.12 * stormWind) + t.phase + 0.95 + t.y * 0.006) : 0;
-        const topSwayX = baseSwayX + waveTop * (5.2 * stormWind);
-        const topSwayY = baseSwayY + waveTopY * (3.6 * stormWind);
-        const topParaX = clamp((t.x - camX) * 0.095, -42, 42);
-        const topParaY = clamp((t.y - camY) * 0.095, -42, 42);
+      // 第二层：顶层高空细枝冠（更强高度视差 + 错相摇曳，营造遮天蔽日的森林纵深）
+      if (Math.abs(t.x - camX) < W * 0.48 && Math.abs(t.y - camY) < H * 0.52) {
+        const waveTop = swayOn ? Math.sin(engine.simTime * (1.32 * stormWind) + t.phase + 1.55 + t.x * 0.006) : 0;
+        const waveTopY = swayOn ? Math.cos(engine.simTime * (1.06 * stormWind) + t.phase + 0.95 + t.y * 0.006) : 0;
+        const topSwayX = baseSwayX + waveTop * (6.2 * stormWind);
+        const topSwayY = baseSwayY + waveTopY * (4.2 * stormWind);
+        const topParaX = clamp((t.x - camX) * 0.11, -52, 52);
+        const topParaY = clamp((t.y - camY) * 0.11, -52, 52);
 
         const topSprite = this.atlas.canopyTopSprites[variantIdx];
-        const topSize = size * 0.94;
+        const topSize = size * 0.96;
         ctx.save();
-        ctx.globalAlpha = canopyAlpha;
+        ctx.globalAlpha = canopyAlpha * 0.92;
         ctx.translate(t.x + topSwayX + topParaX, t.y + topSwayY + topParaY);
-        ctx.rotate(t.phase + waveTop * 0.025);
+        ctx.rotate(t.phase + waveTop * 0.032);
         ctx.drawImage(topSprite, -topSize * 0.5, -topSize * 0.5, topSize, topSize);
         ctx.restore();
         draws++;
@@ -1276,6 +1371,181 @@ export class GameRenderer {
     return draws;
   }
 
+  /**
+   * 一次性离屏烘焙 Darkwood 精致东欧/波斯椭圆旧地毯（对标原版截图 3、4）
+   * 包含多层几何波斯边饰、繁复中心对称花蔓纹样、褪色做旧织纹与边缘细密流苏
+   */
+  private getPersianRug(): HTMLCanvasElement {
+    if (this.persianRugCanvas) return this.persianRugCanvas;
+    const W = 280;
+    const H = 180;
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    const g = c.getContext('2d')!;
+    const cx = W * 0.5;
+    const cy = H * 0.5;
+    const rx = W * 0.44;
+    const ry = H * 0.41;
+    const rng = createRng(4813);
+
+    // 柔和接地投影
+    g.fillStyle = 'rgba(0, 0, 0, 0.32)';
+    g.beginPath();
+    g.ellipse(cx + 3, cy + 4, rx + 2, ry + 2, 0, 0, Math.PI * 2);
+    g.fill();
+
+    // 边缘磨损短流苏
+    g.strokeStyle = 'rgba(164, 146, 114, 0.48)';
+    g.lineWidth = 1.0;
+    for (let i = 0; i < 84; i++) {
+      const a = (i / 84) * Math.PI * 2;
+      const x0 = cx + Math.cos(a) * rx;
+      const y0 = cy + Math.sin(a) * ry;
+      const len = 3 + rng() * 3.5;
+      g.beginPath();
+      g.moveTo(x0, y0);
+      g.lineTo(x0 + Math.cos(a) * len, y0 + Math.sin(a) * len);
+      g.stroke();
+    }
+
+    // 裁剪至椭圆形地毯本体
+    g.save();
+    g.beginPath();
+    g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    g.clip();
+
+    // 做旧陈年枣褐米金底色（刻意压低亮度 25% 防止在双吊灯+火把下过曝发白，花纹如古旧丝绒般清晰！）
+    g.fillStyle = '#5e4c36';
+    g.fillRect(0, 0, W, H);
+
+    // 外圈深褐波斯边框
+    g.strokeStyle = '#291710';
+    g.lineWidth = 14;
+    g.beginPath();
+    g.ellipse(cx, cy, rx - 7, ry - 7, 0, 0, Math.PI * 2);
+    g.stroke();
+
+    // 双道赭红与暗金镶边
+    g.strokeStyle = '#5a321e';
+    g.lineWidth = 4;
+    g.beginPath();
+    g.ellipse(cx, cy, rx - 15, ry - 14, 0, 0, Math.PI * 2);
+    g.stroke();
+    g.strokeStyle = '#927b59';
+    g.lineWidth = 1.6;
+    g.beginPath();
+    g.ellipse(cx, cy, rx - 20, ry - 18, 0, 0, Math.PI * 2);
+    g.stroke();
+
+    // 环形波斯花瓣点饰（外框与内框两圈）
+    for (let ring = 0; ring < 2; ring++) {
+      const cnt = ring === 0 ? 36 : 24;
+      const rrx = ring === 0 ? rx - 9 : rx - 28;
+      const rry = ring === 0 ? ry - 8 : ry - 25;
+      for (let i = 0; i < cnt; i++) {
+        const a = (i / cnt) * Math.PI * 2;
+        const px = cx + Math.cos(a) * rrx;
+        const py = cy + Math.sin(a) * rry;
+        g.fillStyle = i % 2 === 0 ? '#a88c64' : '#572e21';
+        g.beginPath();
+        g.ellipse(px, py, ring === 0 ? 3.5 : 5, ring === 0 ? 2.2 : 3.2, a, 0, Math.PI * 2);
+        g.fill();
+        g.fillStyle = '#251711';
+        g.beginPath();
+        g.arc(px, py, 1.2, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+
+    // 中心繁复波斯对称藤蔓图腾（四象限对称）
+    g.strokeStyle = '#3a2217';
+    g.lineWidth = 1.6;
+    for (let sx = -1; sx <= 1; sx += 2) {
+      for (let sy = -1; sy <= 1; sy += 2) {
+        g.save();
+        g.translate(cx, cy);
+        g.scale(sx, sy);
+        g.beginPath();
+        g.moveTo(0, 0);
+        g.bezierCurveTo(28, -4, 46, 22, 68, 12);
+        g.moveTo(14, 2);
+        g.bezierCurveTo(24, 18, 12, 34, 34, 34);
+        g.moveTo(42, 10);
+        g.quadraticCurveTo(54, 28, 44, 38);
+        g.stroke();
+
+        // 精细花朵与菱形嵌饰
+        const pts: [number, number, number][] = [
+          [22, 10, 6],
+          [46, 16, 5.5],
+          [64, 11, 4.5],
+          [30, 29, 5],
+          [12, 24, 4.2],
+        ];
+        for (const [fx, fy, fr] of pts) {
+          g.fillStyle = '#5e3222';
+          g.beginPath();
+          g.arc(fx, fy, fr, 0, Math.PI * 2);
+          g.fill();
+          g.fillStyle = '#bca57e';
+          g.beginPath();
+          g.arc(fx, fy, fr * 0.45, 0, Math.PI * 2);
+          g.fill();
+        }
+        g.restore();
+      }
+    }
+
+    // 中心菱形徽章
+    g.fillStyle = '#4c261b';
+    g.strokeStyle = '#c4ae86';
+    g.lineWidth = 1.6;
+    g.beginPath();
+    g.moveTo(cx, cy - 18);
+    g.lineTo(cx + 26, cy);
+    g.lineTo(cx, cy + 18);
+    g.lineTo(cx - 26, cy);
+    g.closePath();
+    g.fill();
+    g.stroke();
+    g.fillStyle = '#a2855e';
+    g.beginPath();
+    g.ellipse(cx, cy, 10, 6.5, 0, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#261710';
+    g.beginPath();
+    g.arc(cx, cy, 3.2, 0, Math.PI * 2);
+    g.fill();
+
+    // 细密编织纹理与经年污渍磨损（消除任何矢量光滑感）
+    for (let y = 0; y < H; y += 2) {
+      g.fillStyle = y % 4 === 0 ? 'rgba(20, 14, 10, 0.10)' : 'rgba(220, 204, 174, 0.05)';
+      g.fillRect(0, y, W, 1);
+    }
+    for (let i = 0; i < 420; i++) {
+      g.fillStyle = rng() > 0.5 ? 'rgba(32, 22, 16, 0.16)' : 'rgba(182, 164, 134, 0.14)';
+      g.fillRect(rng() * W, rng() * H, 1.5 + rng() * 2.5, 1.2);
+    }
+    // 中央折痕与门口踩踏泥污
+    g.strokeStyle = 'rgba(22, 16, 12, 0.24)';
+    g.lineWidth = 3;
+    g.beginPath();
+    g.moveTo(cx - 10, cy - ry);
+    g.quadraticCurveTo(cx + 6, cy, cx - 4, cy + ry);
+    g.stroke();
+
+    const grime = g.createRadialGradient(cx + 12, cy + 32, 4, cx + 12, cy + 32, 54);
+    grime.addColorStop(0, 'rgba(16, 13, 10, 0.42)');
+    grime.addColorStop(1, 'rgba(16, 13, 10, 0)');
+    g.fillStyle = grime;
+    g.fillRect(0, 0, W, H);
+    g.restore();
+
+    this.persianRugCanvas = c;
+    return c;
+  }
+
   // --- Lived-In Hideout Interior Storytelling Props (Zero Collision Impact!) ---
   private drawHideoutInterior(ctx: CanvasRenderingContext2D, engine: GameEngine) {
     const { x, y, w, h } = HIDEOUT_RECT;
@@ -1285,54 +1555,12 @@ export class GameRenderer {
     const innerR = x + w - t;
     const innerB = y + h - t;
 
-    // 1. Frayed Eastern European Folk-Pattern Woven Rug in Cabin Center
+    // 1. 精绘东欧波斯椭圆旧地毯（对标原版截图 3, 4）
+    const rug = this.getPersianRug();
     ctx.save();
-    ctx.translate(0, 26);
+    ctx.translate(0, 24);
     ctx.rotate(-0.04);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.30)';
-    ctx.fillRect(-66, -38, 134, 78);
-    // Base aged burgundy wool weave
-    ctx.fillStyle = '#47221d';
-    ctx.fillRect(-65, -39, 130, 76);
-    // Woven ochre & charcoal inner border
-    ctx.strokeStyle = '#7e5a34';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(-58, -32, 116, 62);
-    ctx.strokeStyle = '#241814';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(-52, -26, 104, 50);
-    // Geometric Eastern European diamond motifs
-    ctx.fillStyle = '#683928';
-    for (const dx of [-30, 0, 30]) {
-      ctx.beginPath();
-      ctx.moveTo(dx, -15);
-      ctx.lineTo(dx + 14, 0);
-      ctx.lineTo(dx, 15);
-      ctx.lineTo(dx - 14, 0);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = '#8b6a42';
-      ctx.beginPath();
-      ctx.arc(dx, 0, 3.2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#683928';
-    }
-    // Frayed fringe threads along left & right rug ends
-    ctx.strokeStyle = 'rgba(136, 116, 86, 0.45)';
-    ctx.lineWidth = 1.1;
-    for (let fy = -36; fy <= 34; fy += 5) {
-      ctx.beginPath();
-      ctx.moveTo(-65, fy);
-      ctx.lineTo(-71, fy + (fy % 2 === 0 ? 1 : -1));
-      ctx.moveTo(65, fy);
-      ctx.lineTo(71, fy + (fy % 2 === 0 ? -1 : 1));
-      ctx.stroke();
-    }
-    // Grime & muddy boot stain near South door edge of rug
-    ctx.fillStyle = 'rgba(18, 14, 10, 0.36)';
-    ctx.beginPath();
-    ctx.ellipse(4, 24, 28, 11, 0.1, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.drawImage(rug, -78, -50, 156, 100);
     ctx.restore();
 
     // 2. Snaking Black Power Cables from Generator to Shelter Lamps
@@ -1489,6 +1717,49 @@ export class GameRenderer {
       ctx.beginPath();
       ctx.ellipse(0, innerB - 14, 24, 10, 0.08, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // 6. 庇护所外墙周边的东欧写实雕饰：破旧低矮木篱笆段与墙角堆叠废木板（对标用户特写截图）
+    const drawFenceSpan = (fx0: number, fy0: number, len: number, horizontal: boolean) => {
+      const posts = Math.max(4, Math.floor(len / 10));
+      for (let i = 0; i < posts; i++) {
+        const p = i / (posts - 1);
+        const jitter = Math.sin(i * 17.3 + fx0) * 1.8;
+        const px = horizontal ? fx0 + p * len : fx0 + jitter;
+        const py = horizontal ? fy0 + jitter : fy0 + p * len;
+        ctx.fillStyle = 'rgba(5, 5, 4, 0.56)';
+        ctx.fillRect(px - 2, py - 2, 6, 6);
+        ctx.fillStyle = i % 2 === 0 ? '#5c4e3e' : '#4b3f32';
+        ctx.strokeStyle = '#120e0b';
+        ctx.lineWidth = 1;
+        ctx.fillRect(px - 2.2, py - 2.2, 4.4, 4.4);
+        ctx.strokeRect(px - 2.2, py - 2.2, 4.4, 4.4);
+      }
+      ctx.strokeStyle = '#3f352a';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      if (horizontal) {
+        ctx.moveTo(fx0, fy0);
+        ctx.lineTo(fx0 + len, fy0);
+      } else {
+        ctx.moveTo(fx0, fy0);
+        ctx.lineTo(fx0, fy0 + len);
+      }
+      ctx.stroke();
+    };
+    // 西北外墙旁破旧斜向木篱笆（零碰撞纯视觉雕饰）
+    drawFenceSpan(x - 66, y + 6, 58, true);
+    // 北墙外堆叠旧木板
+    for (let k = 0; k < 5; k++) {
+      const bx = x + 32 + k * 7.2;
+      const by = y - 22 + (k % 2) * 2;
+      ctx.fillStyle = 'rgba(6, 5, 4, 0.52)';
+      ctx.fillRect(bx + 2, by + 2, 6, 20);
+      ctx.fillStyle = k % 2 === 0 ? '#584b3c' : '#4a3e31';
+      ctx.strokeStyle = '#14100c';
+      ctx.lineWidth = 1;
+      ctx.fillRect(bx, by, 5.8, 19);
+      ctx.strokeRect(bx, by, 5.8, 19);
     }
     ctx.restore();
   }
@@ -1767,110 +2038,95 @@ export class GameRenderer {
     viewB: number
   ) {
     ctx.save();
-    ctx.strokeStyle = 'rgba(10, 9, 9, 0.82)';
     ctx.lineCap = 'round';
-    ctx.lineWidth = 2.0;
-    ctx.beginPath();
-
-    const addRootCluster = (ox: number, oy: number, seed: number, count: number, maxLen: number) => {
-      if (ox < viewL - maxLen || ox > viewR + maxLen || oy < viewT - maxLen || oy > viewB + maxLen) return;
+    ctx.lineJoin = 'round';
+    // 双层立体匍匐枯根（暗影 + 灰褐枯根脊线，对标原版特写图左下角密织纠结地表根须）
+    const addRootCluster = (
+      ox: number,
+      oy: number,
+      seed: number,
+      count: number,
+      maxLen: number,
+      offX: number,
+      offY: number
+    ) => {
+      if (ox < viewL - maxLen - 16 || ox > viewR + maxLen + 16 || oy < viewT - maxLen - 16 || oy > viewB + maxLen + 16) {
+        return;
+      }
       const rng = createRng(seed);
       for (let i = 0; i < count; i++) {
-        const a = (i / count) * Math.PI * 2 + (rng() - 0.5) * 0.7;
-        const len = maxLen * (0.55 + rng() * 0.45);
-        const mx = ox + Math.cos(a + (rng() - 0.5) * 0.5) * len * 0.52;
-        const my = oy + Math.sin(a + (rng() - 0.5) * 0.5) * len * 0.52;
+        const a = (i / count) * Math.PI * 2 + (rng() - 0.5) * 0.72;
+        const len = maxLen * (0.58 + rng() * 0.52);
+        const mx = ox + Math.cos(a + (rng() - 0.5) * 0.55) * len * 0.52;
+        const my = oy + Math.sin(a + (rng() - 0.5) * 0.55) * len * 0.52;
         const ex = ox + Math.cos(a) * len;
         const ey = oy + Math.sin(a) * len;
-        ctx.moveTo(ox, oy);
-        ctx.quadraticCurveTo(mx, my, ex, ey);
-        // 细碎末梢分叉
-        ctx.moveTo(mx, my);
-        ctx.lineTo(mx + Math.cos(a + 0.55) * len * 0.36, my + Math.sin(a + 0.55) * len * 0.36);
+        ctx.moveTo(ox + offX, oy + offY);
+        ctx.quadraticCurveTo(mx + offX, my + offY, ex + offX, ey + offY);
+        // 双侧自然分叉细须
+        const f1 = a + 0.48 + (rng() - 0.5) * 0.24;
+        const f2 = a - 0.52 + (rng() - 0.5) * 0.24;
+        ctx.moveTo(mx + offX, my + offY);
+        ctx.lineTo(mx + Math.cos(f1) * len * 0.40 + offX, my + Math.sin(f1) * len * 0.40 + offY);
+        ctx.moveTo(mx * 0.4 + ex * 0.6 + offX, my * 0.4 + ey * 0.6 + offY);
+        ctx.lineTo(mx * 0.4 + ex * 0.6 + Math.cos(f2) * len * 0.30 + offX, my * 0.4 + ey * 0.6 + Math.sin(f2) * len * 0.30 + offY);
       }
     };
 
-    // 庇护所 4 个外墙角蔓延的黑枯根须
-    const { x, y, w, h } = HIDEOUT_RECT;
-    addRootCluster(x - 2, y - 2, 1011, 5, 34);
-    addRootCluster(x + w + 2, y - 2, 1021, 5, 32);
-    addRootCluster(x - 2, y + h + 2, 1031, 5, 36);
-    addRootCluster(x + w + 2, y + h + 2, 1041, 5, 34);
+    const drawAllClusters = (offX: number, offY: number) => {
+      ctx.beginPath();
+      const { x, y, w, h } = HIDEOUT_RECT;
+      addRootCluster(x - 2, y - 2, 1011, 6, 44, offX, offY);
+      addRootCluster(x + w + 2, y - 2, 1021, 6, 42, offX, offY);
+      addRootCluster(x - 2, y + h + 2, 1031, 6, 46, offX, offY);
+      addRootCluster(x + w + 2, y + h + 2, 1041, 6, 44, offX, offY);
+      for (let i = 0; i < engine.world.walls.length; i++) {
+        const wall = engine.world.walls[i];
+        if (wall.kind !== 'ruin_wall') continue;
+        addRootCluster(wall.x, wall.y, 2003 + i * 71, 4, 34, offX, offY);
+        addRootCluster(wall.x + wall.w, wall.y + wall.h, 2111 + i * 89, 3, 28, offX, offY);
+      }
+      for (let i = 0; i < engine.world.trees.length; i += 2) {
+        const t = engine.world.trees[i];
+        addRootCluster(t.x, t.y, 4001 + t.id * 37, 5, t.trunkR * 3.1 + 18, offX, offY);
+      }
+      ctx.stroke();
+    };
 
-    // 废墟石墙角落侵蚀根须
-    for (let i = 0; i < engine.world.walls.length; i++) {
-      const wall = engine.world.walls[i];
-      if (wall.kind !== 'ruin_wall') continue;
-      addRootCluster(wall.x, wall.y, 2003 + i * 71, 4, 28);
-      addRootCluster(wall.x + wall.w, wall.y + wall.h, 2111 + i * 89, 3, 24);
-    }
+    // 第 1 层：贴地深暗投影（压出立体感）
+    ctx.strokeStyle = 'rgba(7, 7, 6, 0.62)';
+    ctx.lineWidth = 2.6;
+    drawAllClusters(1.3, 1.6);
 
-    // 部分古树脚下外延黑枯枝须（每 3 棵树抽样 1 棵，丰富林地肌理且保持低开销）
-    for (let i = 0; i < engine.world.trees.length; i += 3) {
-      const t = engine.world.trees[i];
-      addRootCluster(t.x, t.y, 4001 + t.id * 37, 4, t.trunkR * 2.4 + 14);
-    }
+    // 第 2 层：清晰灰褐枯根背脊（在手电与火光下根根分明）
+    ctx.strokeStyle = 'rgba(116, 108, 92, 0.42)';
+    ctx.lineWidth = 1.15;
+    drawAllClusters(0, 0);
 
-    ctx.stroke();
     ctx.restore();
   }
 
-  // --- Architectural Brushwork: Hewn Cabin Timber Walls ---
+  // --- Architectural Brushwork: Darkwood Pitch-Black Cutaway Timber Walls（对标原版截图 3, 4, 5） ---
   private drawCabinTimberWall(ctx: CanvasRenderingContext2D, w: RectObstacle) {
-    // Ground contact drop shadow
-    ctx.fillStyle = 'rgba(5, 4, 3, 0.56)';
-    ctx.fillRect(w.x + 4, w.y + 5, w.w, w.h);
+    // 墙根深沉接触投影（压出建筑体量感）
+    ctx.fillStyle = 'rgba(3, 4, 4, 0.62)';
+    ctx.fillRect(w.x - 3, w.y - 2, w.w + 7, w.h + 7);
 
-    // Base textured hewn log fill
-    ctx.fillStyle = this.wallLogPat ?? '#4a392a';
+    // Darkwood 标志性近纯黑建筑剖面顶面，极度干净利落
+    ctx.fillStyle = '#060707';
     ctx.fillRect(w.x, w.y, w.w, w.h);
 
-    // Individual log course divisions along wall length
-    const horiz = w.w >= w.h;
-    ctx.strokeStyle = 'rgba(16, 11, 7, 0.72)';
-    ctx.lineWidth = 1.4;
-    if (horiz) {
-      ctx.beginPath();
-      ctx.moveTo(w.x, w.y + w.h * 0.34);
-      ctx.lineTo(w.x + w.w, w.y + w.h * 0.34);
-      ctx.moveTo(w.x, w.y + w.h * 0.68);
-      ctx.lineTo(w.x + w.w, w.y + w.h * 0.68);
-      ctx.stroke();
-      // Cross timber pegs every 34px
-      for (let px = w.x + 18; px < w.x + w.w - 10; px += 34) {
-        ctx.fillStyle = 'rgba(14, 10, 7, 0.58)';
-        ctx.fillRect(px, w.y + 2, 2, w.h - 4);
-      }
-    } else {
-      ctx.beginPath();
-      ctx.moveTo(w.x + w.w * 0.34, w.y);
-      ctx.lineTo(w.x + w.w * 0.34, w.y + w.h);
-      ctx.moveTo(w.x + w.w * 0.68, w.y);
-      ctx.lineTo(w.x + w.w * 0.68, w.y + w.h);
-      ctx.stroke();
-      for (let py = w.y + 18; py < w.y + w.h - 10; py += 34) {
-        ctx.fillStyle = 'rgba(14, 10, 7, 0.58)';
-        ctx.fillRect(w.x + 2, py, w.w - 4, 2);
-      }
-    }
+    // 极克制的墙体剖面内部木筋暗纹（仅在强光贴近时隐约可见）
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = this.wallLogPat ?? '#241e18';
+    ctx.fillRect(w.x + 2, w.y + 2, Math.max(0, w.w - 4), Math.max(0, w.h - 4));
+    ctx.restore();
 
-    // 建筑墙体顶部厚重近纯黑截断边框（#070808 + 轻微破损粗糙边），强化 Darkwood 空间切割压迫感
-    ctx.strokeStyle = '#070808';
-    ctx.lineWidth = 4.6;
-    ctx.strokeRect(w.x + 1, w.y + 1, w.w - 2, w.h - 2);
-
-    ctx.fillStyle = '#070808';
-    const edgeRng = createRng(Math.abs(Math.floor(w.x * 17 + w.y * 31)) + 19);
-    const chips = Math.max(3, Math.floor((w.w + w.h) / 34));
-    for (let i = 0; i < chips; i++) {
-      const cx = w.x + edgeRng() * Math.max(4, w.w - 4);
-      const cy = w.y + edgeRng() * Math.max(4, w.h - 4);
-      ctx.fillRect(cx, cy, 2.5 + edgeRng() * 3.5, 2.5 + edgeRng() * 3.5);
-    }
-
-    ctx.fillStyle = 'rgba(210, 198, 178, 0.10)';
-    ctx.fillRect(w.x + 3, w.y + 3, Math.max(0, w.w - 6), 2);
-    ctx.fillRect(w.x + 3, w.y + 3, 2, Math.max(0, w.h - 6));
+    // 极细墙体截断灰白微边（模拟原版截图 1, 3, 4 室内外墙体的锐利剖面轮廓）
+    ctx.strokeStyle = 'rgba(130, 134, 128, 0.18)';
+    ctx.lineWidth = 1.0;
+    ctx.strokeRect(w.x + 0.5, w.y + 0.5, Math.max(0, w.w - 1), Math.max(0, w.h - 1));
   }
 
   private drawHideoutCornerNotches(ctx: CanvasRenderingContext2D) {
@@ -2030,28 +2286,96 @@ export class GameRenderer {
     ctx.restore();
   }
 
-  // --- Architectural Brushwork: Recessed Barricaded Doors & Broken Windows ---
+  // --- Architectural Brushwork: Recessed Barricaded Doors & Darkwood Dual-Rail Windows（对标截图 3, 4） ---
   private drawBarricadeSlot(
     ctx: CanvasRenderingContext2D,
     b: { x: number; y: number; w: number; h: number; orientation: 'h' | 'v'; hp: number; maxHp: number; kind: 'door' | 'window' }
   ) {
-    // Sill / doorway threshold
-    ctx.fillStyle = b.kind === 'window' ? 'rgba(22, 30, 29, 0.82)' : 'rgba(28, 20, 14, 0.72)';
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-
-    // Timber jamb posts at both ends
-    ctx.fillStyle = '#2b1f15';
-    if (b.orientation === 'h') {
-      ctx.fillRect(b.x - 2, b.y - 1, 4, b.h + 2);
-      ctx.fillRect(b.x + b.w - 2, b.y - 1, 4, b.h + 2);
+    // 窗台/门槛底槽：窗户用亮灰双轨金属窗框，大门配外伸做旧木门廊踏板与宽厚暖褐门槛（一眼区分门与窗）
+    if (b.kind === 'window') {
+      ctx.fillStyle = '#5a5e5a';
+      if (b.orientation === 'h') {
+        ctx.fillRect(b.x - 1, b.y - 2.5, b.w + 2, b.h + 5);
+        ctx.fillStyle = '#787d78';
+        ctx.fillRect(b.x, b.y - 2, b.w, 2.2);
+        ctx.fillRect(b.x, b.y + b.h - 0.2, b.w, 2.2);
+        ctx.fillStyle = '#101313';
+        ctx.fillRect(b.x + 2, b.y + 1.5, b.w - 4, b.h - 3);
+        ctx.fillStyle = '#9aa09b';
+        ctx.fillRect(b.x + 2, b.y + b.h * 0.28, b.w - 4, 1.8);
+        ctx.fillRect(b.x + 2, b.y + b.h * 0.62, b.w - 4, 1.8);
+        ctx.fillStyle = '#3c403e';
+        ctx.fillRect(b.x + b.w * 0.5 - 1.5, b.y + 1, 3, b.h - 2);
+        ctx.strokeStyle = '#070808';
+        ctx.lineWidth = 1.6;
+        ctx.strokeRect(b.x - 1, b.y - 2.5, b.w + 2, b.h + 5);
+      } else {
+        ctx.fillRect(b.x - 2.5, b.y - 1, b.w + 5, b.h + 2);
+        ctx.fillStyle = '#787d78';
+        ctx.fillRect(b.x - 2, b.y, 2.2, b.h);
+        ctx.fillRect(b.x + b.w - 0.2, b.y, 2.2, b.h);
+        ctx.fillStyle = '#101313';
+        ctx.fillRect(b.x + 1.5, b.y + 2, b.w - 3, b.h - 4);
+        ctx.fillStyle = '#9aa09b';
+        ctx.fillRect(b.x + b.w * 0.28, b.y + 2, 1.8, b.h - 4);
+        ctx.fillRect(b.x + b.w * 0.62, b.y + 2, 1.8, b.h - 4);
+        ctx.fillStyle = '#3c403e';
+        ctx.fillRect(b.x + 1, b.y + b.h * 0.5 - 1.5, b.w - 2, 3);
+        ctx.strokeStyle = '#070808';
+        ctx.lineWidth = 1.6;
+        ctx.strokeRect(b.x - 2.5, b.y - 1, b.w + 5, b.h + 2);
+      }
     } else {
-      ctx.fillRect(b.x - 1, b.y - 2, b.w + 2, 4);
-      ctx.fillRect(b.x - 1, b.y + b.h - 2, b.w + 2, 4);
+      // 可进入大门：外伸破旧木门廊台阶 + 宽厚暖褐磨损门槛 + 醒目门框
+      if (b.orientation === 'h') {
+        const outDir = b.y > HIDEOUT_RECT.y + HIDEOUT_RECT.h * 0.5 ? 1 : -1;
+        const stepY = outDir > 0 ? b.y + b.h + 1 : b.y - 22;
+        ctx.fillStyle = 'rgba(4, 3, 2, 0.52)';
+        ctx.fillRect(b.x - 4, stepY + 2, b.w + 8, 22);
+        for (let p = 0; p < 3; p++) {
+          const py = stepY + p * 7;
+          ctx.fillStyle = p === 1 ? '#5b4834' : '#4d3c2b';
+          ctx.fillRect(b.x - 4, py, b.w + 8, 6.2);
+          ctx.strokeStyle = '#120d09';
+          ctx.lineWidth = 1.1;
+          ctx.strokeRect(b.x - 4, py, b.w + 8, 6.2);
+        }
+      } else {
+        const outDir = b.x > HIDEOUT_RECT.x + HIDEOUT_RECT.w * 0.5 ? 1 : -1;
+        const stepX = outDir > 0 ? b.x + b.w + 1 : b.x - 22;
+        ctx.fillStyle = 'rgba(4, 3, 2, 0.52)';
+        ctx.fillRect(stepX + 2, b.y - 4, 22, b.h + 8);
+        for (let p = 0; p < 3; p++) {
+          const px = stepX + p * 7;
+          ctx.fillStyle = p === 1 ? '#5b4834' : '#4d3c2b';
+          ctx.fillRect(px, b.y - 4, 6.2, b.h + 8);
+          ctx.strokeStyle = '#120d09';
+          ctx.lineWidth = 1.1;
+          ctx.strokeRect(px, b.y - 4, 6.2, b.h + 8);
+        }
+      }
+      ctx.fillStyle = '#5c4631';
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.fillStyle = 'rgba(150, 124, 92, 0.36)';
+      ctx.fillRect(b.x + 2, b.y + 2, Math.max(0, b.w - 4), Math.max(0, b.h - 4));
+      ctx.strokeStyle = '#120d09';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
     }
 
-    // Jagged broken window glass shards catching faint light
+    // 门窗两端厚重立柱
+    ctx.fillStyle = '#1c1814';
+    if (b.orientation === 'h') {
+      ctx.fillRect(b.x - 3, b.y - 2, 5, b.h + 4);
+      ctx.fillRect(b.x + b.w - 2, b.y - 2, 5, b.h + 4);
+    } else {
+      ctx.fillRect(b.x - 2, b.y - 3, b.w + 4, 5);
+      ctx.fillRect(b.x - 2, b.y + b.h - 2, b.w + 4, 5);
+    }
+
+    // 碎玻璃冷光锯齿
     if (b.kind === 'window') {
-      ctx.fillStyle = 'rgba(154, 178, 174, 0.36)';
+      ctx.fillStyle = 'rgba(176, 198, 196, 0.34)';
       if (b.orientation === 'h') {
         ctx.beginPath();
         ctx.moveTo(b.x + 6, b.y + 2);
@@ -2764,9 +3088,14 @@ export class GameRenderer {
       sctx.fill();
     };
 
-    // Channel R: 玩家手电筒光锥（标题页从庇护所南门廊外缓慢扫射，避免光锥三角穿透屋顶）
-    if (p.flashlightOn && p.flickerVal > 0.05) {
-      const coneLen = 470;
+    // Channel R: 手电筒冷白聚焦远射光束 / 白昼自然中性前向视野锥
+    const isDayVision = engine.phase === 'day' && engine.mode !== 'title';
+    const coneActive = (p.flashlightOn && p.flickerVal > 0.05) || isDayVision;
+    if (coneActive) {
+      const hasBeam = p.flashlightOn && p.flickerVal > 0.05;
+      // 手电筒：远射高锐度冷白/微青光锥（660px）；白昼关手电：中性冷灰自然视觉前向锥
+      const coneLen = hasBeam ? 660 : 540;
+      const effConeHalf = hasBeam ? coneHalfRad * 0.90 : coneHalfRad;
       const isTitle = engine.mode === 'title';
       const beamX = isTitle ? 0 : p.x;
       const beamY = isTitle ? HIDEOUT_RECT.y + HIDEOUT_RECT.h + 14 : p.y;
@@ -2777,50 +3106,76 @@ export class GameRenderer {
         coneLen,
         this.polyScratch,
         p.angle,
-        // ?v-tone=b：遮挡多边形外扩 0.06 -> 0.36rad，给着色器的柔边光斑与锥外余晖留出空间（只影响光照遮罩，不影响活物可见判定）
-        coneHalfRad + (this.isToneOn() ? 0.36 : 0.06)
+        effConeHalf + 0.05
       );
       fillPoly(this.polyScratch, '#ff0000');
 
-      const warmTone = Variants.val.light === 'b';
       const coldPalette = Variants.val.palette !== 'a';
+      const baseInt = hasBeam
+        ? (coldPalette ? 2.65 : 2.35) * p.flickerVal
+        : 1.32;
       this.gpuLights.push({
         x: beamX - viewL,
         y: beamY - viewT,
         radius: coneLen,
-        intensity: (coldPalette ? 2.75 : 2.35) * p.flickerVal,
-        r: warmTone ? 1.0 : 0.84,
-        g: warmTone ? (coldPalette ? 0.87 : 0.80) : 0.91,
-        b: warmTone ? (coldPalette ? 0.68 : 0.50) : 1.0,
+        intensity: baseInt,
+        // 手电筒呈冷白微青聚焦电光，与火把的炽热暖橘形成鲜明反差
+        r: hasBeam ? 0.84 : 0.93,
+        g: hasBeam ? 0.94 : 0.96,
+        b: hasBeam ? 1.0 : 0.94,
         dirX: Math.cos(p.angle),
         dirY: Math.sin(p.angle),
-        coneCos: Math.cos(coneHalfRad),
+        coneCos: Math.cos(effConeHalf),
         shadowChannel: 0,
       });
     }
 
-    // Channel B: 近身 360° 微光感知圈
-    const auraR = engine.phase === 'day' ? 168 : engine.phase === 'dusk' ? 128 : 108;
+    // Channel B: 角色近身极微弱轮廓感知圈（手持火把时大幅压低无源暖光，让真实暖橘火把主导照明）
+    const holdingLitTorch = engine.equip.torchInHand && engine.equip.torchLight > 0.1;
+    const auraR = holdingLitTorch ? 72 : engine.phase === 'day' ? 96 : 82;
     computeVisibilityPolygon(engine.world, p.x, p.y, auraR, this.auraPolyScratch);
     fillPoly(this.auraPolyScratch, '#0000ff');
     this.gpuLights.push({
       x: p.x - viewL,
       y: p.y - viewT,
       radius: auraR,
-      intensity: engine.phase === 'night' ? 1.05 : 1.35,
-      r: 0.78,
-      g: 0.79,
-      b: 0.78,
+      intensity: holdingLitTorch ? 0.44 : engine.phase === 'night' ? 0.86 : 1.05,
+      r: holdingLitTorch ? 0.88 : 0.86,
+      g: holdingLitTorch ? 0.88 : 0.90,
+      b: holdingLitTorch ? 0.92 : 0.92,
       dirX: 0,
       dirY: 0,
       coneCos: -2.0,
       shadowChannel: 2,
     });
 
-    // R3：右手火把暖色点光 / 枪口一帧强光 / 地上火把（只读 engine.equip；优先级高于吊灯，避免被灯数上限挤掉）
+    // R3：右手火把浓郁暖橘点光 / 枪口一帧强光 / 地上火把（高优先级，带火焰摇曳）
     this.pushEquipmentLights(engine, viewL, viewT, maxLights, fillPoly);
 
-    // Channel G: 庇护所发电机暖黄吊灯 + 活篝火/余烬火盆 + 照明弹
+    // Channel G: 庇护所发电机暖黄吊灯（带真实物理钟摆摇曳：受雷暴风、怪物砸门震屏及主角穿行激发）
+    const lampDt = this.lampLastT < 0 ? 0 : clamp(engine.simTime - this.lampLastT, 0, 0.05);
+    this.lampLastT = engine.simTime;
+    if (lampDt > 0) {
+      const windAmp = 1.4 + engine.weather.rainIntensity * 3.5 + engine.shake * 2.2;
+      for (let li = 0; li < SHELTER_LAMPS.length; li++) {
+        const lamp = SHELTER_LAMPS[li];
+        // 玩家快步走过灯下时带起气流微推
+        const dp = dist(p.x, p.y, lamp.x, lamp.y);
+        if (dp < 42) {
+          this.lampVelX[li] += p.vx * 0.06 * lampDt;
+          this.lampVelY[li] += p.vy * 0.06 * lampDt;
+        }
+        // 微弱自然风/发电机震动激励 + 欠阻尼弹簧回复
+        const driveX = Math.sin(engine.simTime * (1.7 + li * 0.45) + li * 2.1) * windAmp;
+        const driveY = Math.cos(engine.simTime * (1.35 + li * 0.38) + li * 1.4) * windAmp * 0.7;
+        const k = 11.5;
+        const damp = 1.65;
+        this.lampVelX[li] += (-k * this.lampSwingX[li] - damp * this.lampVelX[li] + driveX) * lampDt;
+        this.lampVelY[li] += (-k * this.lampSwingY[li] - damp * this.lampVelY[li] + driveY) * lampDt;
+        this.lampSwingX[li] = clamp(this.lampSwingX[li] + this.lampVelX[li] * lampDt, -13, 13);
+        this.lampSwingY[li] = clamp(this.lampSwingY[li] + this.lampVelY[li] * lampDt, -11, 11);
+      }
+    }
     const coldPalette = Variants.val.palette !== 'a';
     if (engine.generatorOn && engine.generatorFuel > 0) {
       const sputter =
@@ -2829,20 +3184,23 @@ export class GameRenderer {
             ? 0.32
             : 0.96
           : 0.96 + Math.sin(engine.simTime * 7.2) * 0.04;
-      const lampR = 232;
-      for (const lamp of SHELTER_LAMPS) {
+      const lampR = 248;
+      for (let li = 0; li < SHELTER_LAMPS.length; li++) {
+        const lamp = SHELTER_LAMPS[li];
         if (this.gpuLights.length >= maxLights) break;
         if (dist(lamp.x, lamp.y, engine.camX, engine.camY) > W * 0.9) continue;
-        computeVisibilityPolygon(engine.world, lamp.x, lamp.y, lampR, this.lampPolyScratch);
+        const lx = lamp.x + (this.lampSwingX[li] || 0);
+        const ly = lamp.y + (this.lampSwingY[li] || 0);
+        computeVisibilityPolygon(engine.world, lx, ly, lampR, this.lampPolyScratch);
         fillPoly(this.lampPolyScratch, '#00ff00');
         this.gpuLights.push({
-          x: lamp.x - viewL,
-          y: lamp.y - viewT,
+          x: lx - viewL,
+          y: ly - viewT,
           radius: lampR,
-          intensity: (coldPalette ? 2.38 : 2.05) * sputter,
+          intensity: (coldPalette ? 1.88 : 1.72) * sputter,
           r: 1.0,
-          g: coldPalette ? 0.80 : 0.69,
-          b: coldPalette ? 0.54 : 0.34,
+          g: coldPalette ? 0.78 : 0.68,
+          b: coldPalette ? 0.48 : 0.34,
           dirX: 0,
           dirY: 0,
           coneCos: -2.0,
@@ -2921,17 +3279,20 @@ export class GameRenderer {
       this.gpuLights.push({
         x: node.x - viewL,
         y: node.y - viewT,
-        radius: cineGlow ? 58 : 95,
-        intensity: (cineGlow ? 0.55 : 0.85) * pulse,
-        r: cineGlow ? 0.54 : 0.40,
-        g: cineGlow ? 0.74 : 0.88,
-        b: cineGlow ? 0.68 : 0.77,
+        radius: cineGlow ? 46 : 75,
+        intensity: (cineGlow ? 0.34 : 0.65) * pulse,
+        r: cineGlow ? 0.48 : 0.40,
+        g: cineGlow ? 0.68 : 0.88,
+        b: cineGlow ? 0.62 : 0.77,
         dirX: 0,
         dirY: 0,
         coneCos: -2.0,
         shadowChannel: 3,
       });
     }
+
+    // 全地图 POI 建筑室内灯具（油灯、台灯、吊灯、蜡烛）推入 GPU 动态光照
+    pushBuildingLights(engine, this.gpuLights, maxLights, viewL, viewT, W, H, this.lampPolyScratch, fillPoly);
 
     sctx.restore();
   }
@@ -2944,42 +3305,30 @@ export class GameRenderer {
     viewL: number,
     viewT: number
   ) {
-    // 1. Drifting Eastern European Forest Fog Tendrils
-    const dense = Variants.val.fog === 'b';
-    const layers = Quality.preset.fogLayers;
-    // ?v-tone=b：雾团整体减半并随雨势轻度加浓（无雨 ×0.7、暴雨 ×1.3），画面中心（玩家附近）再压到 35%，雾只留在远处/边缘
-    const toneFog = this.isToneOn();
+    // 1. 极克制的林缘冷暗雾丝（去掉遮盖画面的灰白雾球，保持画面阴郁沉实且刀刻般清晰）
     const rainFog = clamp(engine.weather.rainIntensity, 0, 1);
-    const baseAlpha =
-      (toneFog ? (dense ? 0.05 : 0.03) * (0.7 + 0.6 * rainFog) : dense ? 0.1 : 0.05) *
-      (engine.phase === 'dusk' ? 1.25 : engine.phase === 'night' ? 0.85 : 1);
-
-    ctx.save();
-    for (let l = 0; l < layers; l++) {
-      const driftX = (engine.simTime * (12 + l * 6) + viewL * (0.18 + l * 0.08)) % 420;
-      const driftY = (engine.simTime * (4 + l * 3) + viewT * (0.18 + l * 0.08)) % 360;
-      const count = 4 + l * 2;
-      for (let i = 0; i < count; i++) {
-        const fx = ((i * 290 - driftX + 840) % (W + 420)) - 210;
-        const fy = ((i * 197 + l * 130 - driftY + 720) % (H + 360)) - 180;
-        const rad = 170 + l * 55;
-        let fogW = 1;
-        if (toneFog) {
-          const cd = clamp((Math.hypot(fx - W * 0.5, fy - H * 0.5) / W - 0.12) / 0.3, 0, 1);
-          fogW = 0.35 + 0.65 * cd * cd * (3 - 2 * cd);
-        }
-        // 透明度统一走 globalAlpha（色标为常量串，不再每团格式化 alpha 字符串）
-        ctx.globalAlpha = clamp(baseAlpha * fogW, 0, 1);
-        const grad = ctx.createRadialGradient(fx, fy, 10, fx, fy, rad);
-        grad.addColorStop(0, 'rgba(148, 162, 146, 1)');
-        grad.addColorStop(1, 'rgba(148, 162, 146, 0)');
+    const baseAlpha = (0.008 + 0.012 * rainFog) * (engine.phase === 'dusk' ? 1.15 : engine.phase === 'night' ? 0.75 : 1);
+    if (baseAlpha > 0.002 && Quality.preset.fogLayers > 0) {
+      ctx.save();
+      const driftX = (engine.simTime * 11 + viewL * 0.16) % 420;
+      const driftY = (engine.simTime * 4 + viewT * 0.16) % 360;
+      for (let i = 0; i < 4; i++) {
+        const fx = ((i * 310 - driftX + 840) % (W + 420)) - 210;
+        const fy = ((i * 217 - driftY + 720) % (H + 360)) - 180;
+        const cd = clamp((Math.hypot(fx - W * 0.5, fy - H * 0.5) / W - 0.24) / 0.32, 0, 1);
+        const fogW = cd * cd;
+        if (fogW < 0.05) continue;
+        ctx.globalAlpha = clamp(baseAlpha * fogW, 0, 0.03);
+        const grad = ctx.createRadialGradient(fx, fy, 16, fx, fy, 190);
+        grad.addColorStop(0, 'rgba(72, 84, 78, 1)');
+        grad.addColorStop(1, 'rgba(72, 84, 78, 0)');
         ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.arc(fx, fy, rad, 0, Math.PI * 2);
+        ctx.arc(fx, fy, 190, 0, Math.PI * 2);
         ctx.fill();
       }
+      ctx.restore();
     }
-    ctx.restore();
 
     // 1b. 庇护所门窗木板缝隙的锐利条状漏光光束（参考 Darkwood ref_1_t4）
     ctx.save();
@@ -3800,7 +4149,8 @@ export class GameRenderer {
 
     const t = engine.simTime;
     const night = this.getNightAmount(engine);
-    const phaseK = 0.16 + 0.84 * night;
+    // 收束门窗缝隙光为细腻克制的微光（白昼几乎不可见，黑夜轻柔外渗，杜绝“黄色大三角纸片”违和感）
+    const phaseK = 0.04 + 0.34 * night;
     // 与 GPU 吊灯同源的发电机电压抖动（燃油 <16 时断续闪烁）
     const sputter =
       engine.generatorFuel < 16
@@ -4086,6 +4436,9 @@ export class GameRenderer {
     }
     if (eqv.muzzleFlash > 0 && d < 360 && hasLineOfSight(engine.world, p.x, p.y, e.x, e.y)) return true;
 
+    // ⑥ 建筑室内灯具照亮显形
+    if (isEnemyLitByBuildingLights(engine, e)) return true;
+
     // 盲区中的敌人本体完全隐藏（仅保留声波涟漪、挠门木屑与低吼）
     return false;
   }
@@ -4113,6 +4466,9 @@ export class GameRenderer {
     const landW = clamp(pose.land / 0.22, 0, 1);
     const dodging = p.dodgeTimer > 0;
     const dodgeArc = dodging ? Math.sin(clamp(1 - p.dodgeTimer / 0.18, 0, 1) * Math.PI) : 0;
+    const vaulting = p.vaultTimer > 0;
+    const vaultProg = vaulting ? clamp(1 - p.vaultTimer / Math.max(0.01, p.vaultDur), 0, 1) : 0;
+    const vaultArc = vaulting ? Math.sin(vaultProg * Math.PI) : 0;
     const fullCharge = p.isCharging && p.chargeTimer >= 0.65;
 
     // 1. 闪避残影（2–3 帧，按寿命淡出）
@@ -4170,13 +4526,13 @@ export class GameRenderer {
     ctx.save();
     ctx.translate(p.x + Math.cos(pose.hurtAngle) * hurtW * 3.5, p.y + Math.sin(pose.hurtAngle) * hurtW * 3.5);
 
-    // 接触阴影（不随压扁拉伸；闪避腾空时缩小）
-    const shadowK = 1 - dodgeArc * 0.18 - crouch * 0.06;
+    // 接触阴影（不随压扁拉伸；闪避与翻窗腾空时缩小并后移，呈现真实离地高度）
+    const shadowK = 1 - dodgeArc * 0.18 - vaultArc * 0.24 - crouch * 0.06;
     ctx.save();
     ctx.rotate(p.angle);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
+    ctx.fillStyle = `rgba(0, 0, 0, ${(0.48 - vaultArc * 0.18).toFixed(3)})`;
     ctx.beginPath();
-    ctx.ellipse(-3, 2, 16 * shadowK, 19 * shadowK, 0, 0, Math.PI * 2);
+    ctx.ellipse(-3 - vaultArc * 4, 2 + vaultArc * 3, 16 * shadowK, 19 * shadowK, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
@@ -4187,22 +4543,21 @@ export class GameRenderer {
       ctx.rotate(-da);
     }
     ctx.rotate(p.angle);
-    const bodyK = 1 - crouch * 0.1 - landW * 0.06 - dodgeArc * 0.06;
-    ctx.scale(bodyK * (1 + bob * 0.025), bodyK * (1 + breathe * 0.012));
+    const bodyK = (1 - crouch * 0.1 - landW * 0.06 - dodgeArc * 0.06) * (1 + vaultArc * 0.15);
+    ctx.scale(bodyK * (1 + bob * 0.025 + vaultArc * 0.06), bodyK * (1 + breathe * 0.012 - vaultArc * 0.06));
     ctx.translate(tremble, tremble * 0.6);
 
-    // 4. R3 俯视双腿：行走时一前一后交替伸出身体轮廓（靴子可见、步幅随速度）；疾跑步幅更大、两脚更靠近中线；
-    //    停下时双脚并拢略分开；蹲伏/落地屈膝/喘息时双脚外撇后收。腿相位 = engine pose.gait（脚落地帧 = 脚步声）
-    const footSpread = lerp(5.8, 4.4, sprintW) + crouch * 1.8 + landW * 2.2 + exhaustW * 1.2;
+    // 4. R3 俯视双腿（新增 Darkwood 翻窗跨腿姿态：前半段前脚跨过窗台、后脚蹬离，后半段收腿落地）
+    const footSpread = lerp(5.8, 4.4, sprintW) + crouch * 1.8 + landW * 2.2 + exhaustW * 1.2 + vaultArc * 2.4;
     const footBack = -crouch * 3.5 - exhaustW * 1.5;
     const legReach = 10.5 + sprintW * 8;
     const legExt = Math.cos(gaitPhase) * gaitW;
     // 摆动相抬脚（左脚在 gait∈(1,2) 前摆，右脚在 gait∈(0,1) 前摆）
-    const liftL = Math.max(0, -Math.sin(gaitPhase)) * gaitW;
-    const liftR = Math.max(0, Math.sin(gaitPhase)) * gaitW;
-    const fLx = 1.5 + footBack + legExt * legReach;
-    const fRx = 1.5 + footBack - legExt * legReach;
-    const footRot = 0.08 - crouch * 0.25;
+    const liftL = vaulting ? clamp(Math.sin(vaultProg * Math.PI * 1.2), 0, 1) : Math.max(0, -Math.sin(gaitPhase)) * gaitW;
+    const liftR = vaulting ? clamp(Math.sin((vaultProg - 0.18) * Math.PI * 1.2), 0, 1) : Math.max(0, Math.sin(gaitPhase)) * gaitW;
+    const fLx = vaulting ? lerp(-10, 16, clamp(vaultProg * 1.35, 0, 1)) : 1.5 + footBack + legExt * legReach;
+    const fRx = vaulting ? lerp(-14, 10, clamp((vaultProg - 0.22) * 1.35, 0, 1)) : 1.5 + footBack - legExt * legReach;
+    const footRot = 0.08 - crouch * 0.25 + vaultArc * 0.22;
     // 裤腿（髋 → 脚踝）：大腿根被大衣盖住，伸出轮廓的小腿与靴子可见
     ctx.strokeStyle = '#23271f';
     ctx.lineCap = 'round';
@@ -4216,11 +4571,11 @@ export class GameRenderer {
     this.drawBoot(ctx, fLx, footSpread, footRot, liftL);
     this.drawBoot(ctx, fRx, -footSpread, -footRot, liftR);
 
-    // 5. 武器臂（战斗层）：行走/疾跑摆臂 → 蓄力后拉 → 三段挥砍（起手-爆发-收招）
+    // 5. 武器臂（战斗层）：严格对照《Darkwood》原作——无论行走还是疾跑，持火把右臂稳稳端举在右前方绝不挥动！
     const dirSign = p.swingDir;
-    // R3：摆臂与双腿反向（左脚在前 → 右臂前摆）；疾跑时转为大幅前后摆臂（火把随之前后甩，火焰被拖曳）
-    let armAngle = lerp(0.25 - stride * 0.16, -1.15 + stride * 0.95, sprintW);
-    let torsoTwist = stride * (0.09 + sprintW * 0.12);
+    const steadyArmSway = stride * (0.025 + sprintW * 0.02);
+    let armAngle = 0.24 - steadyArmSway;
+    let torsoTwist = stride * (0.07 + sprintW * 0.09);
     // 蓄力：向下一刀的起手侧后拉（与挥砍起手角连续，松手不跳变）
     armAngle = lerp(armAngle, 1.28 * dirSign, chargeW);
     torsoTwist = lerp(torsoTwist, 0.32 * dirSign, chargeW);
@@ -4345,13 +4700,14 @@ export class GameRenderer {
       rAng = lerp(rAng, ga, gArm.w);
       rLen = lerp(rLen, gl, gArm.w);
     }
+    // 严格还原原作：跑步持火把时不挥动右臂，仅保留极微小的步频前后颠簸
     const torchRunW = improvedMotion && eqp.torchInHand ? sprintW * (1 - actW) * (1 - gArm.w) * (1 - aimW) : 0;
-    rAng += (Math.cos(gaitPhase - 0.72) * 0.2 + Math.sin(gaitPhase * 2 + 0.35) * 0.07) * torchRunW;
-    rLen += Math.sin(gaitPhase - 0.5) * 1.25 * torchRunW;
+    rAng += Math.sin(gaitPhase * 2) * 0.018 * torchRunW;
+    rLen += Math.sin(gaitPhase * 2) * 0.45 * torchRunW;
 
-    // 左臂（手电）：与右臂反向摆动；疾跑时摆幅加大（中心后移，俯视可读跑姿）
-    let lX = clamp(lerp(13, 6, sprintW) - stride * (2.5 + sprintW * 6.5), -7, 17) - chargeW * 3;
-    let lY = 8.2 + chargeW * 1.2 + sprintW * 1.5;
+    // 左臂（手电）：稳稳前指照亮前方，行走/疾跑时仅随步频轻度起伏，不向后乱甩
+    let lX = clamp(12.8 - sprintW * 1.2 - stride * (0.9 + sprintW * 0.8), 8, 15) - chargeW * 2.5;
+    let lY = 8.4 + chargeW * 1.0 + sprintW * 0.6;
     if (actW > 0.001) {
       lX = lerp(lX, lhx, actW);
       lY = lerp(lY, lhy, actW);
@@ -4693,66 +5049,101 @@ export class GameRenderer {
       ctx.fillRect(-8.2, -14.2, 3, 2.6);
     }
 
-    // 11. 肩部大衣斗篷（呼吸起伏；喘息时耸肩）
+    // 11. Darkwood 主角外乡人厚重灰褐长风衣双肩（对标原版截图 4 特写：柔和立体体积渐变 + 自然垂坠衣褶）
     const hunch = exhaustW * 1.2;
-    ctx.fillStyle = p.hitFlash > 0 ? '#8c312b' : '#404839';
-    ctx.strokeStyle = '#11140f';
-    ctx.lineWidth = 2.1;
+    const coatGrad = ctx.createRadialGradient(2, -1, 2, -2, 0, 18);
+    if (p.hitFlash > 0) {
+      coatGrad.addColorStop(0, '#a64238');
+      coatGrad.addColorStop(1, '#581c18');
+    } else {
+      coatGrad.addColorStop(0, '#6a6558');
+      coatGrad.addColorStop(0.55, '#46453c');
+      coatGrad.addColorStop(1, '#242520');
+    }
+    ctx.fillStyle = coatGrad;
+    ctx.strokeStyle = 'rgba(12, 13, 11, 0.88)';
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.moveTo(7 + breathe * 0.4, -12.5 + hunch);
-    ctx.quadraticCurveTo(10, 0, 7 + breathe * 0.4, 12.5 - hunch);
-    ctx.quadraticCurveTo(0, 17, -7, 13.5);
-    ctx.quadraticCurveTo(-10.5, 0, -7, -13.5);
-    ctx.quadraticCurveTo(0, -17, 7 + breathe * 0.4, -12.5 + hunch);
+    ctx.moveTo(7 + breathe * 0.4, -12.2 + hunch);
+    ctx.quadraticCurveTo(10.5, 0, 7 + breathe * 0.4, 12.2 - hunch);
+    ctx.quadraticCurveTo(0, 16.8, -7.5, 13.2);
+    ctx.quadraticCurveTo(-11.2 - vaultArc * 3, 0, -7.5, -13.2);
+    ctx.quadraticCurveTo(0, -16.8, 7 + breathe * 0.4, -12.2 + hunch);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(174, 184, 152, 0.22)';
-    ctx.lineWidth = 1.6;
+    // 风衣肩部自然折痕与垂坠暗线
+    ctx.strokeStyle = 'rgba(16, 16, 14, 0.42)';
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.arc(0, 0, 11.5, -1.2, 1.2);
+    ctx.moveTo(-6, -9.5);
+    ctx.quadraticCurveTo(0, -7.5, 5.5, -9);
+    ctx.moveTo(-6, 9.5);
+    ctx.quadraticCurveTo(0, 7.5, 5.5, 9);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(204, 194, 172, 0.24)';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.arc(1, 0, 11, -1.05, 1.05);
     ctx.stroke();
 
-    ctx.strokeStyle = '#5c412a';
-    ctx.lineWidth = 2.3;
-    ctx.beginPath();
-    ctx.moveTo(-7, -8.5);
-    ctx.lineTo(5, -7.8);
-    ctx.moveTo(-7, 8.5);
-    ctx.lineTo(5, 7.8);
-    ctx.stroke();
-
-    // 12. 尖顶兜帽（头部随蹲伏/喘息/疾跑前探，蓄力后仰，锤击时随节奏点头）
-    // R3：疾跑时头部更前探（跑姿前倾）；换弹/缠布/按陷阱/捡拾时低头（gDip）
+    // 12. Darkwood 外乡人标志性多层折痕宽檐旧软帽/兜帽（直击原版截图 1, 2, 3, 4, 8, 10 经典顶视圆帽剪影！）
     const headX =
       crouch * 2 + exhaustW * 2.6 + sprintW * 2.4 - chargeW * 1.2 + actW * (harvestDip * 1.5 - hammerRaise * 1.2) +
-      gDip * 2.4;
+      gDip * 2.4 + vaultArc * 2.2;
     ctx.save();
-    ctx.translate(headX, 0);
-    ctx.fillStyle = p.hitFlash > 0 ? '#9c3b32' : '#585040';
-    ctx.strokeStyle = '#12100d';
-    ctx.lineWidth = 1.9;
+    ctx.translate(headX + 1, 0);
+    // 帽檐柔和投影
+    ctx.fillStyle = 'rgba(8, 8, 7, 0.52)';
     ctx.beginPath();
-    ctx.moveTo(9.5, -4.8);
-    ctx.quadraticCurveTo(11.5, 0, 9.5, 4.8);
-    ctx.quadraticCurveTo(3, 9.5, -4.5, 7.2);
-    ctx.lineTo(-10.5, 0.5);
-    ctx.lineTo(-4.5, -7.2);
-    ctx.quadraticCurveTo(3, -9.5, 9.5, -4.8);
-    ctx.closePath();
+    ctx.ellipse(-1.2, 1.2, 10.6, 10.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 外层宽帽檐（深灰褐做旧绒布）
+    const brimGrad = ctx.createRadialGradient(2.2, -1.2, 2, 0, 0, 10.4);
+    if (p.hitFlash > 0) {
+      brimGrad.addColorStop(0, '#b85044');
+      brimGrad.addColorStop(1, '#541e19');
+    } else {
+      brimGrad.addColorStop(0, '#786c57');
+      brimGrad.addColorStop(0.62, '#4a4337');
+      brimGrad.addColorStop(1, '#221f1a');
+    }
+    ctx.fillStyle = brimGrad;
+    ctx.strokeStyle = '#11100d';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 10.2, 9.6, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = '#12100e';
+
+    // 中层帽冠折环（截图中标志性的圆环层次）
+    ctx.strokeStyle = 'rgba(20, 18, 14, 0.62)';
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.ellipse(8.2, 0, 2.2, 4.2, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(188, 174, 146, 0.28)';
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(-5, 0);
-    ctx.lineTo(6.5, -1);
+    ctx.ellipse(0.4, 0, 6.8, 6.4, 0, 0, Math.PI * 2);
     ctx.stroke();
+
+    // 帽顶受光旧布暖灰高光圆顶
+    const crownGrad = ctx.createRadialGradient(1.2, -0.6, 0.8, 0.4, 0, 6.4);
+    crownGrad.addColorStop(0, '#c6b490');
+    crownGrad.addColorStop(0.55, '#86785e');
+    crownGrad.addColorStop(1, '#3d362b');
+    ctx.fillStyle = crownGrad;
+    ctx.beginPath();
+    ctx.ellipse(0.4, 0, 6.0, 5.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 帽顶中心标志性小凹槽折纹（对标截图 4 高清特写）
+    ctx.strokeStyle = 'rgba(34, 28, 20, 0.58)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(0.6, 0, 2.6, 2.2, 0.2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(226, 212, 180, 0.42)';
+    ctx.beginPath();
+    ctx.arc(1.2, -0.5, 1.3, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
 
     ctx.restore();
@@ -4995,6 +5386,26 @@ export class GameRenderer {
         ctx.stroke();
       }
 
+      // 根须女妖周身暗影黑雾环绕与环飞黑羽微粒（Darkwood Banshee 压迫氛围）
+      if (alive > 0.2) {
+        const mistG = ctx.createRadialGradient(0, 0, 6, 0, 0, 32);
+        mistG.addColorStop(0, 'rgba(6, 7, 7, 0.52)');
+        mistG.addColorStop(0.65, 'rgba(10, 12, 12, 0.22)');
+        mistG.addColorStop(1, 'rgba(8, 10, 10, 0)');
+        ctx.fillStyle = mistG;
+        ctx.beginPath();
+        ctx.arc(0, 0, 32, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(9, 10, 10, 0.72)';
+        for (let f = 0; f < 4; f++) {
+          const fa = time * 1.9 + f * 1.57 + e.id;
+          const fr = 19 + Math.sin(time * 3.1 + f * 2) * 5;
+          ctx.beginPath();
+          ctx.ellipse(Math.cos(fa) * fr, Math.sin(fa) * fr, 3.2, 1.3, fa + 1.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
       ctx.save();
       ctx.translate(-1, 0);
       if (Variants.val.creature !== 'a') ctx.rotate(Math.sin(time * 2.2 + e.id) * 0.08 + stride * 0.07);
@@ -5114,37 +5525,81 @@ export class GameRenderer {
         ctx.stroke();
       }
 
-      ctx.fillStyle = flash ? '#b84239' : '#252923';
+      // 腐朽躯干体积明暗 + 外露佝偻脊椎骨节
+      const stGrad = ctx.createRadialGradient(2, -1, 2, -1, 1, 16);
+      if (flash) {
+        stGrad.addColorStop(0, '#c84b40');
+        stGrad.addColorStop(1, '#681d18');
+      } else {
+        stGrad.addColorStop(0, '#3a3e35');
+        stGrad.addColorStop(0.6, '#232721');
+        stGrad.addColorStop(1, '#111310');
+      }
+      ctx.fillStyle = stGrad;
       ctx.strokeStyle = '#0b0c0b';
-      ctx.lineWidth = 2.1;
+      ctx.lineWidth = 2.0;
       ctx.beginPath();
       ctx.ellipse(-1, 0.8, 12.5, 15.2, 0.12 + stride * 0.05, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = 'rgba(84, 15, 14, 0.65)';
+      // 脊柱凸起骨节与干涸污血斑
+      ctx.fillStyle = 'rgba(156, 148, 130, 0.34)';
+      for (let v = -8; v <= 2; v += 3.5) {
+        ctx.beginPath();
+        ctx.ellipse(v, 0.6 + stride * 0.4, 1.4, 2.1, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(88, 16, 15, 0.72)';
       ctx.beginPath();
-      ctx.ellipse(3, -5, 5, 4, 0.4, 0, Math.PI * 2);
+      ctx.ellipse(3, -5, 5.2, 4.1, 0.4, 0, Math.PI * 2);
       ctx.fill();
 
-      // 抽搐前探的裂颚头骨：前摇缩回、扑击前探、伏低时压低
+      // Darkwood 标志性 Chomper 裂颚头骨：常态痉挛抽搐，前摇与扑咬瞬间头颅撕裂成血红花瓣巨口！
+      const mawSplit = clamp(windE * 0.9 + lungeW * 1.1 + clawLunge * 0.04, 0, 1);
       ctx.save();
-      ctx.translate(6.5 - windE * 2.5 + lungeW * 2.5 - crouch * 1.5, twitch * 0.35);
-      ctx.rotate(twitch * 0.08);
-      ctx.fillStyle = '#5c594e';
-      ctx.strokeStyle = '#121310';
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 7.6, 6.2, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = '#2d0c0b';
-      ctx.beginPath();
-      ctx.ellipse(5.4, 0, 3.2, 2.6 + clawLunge * 0.14 + windE * 0.8, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = windE > 0.2 ? '#fff6dc' : '#efe7cb';
-      ctx.fillRect(2.2, -3.8, 2.4, 1.9);
-      ctx.fillRect(2.2, 1.9, 2.4, 1.9);
+      ctx.translate(6.5 - windE * 2.5 + lungeW * 3.0 - crouch * 1.5, twitch * 0.4);
+      ctx.rotate(twitch * 0.1);
+      if (mawSplit > 0.16) {
+        // 裂开的四瓣血红颚骨 + 惨白利齿
+        ctx.fillStyle = '#5e1010';
+        ctx.strokeStyle = '#120808';
+        ctx.lineWidth = 1.4;
+        for (let side = -1; side <= 1; side += 2) {
+          ctx.save();
+          ctx.rotate(side * (0.28 + mawSplit * 0.55));
+          ctx.beginPath();
+          ctx.ellipse(2.5, side * 1.2, 7.8, 3.6, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          // 锯齿状惨白尖牙
+          ctx.fillStyle = '#ede3c8';
+          for (let t = 2; t <= 7; t += 2.3) {
+            ctx.fillRect(t, side * -1.4, 1.5, 1.4);
+          }
+          ctx.fillStyle = '#5e1010';
+          ctx.restore();
+        }
+        ctx.fillStyle = '#240505';
+        ctx.beginPath();
+        ctx.ellipse(4.5, 0, 4.2, 3.2 * mawSplit, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = '#625e52';
+        ctx.strokeStyle = '#121310';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 7.6, 6.2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#310d0c';
+        ctx.beginPath();
+        ctx.ellipse(5.4, 0, 3.2, 2.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#efe7cb';
+        ctx.fillRect(2.2, -3.8, 2.4, 1.9);
+        ctx.fillRect(2.2, 1.9, 2.4, 1.9);
+      }
       ctx.restore();
     }
 
@@ -5385,8 +5840,8 @@ export class GameRenderer {
   ) {
     const eq = engine.equip;
     const t = engine.simTime;
-    // 白天压低火把亮度，避免破坏白昼色彩指标；夜里为主要暖光
-    const dayK = engine.phase === 'night' ? 1 : engine.phase === 'dusk' ? 0.8 : 0.55;
+    // 火把与手电鲜明区分：浓郁炽热暖橘/琥珀火焰光（多频自然跳动 + 光心微摇曳，驱动真实墙影晃动）
+    const dayK = engine.phase === 'night' ? 1.08 : engine.phase === 'dusk' ? 0.92 : 0.72;
 
     if (eq.muzzleFlash > 0 && this.gpuLights.length < maxLights) {
       const mf = clamp(eq.muzzleFlash / 0.05, 0, 1);
@@ -5408,11 +5863,17 @@ export class GameRenderer {
     }
 
     if (eq.torchInHand && eq.torchLight > 0.03 && this.gpuLights.length < maxLights) {
-      // 光随火焰抖动：呼吸频闪 + 光心沿火焰惯性偏移
-      const flick = 0.86 + Math.sin(t * 11.3) * 0.07 + Math.sin(t * 23.7 + 1.3) * 0.05 + Math.sin(t * 41.9 + 0.4) * 0.02;
-      const lx = this.uiTorchTipX + eq.flameX * 0.6;
-      const ly = this.uiTorchTipY + eq.flameY * 0.6 - 3;
-      const rad = TORCH_LIGHT.radius * (0.85 + 0.15 * eq.torchLight);
+      // 真实火焰跳动：高频明暗摇曳 + 2.4px 光心微颤，与稳定冷白手电筒形成强烈视觉反差
+      const flick =
+        0.84 +
+        Math.sin(t * 11.3) * 0.09 +
+        Math.sin(t * 23.7 + 1.3) * 0.06 +
+        Math.sin(t * 41.9 + 0.4) * 0.03;
+      const jitterX = Math.sin(t * 14.5) * 1.8 + Math.cos(t * 29.1) * 0.8;
+      const jitterY = Math.cos(t * 16.2 + 0.7) * 1.8 + Math.sin(t * 25.4) * 0.8;
+      const lx = this.uiTorchTipX + eq.flameX * 0.6 + jitterX;
+      const ly = this.uiTorchTipY + eq.flameY * 0.6 - 3 + jitterY;
+      const rad = TORCH_LIGHT.radius * (0.88 + 0.12 * eq.torchLight);
       computeVisibilityPolygon(engine.world, lx, ly, rad, this.equipPolyScratch);
       fillPoly(this.equipPolyScratch, '#00ff00');
       this.gpuLights.push({
@@ -5420,9 +5881,10 @@ export class GameRenderer {
         y: ly - viewT,
         radius: rad,
         intensity: TORCH_LIGHT.intensity * eq.torchLight * flick * dayK,
+        // 高饱和浓郁暖橘琥珀火光
         r: 1.0,
-        g: 0.62,
-        b: 0.3,
+        g: 0.48,
+        b: 0.14,
         dirX: 0,
         dirY: 0,
         coneCos: -2.0,
@@ -5435,10 +5897,10 @@ export class GameRenderer {
       const gt = eq.groundTorches[i];
       if (!gt.active || gt.flameH < 0.03 || this.gpuLights.length >= maxLights) continue;
       if (dist(gt.x, gt.y, engine.camX, engine.camY) > 900) continue;
-      const flick = 0.85 + Math.sin(t * 12.1 + gt.id) * 0.08 + Math.sin(t * 27.3 + gt.id * 1.7) * 0.05;
-      const lx = gt.x + gt.swayX * 0.5;
-      const ly = gt.y - gt.z * 0.9 + gt.swayY * 0.5 - 4;
-      const rad = TORCH_LIGHT.groundRadius * (0.8 + 0.2 * gt.flameH);
+      const flick = 0.83 + Math.sin(t * 12.1 + gt.id) * 0.1 + Math.sin(t * 27.3 + gt.id * 1.7) * 0.06;
+      const lx = gt.x + gt.swayX * 0.5 + Math.sin(t * 15 + gt.id) * 1.4;
+      const ly = gt.y - gt.z * 0.9 + gt.swayY * 0.5 - 4 + Math.cos(t * 17 + gt.id) * 1.4;
+      const rad = TORCH_LIGHT.groundRadius * (0.85 + 0.15 * gt.flameH);
       computeVisibilityPolygon(engine.world, lx, ly, rad, this.equipPolyScratch);
       fillPoly(this.equipPolyScratch, '#00ff00');
       this.gpuLights.push({
@@ -5447,8 +5909,8 @@ export class GameRenderer {
         radius: rad,
         intensity: TORCH_LIGHT.groundIntensity * gt.flameH * flick * dayK,
         r: 1.0,
-        g: 0.6,
-        b: 0.28,
+        g: 0.46,
+        b: 0.13,
         dirX: 0,
         dirY: 0,
         coneCos: -2.0,

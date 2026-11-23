@@ -2435,13 +2435,13 @@ class SoundEngine {
       this.rainPan.pan.setTargetAtTime(clamp((gA - gB) * 0.6 + this.gustFA * 0.1, -0.6, 0.6), now, 0.3);
     }
 
-    // 响度按长时平均 RMS 标定（见交付频谱表）：小雨（0.45）与大雨（1.0）总体响度与第二轮持平（±1dB）
+    // 响度按长时平均 RMS 标定：去掉积水飞溅层（w3=0）与水花滴水录音，与 Darkwood 原作保持一致
     const w0 = RAIN_W[0] * Math.pow(rain, 0.5) * (1 - 0.55 * rain);
     const w1 = RAIN_W[1] * Math.pow(rain, 1.5);
     const w2 = RAIN_W[2] * Math.pow(rain, 1.1);
-    const w3 = RAIN_W[3] * Math.pow(wet, 1.3) * (0.25 + 0.75 * rain);
-    const procK = [1 - 0.2 * rk, 1 - 0.65 * rk, 1 - 0.65 * rk, 1 - 0.5 * rk];
-    const weights = [w0 * procK[0], w1 * procK[1], w2 * procK[2], w3 * procK[3]];
+    const w3 = 0;
+    const procK = [1 - 0.2 * rk, 1 - 0.65 * rk, 1 - 0.65 * rk, 0];
+    const weights = [w0 * procK[0], w1 * procK[1], w2 * procK[2], w3];
     for (let i = 0; i < this.rainLayers.length; i++) {
       const ly = this.rainLayers[i];
       ly.drift = clamp(ly.drift * 0.97 + (Math.random() * 2 - 1) * 0.006, -0.05, 0.05);
@@ -2474,15 +2474,15 @@ class SoundEngine {
     }
     if (this.roofBody) this.roofBody.gain.setTargetAtTime(2 + rain * 4, now, 0.5);
 
-    // 真实录音层：室外淡雨/大雨随雨势等功率交叉；近处积水随湿润度；雨后滴水在湿润而雨小时出现；室内启用篷顶底料（室外层经 outdoorLP 闷化）
+    // 真实录音层：室外淡雨/大雨与室内篷顶雨声；积水与滴水声设为 0（与原作保持一致，无水花声）
     if (rk > 0 && this.recLayers.length > 0) {
       const x = smooth01((rain - 0.3) / 0.5);
       const lv = Math.pow(rain, 0.7) * rk;
       const rw = [
         REC_K.light * lv * Math.cos(x * Math.PI * 0.5),
         REC_K.heavy * lv * Math.sin(x * Math.PI * 0.5),
-        REC_K.puddle * Math.pow(wet, 1.3) * (0.3 + 0.7 * rain) * rk,
-        REC_K.drip * smooth01((wet - 0.15) / 0.4) * (1 - smooth01(rain / 0.35)) * rk,
+        0,
+        0,
         indoor ? REC_K.roof * Math.pow(rain, 0.6) * rk : 0,
       ];
       for (let i = 0; i < this.recLayers.length; i++) {
@@ -2639,16 +2639,8 @@ class SoundEngine {
       this.playBranchSnap(randomPan(0.92), rnd(0.6, 1), 0.45 + gust * 0.35);
     }
 
-    // 3. 屋檐 / 叶面滴水：雨中与雨停后的湿润期
-    if (this.wetMemory > 0.1) {
-      this.dripTimer -= dt;
-      if (this.dripTimer <= 0) {
-        const spread = indoor ? 2.6 : 4.0;
-        // 靠近屋檐时滴落更密
-        this.dripTimer = ((indoor ? 0.5 : 0.9) + (Math.random() * spread) / (0.4 + this.wetMemory)) / (1 + this.eaveProx * 0.8);
-        this.playEaveDrip(indoor);
-      }
-    }
+    // 3. 屋檐滴水已按原作规范静音（去掉水花与滴水声）
+    this.dripTimer = 99;
 
     // 4. 环境叙事声：白天 20–45s 一次鸦鸣/枝断；夜晚 15–35s 一次敲击/拖拽/低语
     //    危险度高时不播放（避免假信号干扰玩家凭声音判断真实威胁方位）
@@ -2660,9 +2652,10 @@ class SoundEngine {
         const pan = randomPan(0.95);
         const r = Math.random();
         if (isNight) {
-          if (r < 0.38) this.playDistantKnock(pan);
-          else if (r < 0.72) this.playDistantDrag(pan);
-          else this.playWhisper(pan);
+          if (r < 0.28) this.playDistantKnock(pan);
+          else if (r < 0.54) this.playDistantDrag(pan);
+          else if (r < 0.78) this.playWhisper(pan);
+          else this.playBowedMetalScrape(pan, 0.72);
         } else if (r < 0.65) {
           this.playCrowCall(pan);
         } else {
@@ -2674,14 +2667,8 @@ class SoundEngine {
     const rain = this.rainNow;
     const ctxNow = this.ctx ? this.ctx.currentTime : 0;
 
-    // 5. 近处树冠大水滴"啪嗒"：室外下雨或雨后湿润期；强阵风时一次抖落 2–4 滴
-    if (!indoor && this.wetMemory > 0.15) {
-      this.canopyDropTimer -= dt;
-      if (this.canopyDropTimer <= 0) {
-        this.canopyDropTimer = rnd(1.0, 3.5) / (0.4 + this.wetMemory * 0.6 + rain * 0.8);
-        this.playCanopyDrop(gust > 0.85 ? 2 + Math.floor(Math.random() * 3) : 1);
-      }
-    }
+    // 5. 近处树冠水滴溅射已按原作规范静音（去掉水花声）
+    this.canopyDropTimer = 99;
 
     // 6. 室内屋顶铁皮补丁偶发金属叮当
     if (indoor && rain > 0.12) {
@@ -2859,65 +2846,17 @@ class SoundEngine {
   }
 
   /**
-   * 心跳一拍（"咚—咚"双搏）：低血量时更沉（基频下移、第二搏稍迟）并叠加低通棕噪胸腔闷击；走身体总线
+   * 心跳声已按《Darkwood》原作规范关闭（保留方法签名兼容）
    */
-  private playHeartbeat(intensity: number) {
-    const ctx = this.ctx;
-    const out: AudioNode | null = this.bodyBus ?? this.masterGain;
-    if (!ctx || !out) return;
-    const now = ctx.currentTime;
-    const hurt = clamp(this.hurtSm, 0, 1);
-    const vol = clamp(intensity * 0.26, 0.04, 0.26) * (1 + hurt * 0.15);
-    const deep = 1 - hurt * 0.22;
-    const shot = new OneShot();
-    const brown = this.brownBuf;
-
-    const pulse = (offset: number, freq: number, gainPeak: number) => {
-      const t0 = now + offset;
-      const osc = this.oscSource(ctx, shot, 'sine', freq * deep, t0, t0 + 0.2);
-      osc.frequency.exponentialRampToValueAtTime(28 * deep, t0 + 0.15);
-      const g = this.amp(ctx, shot, 0.0001, t0);
-      g.gain.linearRampToValueAtTime(gainPeak, t0 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.16 + hurt * 0.03);
-      osc.connect(g);
-      g.connect(out);
-      if (brown && hurt > 0.15) {
-        const th = this.noiseSource(ctx, shot, brown, t0, 0.16);
-        const lp = this.filt(ctx, shot, 'lowpass', 120, 0.9, t0);
-        const tg = this.amp(ctx, shot, 0.0001, t0);
-        this.perc(tg.gain, t0, gainPeak * hurt * 1.3, 0.004, 0.12);
-        th.connect(lp);
-        lp.connect(tg);
-        tg.connect(out);
-      }
-    };
-
-    pulse(0, 68, vol);
-    pulse(0.17 + hurt * 0.03, 56, vol * 0.7);
-    shot.seal();
+  private playHeartbeat(_intensity: number) {
+    return;
   }
 
   /**
-   * 统一心跳节拍器：驱动 = max(危险度, 身体驱动)，速率同取较快者；全局只有这一个相位累加器，杜绝两套心跳叠加
+   * 心跳节拍器保持静默（与原作一致，无心跳声）
    */
-  private tickHeart(dt: number) {
-    const ambFresh = nowMs() - this.ambLastMs < 400;
-    const dD = ambFresh && this.dangerNow > 0.25 ? clamp(this.dangerNow, 0, 1) : 0;
-    const bD = this.heartBodySm > 0.18 ? clamp(this.heartBodySm, 0, 1) : 0;
-    const drive = Math.max(dD, bD);
-    if (drive <= 0) {
-      this.heartbeatPhase = 0;
-      return;
-    }
-    const rateD = dD > 0 ? 1.15 + dD * 1.45 : 0;
-    const rateB = bD > 0 ? 1.3 + bD * 1.15 - this.hurtSm * 0.15 : 0;
-    const rate = Math.max(rateD, rateB);
-    this.heartbeatPhase += clamp(dt, 0, 0.1) * rate;
-    if (this.heartbeatPhase >= 1) {
-      this.heartbeatPhase -= 1;
-      if (this.heartbeatPhase >= 1) this.heartbeatPhase = 0;
-      this.playHeartbeat(drive);
-    }
+  private tickHeart(_dt: number) {
+    this.heartbeatPhase = 0;
   }
 
   /**
@@ -3002,70 +2941,28 @@ class SoundEngine {
   }
 
   /**
-   * 安排一次完整呼吸（吸 + 呼）：只对常驻呼吸链做增益/滤波自动化，不分配节点。
-   * lvl 越高越粗重；> 0.7 起进入"喘息"：吸气更急更响、呼气带出轻微嗓音
+   * 主角呼吸与喘息声已按《Darkwood》原作规范关闭（静音常驻呼吸链，保留结构与快照兼容）
    */
-  private scheduleBreath(t0: number, cycle: number, lvl: number) {
-    const g = this.breathG;
-    const bp = this.breathBP;
-    if (!g || !bp) return;
-    const c = clamp(cycle, 0.4, 2.2);
-    const L = clamp(lvl, 0, 1);
-    const gasp = smooth01((L - 0.7) / 0.3);
-    const inDur = c * (0.36 - gasp * 0.08);
-    const exT = t0 + inDur + c * 0.04;
-    const exDur = c * 0.52;
-    const inPeak = (0.012 + 0.045 * L) * (1 + gasp * 0.6) * rnd(0.85, 1.1);
-    const exPeak = (0.016 + 0.07 * L) * rnd(0.85, 1.1);
-
-    g.gain.cancelScheduledValues(t0);
-    g.gain.setTargetAtTime(inPeak, t0, Math.max(0.012, inDur * (0.3 - gasp * 0.15)));
-    g.gain.setTargetAtTime(0.0001, t0 + inDur * 0.8, 0.03);
-    g.gain.setTargetAtTime(exPeak, exT, 0.035);
-    g.gain.setTargetAtTime(0.0001, exT + exDur * 0.35, Math.max(0.02, exDur * 0.28));
-    bp.frequency.cancelScheduledValues(t0);
-    bp.frequency.setTargetAtTime(rnd(1700, 2300) * (1 + gasp * 0.2), t0, 0.04);
-    bp.frequency.setTargetAtTime(rnd(850, 1200), exT, 0.05);
-
-    const vg = this.voiceG;
-    const vo = this.voiceOsc;
-    if (vg && vo) {
-      vg.gain.cancelScheduledValues(t0);
-      vo.frequency.cancelScheduledValues(t0);
-      if (gasp > 0.05) {
-        const f = rnd(115, 150);
-        vo.frequency.setTargetAtTime(f, exT, 0.02);
-        vo.frequency.setTargetAtTime(f * 0.85, exT + exDur * 0.2, 0.1);
-        vg.gain.setTargetAtTime(0.016 * gasp * rnd(0.6, 1), exT, 0.03);
-        vg.gain.setTargetAtTime(0, exT + exDur * 0.3, 0.06);
-      } else {
-        vg.gain.setTargetAtTime(0, t0, 0.05);
-      }
+  private scheduleBreath(t0: number, _cycle: number, _lvl: number) {
+    if (this.breathG) {
+      this.breathG.gain.cancelScheduledValues(t0);
+      this.breathG.gain.setTargetAtTime(0, t0, 0.03);
     }
-    this.breathBusyUntil = exT + exDur;
+    if (this.voiceG) {
+      this.voiceG.gain.cancelScheduledValues(t0);
+      this.voiceG.gain.setTargetAtTime(0, t0, 0.03);
+    }
   }
 
-  /** 疾跑脚步回调：估计步频，并每 4 步（2 吸 2 呼）/ 喘息时每 3 步触发一次与脚步对齐的呼吸 */
+  /** 疾跑脚步回调：仅记录步频统计，不触发呼吸喘息声 */
   private noteSprintStep(now: number) {
     const iv = now - this.lastSprintStepAt;
     if (iv > 0.12 && iv < 0.5) this.stepIntSm = this.stepIntSm * 0.7 + iv * 0.3;
     this.lastSprintStepAt = now;
-    this.stepsSinceBreath++;
-    // 仅在 updateBody 报告疾跑时耦合（闪避调用的冲刺脚步等不触发）
-    if (!this.sprintNow || nowMs() - this.bodyLastMs > 400) return;
-    const lvl = this.exertSm;
-    if (lvl < 0.1) return;
-    const per = lvl > 0.75 ? 3 : 4;
-    // 正常在上一口气结束后对齐脚步；若已等待超过两个呼吸周期（如起跑前的慢呼吸未完），直接接管
-    if (this.stepsSinceBreath >= per && (now >= this.breathBusyUntil - 0.06 || this.stepsSinceBreath >= per * 2)) {
-      this.stepsSinceBreath = 0;
-      this.scheduleBreath(now + 0.005, this.stepIntSm * per, lvl);
-    }
   }
 
   /**
-   * 蓄力张力（每帧可调用、不分配节点）：握柄吱嘎（速率与亮度随张力上升）+ 憋气鼻息与喉部低哼 + 震颤；
-   * level01 = 0 时以 ~70ms 时间常数平滑淡出。内置节流：变化很小且距上次推送 < 50ms 时跳过
+   * 蓄力张力：仅保留木柄紧绷吱嘎声，关闭人物憋气鼻息与喉部哼声（与原作保持一致）
    */
   setChargeLevel(level01: number): void {
     const ctx = this.ctx;
@@ -3083,13 +2980,9 @@ class SoundEngine {
     if (this.gripG) this.gripG.gain.setTargetAtTime(e * 0.12, now, tau);
     if (this.gripSrc) this.gripSrc.playbackRate.setTargetAtTime(0.75 + lv * 0.7, now, 0.15);
     if (this.gripBP) this.gripBP.frequency.setTargetAtTime(1000 + lv * 900, now, 0.15);
-    // 震颤深度取憋气基准的 40%，保证增益始终为正
-    const sBase = smooth01((lv - 0.15) / 0.85) * 0.045;
-    if (this.strainG) this.strainG.gain.setTargetAtTime(sBase, now, tau);
-    if (this.strainBP) this.strainBP.frequency.setTargetAtTime(1900 + lv * 1000, now, 0.2);
-    if (this.strainHumG) this.strainHumG.gain.setTargetAtTime(lv * lv * 0.13, now, tau);
-    if (this.strainOsc) this.strainOsc.frequency.setTargetAtTime(98 + lv * 45, now, 0.2);
-    if (this.tremDepth) this.tremDepth.gain.setTargetAtTime(sBase * 0.4, now, tau);
+    if (this.strainG) this.strainG.gain.setTargetAtTime(0, now, 0.05);
+    if (this.strainHumG) this.strainHumG.gain.setTargetAtTime(0, now, 0.05);
+    if (this.tremDepth) this.tremDepth.gain.setTargetAtTime(0, now, 0.05);
   }
 
   // ═══════════════════════════ 玩家脚步 ═══════════════════════════
@@ -3133,20 +3026,9 @@ class SoundEngine {
     };
 
     if (surface === 'wood') this.stepWood(s, sprint);
-    else if (surface === 'mud') this.stepMud(s, wet);
+    else if (surface === 'mud') this.stepMud(s, 0);
     else this.stepGravel(s);
 
-    // 潮湿地表额外的细碎水花
-    if (surface !== 'wood' && wet > 0.35) {
-      const t0 = now + rnd(0.0, 0.015);
-      const sp = this.noiseSource(ctx, shot, white, t0, 0.08);
-      const hp = this.filt(ctx, shot, 'highpass', rnd(2200, 3200), 0.7, t0);
-      const g = this.amp(ctx, shot, 0.0001, t0);
-      this.perc(g.gain, t0, 0.035 * wet * s.vel, 0.003, rnd(0.035, 0.06));
-      sp.connect(hp);
-      hp.connect(g);
-      g.connect(out);
-    }
     shot.seal();
   }
 
@@ -3206,37 +3088,36 @@ class SoundEngine {
     }
   }
 
-  /** 泥地脚步：共振低通下扫的"咕叽" + 稍后拔脚的上扫吸吮 + 低频闷踏，湿度越高共振越强 */
-  private stepMud(s: StepCtx, wet: number) {
+  /** 林地泥土脚步：沉实干泥落脚 + 枯叶沙沙擦响 + 低频闷踏（去掉湿水咕叽/水花吸吮声，还原《Darkwood》原作） */
+  private stepMud(s: StepCtx, _wet: number) {
     const { ctx, shot, out, now, pitch, vel } = s;
 
-    // 1) 咕叽：共振低通由 ~700Hz 下扫
-    const sqDur = rnd(0.1, 0.15);
-    const sq = this.noiseSource(ctx, shot, s.pink, now, sqDur + 0.03);
-    const sqLP = this.filt(ctx, shot, 'lowpass', 700 * pitch * rnd(0.9, 1.1), 4 + wet * 6, now);
-    sqLP.frequency.exponentialRampToValueAtTime(240 * pitch, now + sqDur * 0.8);
-    const sqG = this.amp(ctx, shot, 0.0001, now);
-    this.perc(sqG.gain, now, 0.32 * vel, 0.006, sqDur);
-    sq.connect(sqLP);
-    sqLP.connect(sqG);
-    sqG.connect(out);
+    // 1) 干实腐殖土踩踏中低频体
+    const dur = rnd(0.075, 0.11);
+    const soil = this.noiseSource(ctx, shot, s.pink, now, dur + 0.03);
+    const soilLP = this.filt(ctx, shot, 'lowpass', 520 * pitch * rnd(0.9, 1.1), 0.9, now);
+    soilLP.frequency.exponentialRampToValueAtTime(190 * pitch, now + dur * 0.85);
+    const soilG = this.amp(ctx, shot, 0.0001, now);
+    this.perc(soilG.gain, now, 0.24 * vel, 0.004, dur);
+    soil.connect(soilLP);
+    soilLP.connect(soilG);
+    soilG.connect(out);
 
-    // 2) 拔脚吸吮：带通由低向高上扫
-    const suT = now + rnd(0.07, 0.11);
-    const su = this.noiseSource(ctx, shot, s.white, suT, 0.1);
-    const suBP = this.filt(ctx, shot, 'bandpass', 350 * pitch, 3 + wet * 4, suT);
-    suBP.frequency.exponentialRampToValueAtTime(1200 * pitch * rnd(0.85, 1.15), suT + 0.08);
-    const suG = this.amp(ctx, shot, 0.0001, suT);
-    this.perc(suG.gain, suT, 0.09 * vel * (0.35 + wet), 0.01, 0.07);
-    su.connect(suBP);
-    suBP.connect(suG);
-    suG.connect(out);
+    // 2) 轻微枯草落叶踩碎质感（短促中高频，无水花湿声）
+    const crT = now + rnd(0.01, 0.025);
+    const cr = this.noiseSource(ctx, shot, s.white, crT, 0.055);
+    const crBP = this.filt(ctx, shot, 'bandpass', 1450 * pitch * rnd(0.9, 1.15), 1.4, crT);
+    const crG = this.amp(ctx, shot, 0.0001, crT);
+    this.perc(crG.gain, crT, 0.048 * vel, 0.003, 0.042);
+    cr.connect(crBP);
+    crBP.connect(crG);
+    crG.connect(out);
 
     // 3) 低频闷踏
-    const th = this.oscSource(ctx, shot, 'sine', 75 * pitch, now, now + 0.11);
-    th.frequency.exponentialRampToValueAtTime(42, now + 0.09);
+    const th = this.oscSource(ctx, shot, 'sine', 74 * pitch, now, now + 0.1);
+    th.frequency.exponentialRampToValueAtTime(42, now + 0.085);
     const thG = this.amp(ctx, shot, 0.0001, now);
-    this.perc(thG.gain, now, 0.05 * vel, 0.004, 0.08);
+    this.perc(thG.gain, now, 0.06 * vel, 0.004, 0.075);
     th.connect(thG);
     thG.connect(out);
   }
@@ -3530,21 +3411,40 @@ class SoundEngine {
       return;
     }
 
-    const startFreq = kind === 'metal' ? 620 : kind === 'wood' ? 210 : 140;
+    const startFreq = kind === 'metal' ? 620 : kind === 'wood' ? 195 : 140;
     const osc = this.oscSource(
       ctx,
       shot,
       kind === 'metal' ? 'square' : 'triangle',
       startFreq * jitter,
       now,
-      now + 0.18
+      now + 0.22
     );
-    osc.frequency.exponentialRampToValueAtTime(kind === 'metal' ? 180 : 38, now + 0.14);
+    osc.frequency.exponentialRampToValueAtTime(kind === 'metal' ? 180 : 34, now + 0.16);
     const g = this.amp(ctx, shot, 0.001, now);
-    g.gain.linearRampToValueAtTime((kind === 'metal' ? 0.18 : 0.28) * scale, now + 0.006);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+    g.gain.linearRampToValueAtTime((kind === 'metal' ? 0.18 : 0.34) * scale, now + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.20);
     osc.connect(g);
     g.connect(route.input);
+
+    // 木板重击专属：额外一层 62Hz 厚木门板箱体共振 + 滞后木屑脆裂声（守夜压迫感）
+    if (kind === 'wood') {
+      const thump = this.oscSource(ctx, shot, 'sine', 66 * jitter, now, now + 0.24);
+      thump.frequency.exponentialRampToValueAtTime(32, now + 0.18);
+      const tg = this.amp(ctx, shot, 0.001, now);
+      this.perc(tg.gain, now, 0.26 * scale, 0.004, 0.18);
+      thump.connect(tg);
+      tg.connect(route.input);
+
+      const crackAt = now + 0.018;
+      const crack = this.noiseSource(ctx, shot, white, crackAt, 0.075);
+      const cbp = this.filt(ctx, shot, 'bandpass', 2400 * jitter, 2.2, crackAt);
+      const cg = this.amp(ctx, shot, 0.001, crackAt);
+      this.perc(cg.gain, crackAt, 0.14 * scale, 0.002, 0.055);
+      crack.connect(cbp);
+      cbp.connect(cg);
+      cg.connect(route.input);
+    }
 
     const src = this.noiseSource(ctx, shot, white, now, 0.13);
     const f = this.filt(
@@ -3943,30 +3843,22 @@ class SoundEngine {
         crg.connect(out);
       }
     } else if (surface === 'mud') {
-      const sq = this.noiseSource(ctx, shot, pink, now, 0.24);
-      const slp = this.filt(ctx, shot, 'lowpass', 800, 8, now);
-      slp.frequency.exponentialRampToValueAtTime(220, now + 0.18);
+      // 干泥急停滑擦声（去掉湿水咕叽与水花溅射）
+      const sk = this.noiseSource(ctx, shot, pink, now, 0.22);
+      const slp = this.filt(ctx, shot, 'lowpass', 580, 0.9, now);
+      slp.frequency.exponentialRampToValueAtTime(190, now + 0.18);
       const sg = this.amp(ctx, shot, 0.0001, now);
-      this.perc(sg.gain, now, 0.35 * v, 0.006, 0.18);
-      sq.connect(slp);
+      this.perc(sg.gain, now, 0.26 * v, 0.006, 0.16);
+      sk.connect(slp);
       slp.connect(sg);
       sg.connect(out);
-      const su = now + rnd(0.14, 0.2);
-      const sk = this.noiseSource(ctx, shot, white, su, 0.14);
-      const sbp = this.filt(ctx, shot, 'bandpass', 400, 5, su);
-      sbp.frequency.exponentialRampToValueAtTime(1300, su + 0.1);
-      const skg = this.amp(ctx, shot, 0.0001, su);
-      this.perc(skg.gain, su, 0.1 * v, 0.012, 0.09);
-      sk.connect(sbp);
-      sbp.connect(skg);
-      skg.connect(out);
-      const sp = this.noiseSource(ctx, shot, white, now + 0.005, 0.1);
-      const shp = this.filt(ctx, shot, 'highpass', 2500, 0.7, now);
-      const spg = this.amp(ctx, shot, 0.0001, now + 0.005);
-      this.perc(spg.gain, now + 0.005, 0.06 * (0.4 + this.wetMemory * 0.6), 0.003, 0.07);
-      sp.connect(shp);
-      shp.connect(spg);
-      spg.connect(out);
+      const cr = this.noiseSource(ctx, shot, white, now + 0.015, 0.12);
+      const cbp = this.filt(ctx, shot, 'bandpass', 1400, 1.1, now + 0.015);
+      const cg = this.amp(ctx, shot, 0.0001, now + 0.015);
+      this.perc(cg.gain, now + 0.015, 0.06 * v, 0.005, 0.085);
+      cr.connect(cbp);
+      cbp.connect(cg);
+      cg.connect(out);
     } else {
       const gDur = 0.32;
       const gr = this.noiseSource(ctx, shot, white, now, gDur);
@@ -6251,7 +6143,83 @@ class SoundEngine {
   }
 
   /**
-   * 昼夜交替的远处号角：保留原音色，改走室外总线（进屋自然闷化）并送入森林混响，营造林间远距感
+   * Darkwood 翻越窗户拟音：窗框老木受压嘎吱 + 风衣布料摩擦窗台 + 短促发力闷息
+   */
+  playWindowVault() {
+    const ctx = this.ctx;
+    const pink = this.pinkBuf;
+    const master = this.masterGain;
+    if (!ctx || !master || !pink || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const shot = new OneShot();
+    const out = this.nearBus ?? master;
+
+    // 1. 窗台老木承重嘎吱（取预制木吱嘎缓冲短段）
+    const cBuf = this.creakBufs[0];
+    if (cBuf) {
+      const creak = this.noiseSource(ctx, shot, cBuf, now, 0.34, rnd(0.82, 1.05));
+      const clp = this.filt(ctx, shot, 'bandpass', rnd(420, 620), 2.4, now);
+      const cg = this.amp(ctx, shot, 0.0001, now);
+      this.perc(cg.gain, now, 0.24, 0.03, 0.26);
+      creak.connect(clp);
+      clp.connect(cg);
+      cg.connect(out);
+    }
+
+    // 2. 厚风衣擦过窗框的布料摩挲声
+    const cloth = this.noiseSource(ctx, shot, pink, now + 0.05, 0.32);
+    const bp = this.filt(ctx, shot, 'bandpass', rnd(720, 980), 1.4, now + 0.05);
+    bp.frequency.linearRampToValueAtTime(420, now + 0.34);
+    const bg = this.amp(ctx, shot, 0.0001, now + 0.05);
+    this.perc(bg.gain, now + 0.05, 0.18, 0.04, 0.24);
+    cloth.connect(bp);
+    bp.connect(bg);
+    bg.connect(out);
+
+    // 3. 撑窗台的低沉木墩响
+    const th = this.oscSource(ctx, shot, 'sine', 110, now, now + 0.12);
+    th.frequency.exponentialRampToValueAtTime(46, now + 0.10);
+    const tg = this.amp(ctx, shot, 0.0001, now);
+    this.perc(tg.gain, now, 0.16, 0.005, 0.09);
+    th.connect(tg);
+    tg.connect(out);
+
+    shot.seal();
+  }
+
+  /**
+   * Darkwood 波兰工业暗黑恐怖拉弓金属/失谐大提琴擦弦（极稀疏夜色氛围，制造脊背发凉感）
+   */
+  private playBowedMetalScrape(pan: number, level: number) {
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const shot = new OneShot();
+    const out = this.distantOut(ctx, shot, pan, 1650, 0.72);
+    const dur = rnd(2.4, 3.8);
+    const baseF = rnd(145, 220);
+
+    // 非谐波双锯齿模拟拉弓铁片/失谐大提琴擦弦泛音
+    const o1 = this.oscSource(ctx, shot, 'sawtooth', baseF, now, now + dur);
+    const o2 = this.oscSource(ctx, shot, 'sawtooth', baseF * rnd(1.06, 1.13), now, now + dur);
+    o1.frequency.linearRampToValueAtTime(baseF * rnd(0.86, 0.94), now + dur);
+    o2.frequency.linearRampToValueAtTime(baseF * rnd(1.01, 1.07), now + dur);
+
+    const bp = this.filt(ctx, shot, 'bandpass', baseF * 2.3, 4.8, now);
+    bp.frequency.linearRampToValueAtTime(baseF * 1.4, now + dur);
+    const g = this.amp(ctx, shot, 0.0001, now);
+    g.gain.linearRampToValueAtTime(0.048 * level, now + dur * 0.42);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    o1.connect(bp);
+    o2.connect(bp);
+    bp.connect(g);
+    g.connect(out.input);
+    shot.seal();
+  }
+
+  /**
+   * 昼夜交替的远处号角：入夜为压迫的三全音低沉工业长鸣，破晓为温暖解脱的五度铜管长音
    */
   playPhaseHorn(night: boolean) {
     const ctx = this.ctx;
@@ -6259,17 +6227,26 @@ class SoundEngine {
     if (!ctx || !master || this.muted || this.pageHidden) return;
     const now = ctx.currentTime;
     const shot = new OneShot();
-    const osc = this.oscSource(ctx, shot, 'sawtooth', night ? 65.4 : 110, now, now + 1.65);
-    osc.frequency.exponentialRampToValueAtTime(night ? 58.2 : 146.8, now + 1.4);
-    const f = this.filt(ctx, shot, 'lowpass', night ? 220 : 380, 1, now);
+    const dur = night ? 2.6 : 2.3;
+
+    // 主声部 + 泛音和声层（入夜三全音压迫 / 破晓纯五度释放）
+    const f1 = night ? 61.7 : 98.0;
+    const f2 = night ? f1 * 1.414 : f1 * 1.5;
+    const osc = this.oscSource(ctx, shot, 'sawtooth', f1, now, now + dur);
+    const osc2 = this.oscSource(ctx, shot, 'triangle', f2, now, now + dur);
+    osc.frequency.exponentialRampToValueAtTime(night ? 53.5 : 110.0, now + dur * 0.9);
+    osc2.frequency.exponentialRampToValueAtTime(night ? 75.5 : 164.8, now + dur * 0.9);
+
+    const f = this.filt(ctx, shot, 'lowpass', night ? 240 : 460, 1.3, now);
     const g = this.amp(ctx, shot, 0.001, now);
-    g.gain.linearRampToValueAtTime(0.16, now + 0.25);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 1.6);
+    g.gain.linearRampToValueAtTime(night ? 0.18 : 0.14, now + 0.45);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur - 0.05);
     osc.connect(f);
+    osc2.connect(f);
     f.connect(g);
     g.connect(this.outdoorBus ?? master);
     if (this.forestIn) {
-      const send = this.amp(ctx, shot, 0.45, now);
+      const send = this.amp(ctx, shot, 0.58, now);
       g.connect(send);
       send.connect(this.forestIn);
     }

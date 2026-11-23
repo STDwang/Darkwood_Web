@@ -676,12 +676,13 @@ button.paper-hud:hover {
 }
 .hud2-minimap {
   position: relative;
-  width: 176px;
-  height: 176px;
+  width: 126px;
+  height: 126px;
   flex-shrink: 0;
   border-radius: 50%;
   pointer-events: none;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+  opacity: 0.72;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.65);
 }
 
 /* 无框墨线图标按钮：44px 命中区，悬停出现细小衬线标签 */
@@ -785,18 +786,18 @@ button.paper-hud:hover {
   opacity: 1;
 }
 
-/* 中上提示条（沿用 ink-note 便签样式；竖屏下移避开小地图） */
+/* 极简电影字幕式提示条：贴近底部快捷栏上方，避免大黑框横切画面中央构图 */
 .hud2-toasts {
   position: fixed;
   left: 50%;
-  top: calc(var(--gt) + 80px);
+  bottom: calc(var(--gb) + 74px);
   transform: translateX(-50%);
   z-index: 20;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: min(90vw, 440px);
+  gap: 5px;
+  width: min(86vw, 420px);
 }
 
 /* ---------- 底部：左下体征 / 右下资源 + 快捷栏 ---------- */
