@@ -259,7 +259,8 @@ export const FLAME_PHYS = {
   /** 挥动火星阈值（px/s） */
   sparkSpeed: 360,
   /** 挥动呼呼声阈值（px/s） */
-  whooshSpeed: 480,
+  /** 疾跑/急停时火把头快速扫过肩部，420px/s 即可产生可辨的短促破风。 */
+  whooshSpeed: 420,
 };
 
 /** 火把点光源参数（renderer 推入 GpuLight 时读取） */

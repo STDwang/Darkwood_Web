@@ -253,7 +253,12 @@ export default function GameHud({ hud, t, isDev, runtimeRef, exploreRef, onOpenL
   ];
 
   return (
-    <div className="hud2 pointer-events-none fixed inset-0 z-20 flex flex-col justify-between">
+    <div
+      className={`hud2 pointer-events-none fixed inset-0 z-20 flex flex-col justify-between ${
+        hud.dangerLevel >= 65 ? 'is-threat' : ''
+      }`}
+      aria-live="polite"
+    >
       {/* ================= 顶部：左上时段 / 右上图标 + 小地图 ================= */}
       <div className="hud2-top">
         <div className="hud2-tl">

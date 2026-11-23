@@ -6171,6 +6171,24 @@ class SoundEngine {
     }
     shot.seal();
   }
+
+  /** 只读音频动作快照：供 window.__game.stats 与无头门禁使用，不暴露或改写 AudioNode。 */
+  getMotionSnapshot() {
+    return {
+      initialized: this.initialized,
+      muted: this.muted,
+      pageHidden: this.pageHidden,
+      sprinting: this.sprintNow,
+      exert: Number(this.exertSm.toFixed(3)),
+      heartbeat: Number(this.heartBodySm.toFixed(3)),
+      torchLevel: Number(this.torchSent.toFixed(3)),
+      torchMotion: Number(this.torchMotionSm.toFixed(3)),
+      rain: Number(this.rainNow.toFixed(3)),
+      danger: Number(this.dangerNow.toFixed(3)),
+      dread: Number(this.dreadAmb.toFixed(3)),
+      haunt: Number(this.hauntSent.toFixed(3)),
+    };
+  }
 }
 
 export const AudioFX = new SoundEngine();

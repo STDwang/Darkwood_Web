@@ -182,6 +182,8 @@ export class GameRuntime {
   }
 
   getStats() {
+    const p = this.engine.player;
+    const eq = this.engine.equip;
     return {
       backend: this.renderer.activeBackend,
       drawCalls: this.renderer.lastDrawCalls,
@@ -190,9 +192,25 @@ export class GameRuntime {
       day: this.engine.day,
       phase: this.engine.phase,
       weather: this.engine.weather.kind,
-      hp: Math.round(this.engine.player.hp),
-      x: Math.round(this.engine.player.x),
-      y: Math.round(this.engine.player.y),
+      hp: Math.round(p.hp),
+      stamina: Math.round(p.stamina),
+      x: Math.round(p.x),
+      y: Math.round(p.y),
+      sprinting: p.isSprinting,
+      exhausted: p.pose.exhausted,
+      gait: Number(p.pose.gait.toFixed(3)),
+      actionKind: p.action.kind,
+      actionProgress: Number((p.action.duration > 0 ? p.action.timer / p.action.duration : 0).toFixed(3)),
+      actionMoving: p.action.kind !== 'none',
+      gesture: eq.gesture,
+      gestureProgress: Number((eq.gDur > 0 ? eq.gT / eq.gDur : 0).toFixed(3)),
+      torchInHand: eq.torchInHand,
+      torchLit: eq.torchLit,
+      torchFuel: Number(eq.torchFuel.toFixed(3)),
+      torchFlame: Number(eq.flameH.toFixed(3)),
+      torchStretch: Number(eq.flameStretch.toFixed(3)),
+      torchRainExposure: Number(eq.rainExposure.toFixed(3)),
+      audio: AudioFX.getMotionSnapshot(),
       containersLooted: this.engine.containersLooted,
       fps: Math.round(this.engine.fps),
     };

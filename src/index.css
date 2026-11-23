@@ -475,6 +475,23 @@ button.paper-hud:hover {
   color: var(--c-bone);
 }
 
+/* 高威胁只在画面边缘提示，不遮住手电中心、不制造廉价红膜。 */
+.hud2::before {
+  content: "";
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(ellipse at 50% 48%, transparent 44%, rgba(17, 7, 6, 0.12) 68%, rgba(58, 14, 12, 0.38) 100%);
+  transition: opacity 280ms ease;
+}
+.hud2.is-threat::before {
+  opacity: 0.72;
+  animation: hud2-threat-pulse 1.8s ease-in-out infinite;
+}
+
 /* ---------- 顶部行 ---------- */
 .hud2-top {
   display: flex;
@@ -1167,6 +1184,16 @@ button.paper-hud:hover {
 @keyframes hud2-blink {
   to {
     opacity: 0.25;
+  }
+}
+
+@keyframes hud2-threat-pulse {
+  0%,
+  100% {
+    filter: brightness(0.82);
+  }
+  50% {
+    filter: brightness(1);
   }
 }
 

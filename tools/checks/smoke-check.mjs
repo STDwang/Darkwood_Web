@@ -137,6 +137,45 @@ async function main() {
     const resetStats = await page.evaluate(() => window.__game.stats());
     assert(resetStats.mode === 'play', `reset 后应为 play，实际为 ${resetStats.mode}`);
 
+    // 动作/火把/音频只读快照：疾跑步态与火把状态必须同步且全为有限值。
+    const motionStats = await page.evaluate(() => {
+      window.__game.reset(19847, true);
+      return window.__game.sim(1, () => ({
+        mx: 1,
+        my: 0,
+        aimAngle: 0,
+        sprint: true,
+        attack: false,
+        interact: false,
+        toggleLight: false,
+      }), { draw: false });
+    });
+    assert(motionStats.sprinting, 'Sprint pilot should report real sprint state');
+    assert(motionStats.gait >= 0 && Number.isFinite(motionStats.gait), `Sprint gait became invalid: ${motionStats.gait}`);
+    assert(
+      Number.isFinite(motionStats.torchFlame) &&
+        motionStats.torchInHand &&
+        motionStats.torchLit &&
+        motionStats.audio.initialized,
+      `Torch/audio motion snapshot invalid: ${JSON.stringify(motionStats)}`
+    );
+
+    // 高威胁边缘提示：数值达到门槛时必须出现威胁氛围层，回落后必须自动解除。
+    await page.evaluate(() => {
+      window.__game.m.Game.dangerLevel = 80;
+      window.__game.m.Game.emitHud();
+    });
+    await page.waitForTimeout(120);
+    const threatOn = await page.evaluate(() => Boolean(document.querySelector('.hud2.is-threat')));
+    assert(threatOn, 'dangerLevel>=65 时 .hud2.is-threat 未出现');
+    await page.evaluate(() => {
+      window.__game.m.Game.dangerLevel = 0;
+      window.__game.m.Game.emitHud();
+    });
+    await page.waitForTimeout(120);
+    const threatOff = await page.evaluate(() => Boolean(document.querySelector('.hud2.is-threat')));
+    assert(!threatOff, 'dangerLevel 回落后 .hud2.is-threat 未解除');
+
     // 验证 view() 与 capture() 契约可用
     const capCheck = await page.evaluate(async () => {
       window.__game.view(0, 120);

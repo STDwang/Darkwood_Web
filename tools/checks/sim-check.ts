@@ -346,6 +346,47 @@ async function main() {
     console.log(`✓ Timed interaction gate passed (search ${searchFrames} frames, interrupt refunds, 3-hit nailing)`);
   }
 
+  // 9b. 角色动作基线：真实位移驱动疾跑步态、火把火焰与交互收势不得脱相；动作打断保留有限状态。
+  {
+    engine.reset(19847, true);
+    engine.enemies.length = 0;
+    const startX = engine.player.x;
+    const startY = engine.player.y;
+    for (let i = 0; i < 45; i++) {
+      engine.step(FIXED_DT, 1280, 720, {
+        mx: 1,
+        my: 0,
+        aimAngle: 0,
+        sprint: true,
+        attack: false,
+        interact: false,
+        toggleLight: false,
+      });
+    }
+    assert(engine.player.isSprinting, 'Sprint pilot should set the real sprint state');
+    assert(engine.player.pose.sprint > 0.85, `Sprint pose blend did not settle: ${engine.player.pose.sprint}`);
+    assert(engine.player.pose.gait >= 0 && engine.player.pose.gait <= 2, 'Sprint gait phase left 0..2 range');
+    assert(dist(startX, startY, engine.player.x, engine.player.y) > 80, 'Sprint pilot should produce meaningful displacement');
+    assert(
+      Number.isFinite(engine.equip.flameH) &&
+        Number.isFinite(engine.equip.flameStretch) &&
+        engine.equip.torchInHand &&
+        engine.equip.torchLit,
+      'Held torch motion state became invalid during sprint'
+    );
+    for (let i = 0; i < 30; i++) engine.step(FIXED_DT, 1280, 720);
+    assert(engine.player.pose.sprint < 0.15, `Sprint pose blend failed to settle after stopping: ${engine.player.pose.sprint}`);
+    assert(
+      Number.isFinite(engine.player.pose.move) &&
+        Number.isFinite(engine.player.pose.action) &&
+        Number.isFinite(engine.player.pose.gait),
+      'Player pose produced NaN during sprint-to-stop transition'
+    );
+    console.log(
+      `✓ Locomotion & held-torch motion gate passed (sprint=${engine.player.isSprinting}, gait=${engine.player.pose.gait.toFixed(2)}, flame=${engine.equip.flameH.toFixed(2)})`
+    );
+  }
+
   // 10. 新增探针：怪物攻击前摇（起手不扣血，前摇结束扑击才结算）
   {
     const idle = {
