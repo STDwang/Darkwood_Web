@@ -119,6 +119,22 @@ export interface RockObstacle {
   seed: number;
 }
 
+/** 原作风格地表场景物件（盘根树墩、残破木板桥、荒废茶田、围栏小地窖、独轮手推车、散落原木） */
+export type WorldPropKind = 'stump' | 'bridge' | 'teaField' | 'cellar' | 'wheelbarrow' | 'fallenLog';
+
+export interface WorldProp {
+  id: number;
+  kind: WorldPropKind;
+  x: number;
+  y: number;
+  angle: number;
+  /** 主尺寸（树墩半径 / 桥长度 / 茶田宽度等） */
+  w: number;
+  /** 次尺寸（桥宽度 / 茶田高度 / 原木数量等） */
+  h: number;
+  seed: number;
+}
+
 export interface BarricadeSlot {
   id: string;
   x: number;
@@ -242,15 +258,15 @@ export interface Crow {
   active: boolean;
   /** 所属鸦群索引 */
   flock: number;
-  state: 'ground' | 'perched' | 'takeoff' | 'fly';
+  state: 'ground' | 'perched' | 'takeoff' | 'fly' | 'landing';
   x: number;
   y: number;
-  /** 离地高度 0..1（渲染视差用） */
+  /** 离地高度 0..1（渲染视差与俯视大小缩放用） */
   z: number;
   vx: number;
   vy: number;
   angle: number;
-  /** ground：下次动作倒计时；takeoff：错峰起飞延迟 */
+  /** ground/perched：下次动作倒计时；takeoff：错峰起飞延迟 */
   timer: number;
   /** 啄食动作 1→0 */
   peck: number;
@@ -258,9 +274,23 @@ export interface Crow {
   hop: number;
   /** 张喙鸣叫 1→0 */
   caw: number;
+  /** 树枝抖羽/微扇翅膀 1→0 */
+  preen: number;
   wingPhase: number;
   flyTime: number;
   seed: number;
+  /** 栖息树索引（对应 world.trees 下标，-1 表示在地面） */
+  treeId: number;
+  /** 相对树心的枝头停靠偏移（世界 px） */
+  perchOffX: number;
+  perchOffY: number;
+  /** 受手电直射或靠近时的警觉度 0..1 */
+  alert: number;
+  /** landing 飞回降落的目标坐标、目标高度与落位状态 */
+  targetX: number;
+  targetY: number;
+  targetZ: number;
+  targetState: 'ground' | 'perched';
 }
 
 /** 鸦群（预分配池） */

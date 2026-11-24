@@ -243,21 +243,21 @@ export const GESTURE_EVENT: Record<EquipGesture, number> = {
   retorch: 0.9,
 };
 
-/** 火焰弹簧物理参数：ω≈13.8rad/s，ζ≈0.32（欠阻尼 → 急停前冲、挥击甩弧） */
+/** 火焰弹簧物理参数：ω≈13.8rad/s，ζ≈0.30（欠阻尼 → 运动拖尾、急停前冲甩焰、风吹摇曳） */
 export const FLAME_PHYS = {
-  stiffness: 190,
-  damping: 8.8,
+  stiffness: 185,
+  damping: 8.2,
   /** 拖曳系数：目标偏移 = -火把头速度 × dragK */
-  dragK: 0.02,
-  maxOffset: 15,
+  dragK: 0.028,
+  maxOffset: 17,
   windIndoor: 0.25,
-  windBase: 1.2,
-  windRain: 2.6,
+  windBase: 1.3,
+  windRain: 2.8,
   /** 地上火把：更软的弹簧（受风轻摆） */
   groundStiffness: 120,
   groundDamping: 7,
   /** 挥动火星阈值（px/s） */
-  sparkSpeed: 360,
+  sparkSpeed: 340,
   /** 挥动呼呼声阈值（px/s） */
   /** 疾跑/急停时火把头快速扫过肩部，420px/s 即可产生可辨的短促破风。 */
   whooshSpeed: 420,
@@ -1152,7 +1152,8 @@ function updateTorchHead(engine: GameEngine) {
   const a = lerp(eq.armBase.a, g.a, g.w);
   const len = lerp(eq.armBase.len, g.len, g.w);
   const twist = eq.armBase.twist + g.twist;
-  const reach = len + 19;
+  // 垂直向上的火把：俯视下火把顶部就在右手握持正上方（不再向前平伸长木棍）
+  const reach = len + 3.5;
   const lx = 3 + Math.cos(a) * reach;
   const ly = -10.5 + Math.sin(a) * reach;
   const ct = Math.cos(twist);

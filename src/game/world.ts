@@ -12,6 +12,7 @@ import {
   RelayNode,
   RockObstacle,
   TreeObstacle,
+  WorldProp,
 } from './types';
 import {
   Segment,
@@ -169,6 +170,8 @@ export interface WorldData {
   rails: Vec2[][];
   /** 黑色枯枝灌木（确定性种子；林缘/树根/建筑墙角/道路边） */
   brambles: Bramble[];
+  /** 原作风格地表场景物件（盘根树墩、残破木板桥、荒废茶田、围栏小地窖、独轮手推车、散落原木） */
+  props: WorldProp[];
   grid: StaticGrid;
 }
 
@@ -611,10 +614,10 @@ export function createWorld(seed = 19847): WorldData {
     ]),
   ];
 
-  // POI 1: Crashed Supply Truck (NW)
+  // POI 1: Crashed Supply Truck (NW) — 低矮货车保留物理碰撞但不再作为通天墙体切出巨型影柱，改由渲染层绘制贴地渐淡软影
   zones.push({ name: '坠毁货车', x: -820, y: -680, w: 280, h: 240, surface: 'gravel' });
-  walls.push({ id: 'truck_body', x: -735, y: -595, w: 118, h: 48, kind: 'truck', blocksLight: true });
-  walls.push({ id: 'truck_cab', x: -615, y: -590, w: 42, h: 40, kind: 'truck', blocksLight: true });
+  walls.push({ id: 'truck_body', x: -735, y: -595, w: 118, h: 48, kind: 'truck', blocksLight: false });
+  walls.push({ id: 'truck_cab', x: -615, y: -590, w: 42, h: 40, kind: 'truck', blocksLight: false });
   containers.push(
     {
       id: 'c_truck_1',
@@ -967,9 +970,9 @@ export function createWorld(seed = 19847): WorldData {
     return false;
   };
 
-  // Scatter dense Baltic pine trees with guaranteed clear pathways & POI arenas（面积约 3.1 倍，尝试次数等比放大）
+  // Scatter spacious Baltic pine trees（降低树木密度、拉大间距，配合巨型舒展长枝还原原作疏朗压迫感）
   let treeId = 0;
-  for (let i = 0; i < 1950; i++) {
+  for (let i = 0; i < 1250; i++) {
     const x = (rng() * 2 - 1) * (WORLD_HALF - 70);
     const y = (rng() * 2 - 1) * (WORLD_HALF - 70);
 
@@ -988,21 +991,21 @@ export function createWorld(seed = 19847): WorldData {
     // 建筑院落、墓地、信号塔基座等保持开阔
     if (pointInRects(clearRects, x, y, 10)) continue;
     // Keep dirt paths unobstructed (guarantees 100% reachability!)
-    if (nearPath(x, y, 36)) continue;
-    if (nearRail(x, y, 30)) continue;
+    if (nearPath(x, y, 38)) continue;
+    if (nearRail(x, y, 32)) continue;
     // Keep away from containers, essences & relay nodes
-    if (tooClose(containers, x, y, 58)) continue;
-    if (tooClose(essences, x, y, 55)) continue;
-    if (tooClose(relayNodes, x, y, 58)) continue;
-    // Minimum spacing between tree trunks so player (r=15) never gets wedged
-    if (tooClose(trees, x, y, 76)) continue;
+    if (tooClose(containers, x, y, 60)) continue;
+    if (tooClose(essences, x, y, 56)) continue;
+    if (tooClose(relayNodes, x, y, 60)) continue;
+    // 拉大树干间距，减少密度，让地面空旷透气、巨型树枝在高空交织
+    if (tooClose(trees, x, y, 112)) continue;
 
     trees.push({
       id: treeId++,
       x,
       y,
-      trunkR: 13 + rng() * 8,
-      canopyR: 48 + rng() * 26,
+      trunkR: 14 + rng() * 8,
+      canopyR: 66 + rng() * 34,
       hueShift: (rng() - 0.5) * 14,
       phase: rng() * Math.PI * 2,
     });
@@ -1035,6 +1038,7 @@ export function createWorld(seed = 19847): WorldData {
 
   const grid = buildStaticGrid(walls, trees, rocks);
   const brambles = scatterBrambles(seed, trees, paths, poiCenters);
+  const props = scatterWorldProps(seed, trees, paths, poiCenters, clearRects);
 
   return {
     seed,
@@ -1055,8 +1059,212 @@ export function createWorld(seed = 19847): WorldData {
     yardProps: YARD_PROPS,
     rails: RAIL_LINES,
     brambles,
+    props,
     grid,
   };
+}
+
+/**
+ * 原作风格地表场景物件散布（独立随机流，绝不扰动既有种子序列与碰撞几何）：
+ * - 残破木板桥：沿林间土路中段跨泥洼铺设，对齐道路切向；
+ * - 荒废茶田与围栏小地窖：布置在庇护所西南/西北林缘空地与农庄外围；
+ * - 盘根老树墩：散布在林间空地、路旁、锯木厂与农田边缘；
+ * - 旧独轮手推车与散落原木堆：点缀在院外、桥头、伐木区与茶田旁。
+ */
+function scatterWorldProps(
+  seed: number,
+  trees: TreeObstacle[],
+  paths: DirtPath[],
+  poiCenters: { name: string; x: number; y: number; r: number }[],
+  clearRects: RectLike[]
+): WorldProp[] {
+  const rng = createRng((seed ^ 0x6a9c3b15) >>> 0);
+  const out: WorldProp[] = [];
+  let pid = 0;
+
+  const isIndoorsAny = (x: number, y: number, pad = 22) => {
+    if (
+      x > HIDEOUT_RECT.x - pad &&
+      x < HIDEOUT_RECT.x + HIDEOUT_RECT.w + pad &&
+      y > HIDEOUT_RECT.y - pad &&
+      y < HIDEOUT_RECT.y + HIDEOUT_RECT.h + pad
+    ) {
+      return true;
+    }
+    if (
+      x > SAWMILL_RECT.x - pad &&
+      x < SAWMILL_RECT.x + SAWMILL_RECT.w + pad &&
+      y > SAWMILL_RECT.y - pad &&
+      y < SAWMILL_RECT.y + SAWMILL_RECT.h + pad
+    ) {
+      return true;
+    }
+    for (let i = 0; i < BUILDINGS.length; i++) {
+      const b = BUILDINGS[i];
+      if (x > b.x - pad && x < b.x + b.w + pad && y > b.y - pad && y < b.y + b.h + pad) return true;
+    }
+    return false;
+  };
+
+  const nearTree = (x: number, y: number, minD: number) => {
+    const d2 = minD * minD;
+    for (let i = 0; i < trees.length; i++) {
+      const dx = trees[i].x - x;
+      const dy = trees[i].y - y;
+      if (dx * dx + dy * dy < d2) return true;
+    }
+    return false;
+  };
+
+  // 1. 残破木板桥（沿主要林间土路铺设 7 座，跨泥洼且与道路方向精准对齐）
+  for (let pi = 0; pi < paths.length && pi < 7; pi++) {
+    const pts = paths[pi].points;
+    if (pts.length < 2) continue;
+    const segIdx = Math.max(0, Math.min(pts.length - 2, Math.floor(pts.length * 0.45)));
+    const a = pts[segIdx];
+    const b = pts[segIdx + 1];
+    const mx = (a.x + b.x) * 0.5;
+    const my = (a.y + b.y) * 0.5;
+    if (isIndoorsAny(mx, my, 46)) continue;
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    out.push({
+      id: pid++,
+      kind: 'bridge',
+      x: mx,
+      y: my,
+      angle: ang,
+      w: 96 + rng() * 38,
+      h: 48 + rng() * 10,
+      seed: rng() * 100,
+    });
+    // 桥头旁常配一辆旧手推车或散落原木
+    const side = rng() > 0.5 ? 1 : -1;
+    const px = mx + Math.cos(ang + Math.PI * 0.5 * side) * 58;
+    const py = my + Math.sin(ang + Math.PI * 0.5 * side) * 58;
+    if (!isIndoorsAny(px, py, 24) && !nearTree(px, py, 32)) {
+      out.push({
+        id: pid++,
+        kind: pi % 2 === 0 ? 'wheelbarrow' : 'fallenLog',
+        x: px,
+        y: py,
+        angle: ang + (rng() - 0.5) * 1.4,
+        w: 36,
+        h: 4,
+        seed: rng() * 100,
+      });
+    }
+  }
+
+  // 2. 荒废茶田（3 大片：庇护所西南林缘、荒芜农庄外围与林间开阔地）+ 旁配围栏小地窖入口
+  const teaAnchors = [
+    { x: -340, y: 290, w: 140, h: 195, ang: 0.06 },
+    { x: 420, y: 340, w: 168, h: 210, ang: -0.08 },
+    { x: -860, y: 120, w: 150, h: 205, ang: 0.04 },
+  ];
+  for (let i = 0; i < teaAnchors.length; i++) {
+    const ta = teaAnchors[i];
+    if (isIndoorsAny(ta.x, ta.y, 40)) continue;
+    out.push({
+      id: pid++,
+      kind: 'teaField',
+      x: ta.x,
+      y: ta.y,
+      angle: ta.ang,
+      w: ta.w,
+      h: ta.h,
+      seed: rng() * 100,
+    });
+    // 茶田一侧的围栏小地窖入口（对标原作图 5 右上）
+    const cx = ta.x + ta.w * 0.5 + 74;
+    const cy = ta.y - 24;
+    if (!isIndoorsAny(cx, cy, 36) && !nearTree(cx, cy, 42)) {
+      out.push({
+        id: pid++,
+        kind: 'cellar',
+        x: cx,
+        y: cy,
+        angle: (rng() - 0.5) * 0.12,
+        w: 76,
+        h: 76,
+        seed: rng() * 100,
+      });
+    }
+  }
+
+  // 3. 庇护所院外与锯木厂周边标志性树墩、推车与断木（进游戏附近就能直观看到原作氛围！）
+  const nearHideoutProps: Array<Omit<WorldProp, 'id' | 'seed'>> = [
+    { kind: 'stump', x: -195, y: 175, angle: 0.4, w: 23, h: 23 },
+    { kind: 'stump', x: -238, y: 225, angle: 1.9, w: 14, h: 14 },
+    { kind: 'stump', x: 215, y: 155, angle: 2.6, w: 21, h: 21 },
+    { kind: 'fallenLog', x: -165, y: 235, angle: 0.5, w: 42, h: 5 },
+    { kind: 'wheelbarrow', x: 185, y: 198, angle: -0.75, w: 32, h: 24 },
+  ];
+  for (const hp of nearHideoutProps) {
+    if (!isIndoorsAny(hp.x, hp.y, 18) && !nearTree(hp.x, hp.y, 28)) {
+      out.push({ id: pid++, ...hp, seed: rng() * 100 });
+    }
+  }
+
+  // 4. 全图随机散布 46 个大小错落的盘根老树墩 & 14 处散落原木堆
+  let stumpCount = 0;
+  for (let tries = 0; tries < 420 && stumpCount < 46; tries++) {
+    const x = (rng() * 2 - 1) * (WORLD_HALF - 160);
+    const y = (rng() * 2 - 1) * (WORLD_HALF - 160);
+    if (isIndoorsAny(x, y, 36)) continue;
+    if (nearTree(x, y, 42)) continue;
+    let closeProp = false;
+    for (let k = 0; k < out.length; k++) {
+      if (dist(out[k].x, out[k].y, x, y) < 62) {
+        closeProp = true;
+        break;
+      }
+    }
+    if (closeProp) continue;
+    // 避开建筑门前紧邻区域
+    let inClear = false;
+    for (let k = 0; k < clearRects.length; k++) {
+      const r = clearRects[k];
+      if (x > r.x + 12 && x < r.x + r.w - 12 && y > r.y + 12 && y < r.y + r.h - 12) {
+        inClear = true;
+        break;
+      }
+    }
+    if (inClear && rng() < 0.7) continue;
+
+    const isBig = rng() < 0.58;
+    out.push({
+      id: pid++,
+      kind: 'stump',
+      x,
+      y,
+      angle: rng() * Math.PI * 2,
+      w: isBig ? 19 + rng() * 10 : 11 + rng() * 6,
+      h: 20,
+      seed: rng() * 100,
+    });
+    stumpCount++;
+  }
+
+  for (let i = 0; i < poiCenters.length; i++) {
+    const poi = poiCenters[i];
+    const ang = rng() * Math.PI * 2;
+    const lx = poi.x + Math.cos(ang) * (poi.r * 0.65);
+    const ly = poi.y + Math.sin(ang) * (poi.r * 0.65);
+    if (!isIndoorsAny(lx, ly, 30) && !nearTree(lx, ly, 36)) {
+      out.push({
+        id: pid++,
+        kind: i % 3 === 0 ? 'wheelbarrow' : 'fallenLog',
+        x: lx,
+        y: ly,
+        angle: rng() * Math.PI * 2,
+        w: 40,
+        h: 3 + Math.floor(rng() * 3),
+        seed: rng() * 100,
+      });
+    }
+  }
+
+  return out;
 }
 
 /**
@@ -1555,23 +1763,12 @@ export function collectOccluderSegments(
     pushSeg(out, x1, y2, x1, y1);
   }
 
-  // Tree trunks cast crisp perpendicular shadow chords facing the light origin
+  // 树木不再写入 2D 硬遮光多边形（避免产生通天死板黑柱与墙体遮光混叠，改由渲染层在地面绘制由近及远平滑渐淡的真实树影）
+  // 仅保留大型巨石作为局部低矮遮挡
   const pad2 = pad * pad;
   for (let cy = cy0; cy <= cy1; cy++) {
     for (let cx = cx0; cx <= cx1; cx++) {
       const ci = cy * cols + cx;
-      const tEnd = g.treeStart[ci + 1];
-      for (let k = g.treeStart[ci]; k < tEnd; k++) {
-        const t = world.trees[g.treeItems[k]];
-        const dx = t.x - ox;
-        const dy = t.y - oy;
-        const d2 = dx * dx + dy * dy;
-        if (d2 > pad2 || d2 < 25) continue;
-        const d = Math.sqrt(d2);
-        const nx = (-dy / d) * t.trunkR;
-        const ny = (dx / d) * t.trunkR;
-        pushSeg(out, t.x - nx, t.y - ny, t.x + nx, t.y + ny);
-      }
       // Large boulders cast shadows too
       const rEnd = g.rockStart[ci + 1];
       for (let k = g.rockStart[ci]; k < rEnd; k++) {

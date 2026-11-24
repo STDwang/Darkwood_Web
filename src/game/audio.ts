@@ -4369,14 +4369,14 @@ class SoundEngine {
       const lp = this.filt(ctx, shot, 'lowpass', rnd(1300, 1900), 0.9, t0);
       lp.frequency.exponentialRampToValueAtTime(rnd(320, 480), end);
       const g = this.amp(ctx, shot, 0.0001, t0);
-      const peak0 = 0.2 * scale * rnd(0.75, 1.1) * norm;
+      const peak0 = 0.28 * scale * rnd(0.8, 1.15) * norm;
       let t = t0;
       let k = 0;
       while (t < end - 0.12) {
         const prog = (t - t0) / dur;
-        const a = peak0 * Math.exp(-2.6 * prog) * (k < 3 ? 1.25 : rnd(0.75, 1));
-        const period = 1 / (rate * (k < 3 ? 0.85 : 1) * rnd(0.95, 1.05));
-        this.perc(g.gain, t, Math.max(0.0003, a), 0.012, period * 0.45);
+        const a = peak0 * Math.exp(-2.3 * prog) * (k < 4 ? 1.35 : rnd(0.75, 1));
+        const period = 1 / (rate * (k < 3 ? 0.82 : 1) * rnd(0.95, 1.05));
+        this.perc(g.gain, t, Math.max(0.0003, a), 0.011, period * 0.46);
         t += period;
         k++;
       }

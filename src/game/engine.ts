@@ -236,17 +236,17 @@ export class GameEngine {
   generatorFuel = 58;
   generatorOn = true;
 
-  // Dynamic Weather State Machine
+  // Dynamic Weather State Machine（默认大雨雷暴）
   weather: WeatherState = {
-    kind: 'drizzle',
-    rainIntensity: 0.45,
-    wetness: 0.42,
+    kind: 'storm',
+    rainIntensity: 0.92,
+    wetness: 0.8,
     lightningFlash: 0,
     lightningAngle: -0.6,
     windAngle: 1.78,
   };
-  private weatherTimer = 42;
-  private lightningCd = 14;
+  private weatherTimer = 64;
+  private lightningCd = 7.5;
   private thunderQueue: Array<{ delay: number; intensity: number }> = [];
 
   // Roof cutaway alphas (0 = transparent indoors, 1 = opaque roof outdoors)
@@ -439,9 +439,18 @@ export class GameEngine {
         peck: 0,
         hop: 0,
         caw: 0,
+        preen: 0,
         wingPhase: 0,
         flyTime: 0,
         seed: 0,
+        treeId: -1,
+        perchOffX: 0,
+        perchOffY: 0,
+        alert: 0,
+        targetX: 0,
+        targetY: 0,
+        targetZ: 0,
+        targetState: 'ground',
       });
     }
     for (let i = 0; i < CROW_FLOCK_POOL; i++) {
@@ -604,15 +613,15 @@ export class GameEngine {
     this.generatorOn = true;
 
     this.weather = {
-      kind: 'drizzle',
-      rainIntensity: 0.45,
-      wetness: 0.42,
+      kind: 'storm',
+      rainIntensity: 0.92,
+      wetness: 0.8,
       lightningFlash: 0,
       lightningAngle: -0.6,
       windAngle: 1.78,
     };
-    this.weatherTimer = 42;
-    this.lightningCd = 14;
+    this.weatherTimer = 64;
+    this.lightningCd = 7.5;
     this.thunderQueue = [];
 
     this.hideoutRoofAlpha = 0;
@@ -745,6 +754,7 @@ export class GameEngine {
       this.weather.wetness = Math.max(this.weather.wetness, 0.45);
     } else {
       this.weather.rainIntensity = 0;
+      this.weather.wetness = Math.min(this.weather.wetness, 0.25);
     }
     this.emitHud();
   }
@@ -1793,16 +1803,17 @@ export class GameEngine {
     if (this.weatherTimer <= 0) {
       const r = this.rng();
       if (this.phase === 'night') {
-        this.weather.kind = r < 0.55 ? 'storm' : 'drizzle';
+        this.weather.kind = r < 0.78 ? 'storm' : 'drizzle';
         if (this.weather.kind === 'storm' && this.mode === 'play') {
           this.pushToast('乌云压境，林间下起了冰冷的暴雨……', 'warn');
         }
       } else if (this.phase === 'dusk') {
-        this.weather.kind = r < 0.65 ? 'drizzle' : 'storm';
+        this.weather.kind = r < 0.72 ? 'storm' : 'drizzle';
       } else {
-        this.weather.kind = r < 0.48 ? 'mist' : r < 0.85 ? 'drizzle' : 'storm';
+        // 默认以大雨雷暴为主，偶有短暂转小雨，保持压抑湿冷基调
+        this.weather.kind = r < 0.70 ? 'storm' : r < 0.94 ? 'drizzle' : 'mist';
       }
-      this.weatherTimer = 38 + this.rng() * 34;
+      this.weatherTimer = 48 + this.rng() * 38;
     }
 
     const targetRain =
@@ -2901,7 +2912,7 @@ export class GameEngine {
     }
   }
 
-  private spawnCrowFlock(minPlayerDist: number): boolean {
+  private spawnCrowFlock(minPlayerDist: number, flyIn = false): boolean {
     let fi = -1;
     for (let i = 0; i < this.crowFlocks.length; i++) {
       if (!this.crowFlocks[i].active) {
@@ -2955,56 +2966,93 @@ export class GameEngine {
       const res = resolveWorldCollision(this.world, x, y, 16, false);
       if (dist(res.x, res.y, x, y) > 1) continue;
 
-      let perchTree: (typeof this.world.trees)[number] | null = null;
-      let perchDistance = 240;
+      // 寻找附近合适的栖息树（优先让整群大部分乌鸦栖息在树冠枝干上）
+      let perchTreeIdx = -1;
+      let perchDistance = 280;
       for (let k = 0; k < this.world.trees.length; k++) {
         const tree = this.world.trees[k];
         const d = dist(tree.x, tree.y, x, y);
-        const away = Math.atan2(tree.y - p.y, tree.x - p.x);
-        const perchRadius = Math.max(12, tree.canopyR * 0.52);
-        const perchX = tree.x + Math.cos(away) * perchRadius;
-        const perchY = tree.y + Math.sin(away) * perchRadius;
-        if (d >= perchDistance || dist(perchX, perchY, p.x, p.y) < 165) continue;
-        perchTree = tree;
+        if (d >= perchDistance || dist(tree.x, tree.y, p.x, p.y) < 185) continue;
+        perchTreeIdx = k;
         perchDistance = d;
       }
+      const perchTree = perchTreeIdx >= 0 ? this.world.trees[perchTreeIdx] : null;
+      if (!perchTree) continue;
 
       const f = this.crowFlocks[fi];
       f.active = true;
-      f.x = x;
-      f.y = y;
+      // 鸦群中心锚定在栖息树附近，确保靠近树冠即稳定触发交互
+      f.x = perchTree.x;
+      f.y = perchTree.y;
       f.alarmed = false;
-      f.cawCd = 2 + r() * 6;
-      const want = Math.min(free, 2 + Math.floor(r() * 5)); // 每群 2–6 只
+      f.cawCd = 2 + r() * 5.5;
+      const want = Math.min(free, 2 + Math.floor(r() * 4)); // 每群 2–5 只
+      // 动态飞回时的统一来向角（让整群乌鸦成群结队从高空滑翔降落到树枝与树下）
+      const approachAng = r() * Math.PI * 2;
+      const nightOnlyPerch = this.phase === 'night';
       let placed = 0;
       for (let i = 0; i < this.crows.length && placed < want; i++) {
         const c = this.crows[i];
         if (c.active) continue;
         c.active = true;
         c.flock = fi;
-        const perched = placed === 0 && perchTree !== null;
-        c.state = perched ? 'perched' : 'ground';
-        if (perched && perchTree) {
-          const away = Math.atan2(perchTree.y - p.y, perchTree.x - p.x);
-          const perchRadius = Math.max(12, perchTree.canopyR * 0.52);
-          c.x = perchTree.x + Math.cos(away) * perchRadius;
-          c.y = perchTree.y + Math.sin(away) * perchRadius;
-          c.z = 0.28;
+        // 树枝与地面协同分布：每群至少 2 只停在树枝放哨，其余在树下地面觅食（夜晚全栖息树枝）
+        const perched = nightOnlyPerch || placed < Math.max(2, Math.ceil(want * 0.6));
+        const destState: 'perched' | 'ground' = perched ? 'perched' : 'ground';
+        let destX = 0;
+        let destY = 0;
+        let destZ = 0;
+        if (perched) {
+          // 沿树冠枝干外圈分散停靠（避免叠在树心暗区）
+          const branchAng = (placed / Math.max(2, want)) * Math.PI * 2 + (r() - 0.5) * 0.9;
+          const perchRadius = perchTree.canopyR * (0.48 + r() * 0.58);
+          c.treeId = perchTreeIdx;
+          c.perchOffX = Math.cos(branchAng) * perchRadius;
+          c.perchOffY = Math.sin(branchAng) * perchRadius;
+          destX = perchTree.x + c.perchOffX;
+          destY = perchTree.y + c.perchOffY;
+          destZ = 0.42 + r() * 0.14;
         } else {
-          c.x = x + (r() - 0.5) * 56;
-          c.y = y + (r() - 0.5) * 44;
-          c.z = 0;
+          c.treeId = -1;
+          c.perchOffX = 0;
+          c.perchOffY = 0;
+          const ga = r() * Math.PI * 2;
+          const gr = perchTree.trunkR + 26 + r() * 36;
+          destX = perchTree.x + Math.cos(ga) * gr;
+          destY = perchTree.y + Math.sin(ga) * gr;
+          destZ = 0;
+        }
+        c.targetX = destX;
+        c.targetY = destY;
+        c.targetZ = destZ;
+        c.targetState = destState;
+        if (flyIn) {
+          // 从高空视野边缘扑腾飞回降落
+          const distStart = 320 + r() * 160 + placed * 28;
+          const spreadAng = approachAng + (r() - 0.5) * 0.42;
+          c.state = 'landing';
+          c.x = destX + Math.cos(spreadAng) * distStart;
+          c.y = destY + Math.sin(spreadAng) * distStart;
+          c.z = 0.94 + r() * 0.06;
+          c.angle = Math.atan2(destY - c.y, destX - c.x);
+        } else {
+          c.state = destState;
+          c.x = destX;
+          c.y = destY;
+          c.z = destZ;
+          c.angle = r() * Math.PI * 2;
         }
         c.vx = 0;
         c.vy = 0;
-        c.angle = r() * Math.PI * 2;
         c.timer = r() * 1.4;
         c.peck = 0;
         c.hop = 0;
         c.caw = 0;
+        c.preen = 0;
         c.wingPhase = r() * Math.PI * 2;
         c.flyTime = 0;
         c.seed = r();
+        c.alert = 0;
         placed++;
       }
       return true;
@@ -3012,7 +3060,7 @@ export class GameEngine {
     return false;
   }
 
-  /** 整群受惊：各只错开 0–0.3s 起飞，朝远离惊扰源方向飞离 */
+  /** 整群受惊：各只错开 0–0.28s 扑腾起飞，掉落黑色羽毛微粒，朝远离惊扰源方向飞离 */
   private alarmFlock(fi: number, sx: number, sy: number, loud: boolean) {
     const f = this.crowFlocks[fi];
     if (!f.active || f.alarmed) return;
@@ -3021,21 +3069,38 @@ export class GameEngine {
     let count = 0;
     for (let i = 0; i < this.crows.length; i++) {
       const c = this.crows[i];
-      if (!c.active || c.flock !== fi || (c.state !== 'ground' && c.state !== 'perched')) continue;
+      if (!c.active || c.flock !== fi || (c.state !== 'ground' && c.state !== 'perched' && c.state !== 'landing')) continue;
       count++;
+      const wasPerched = c.state === 'perched';
       c.state = 'takeoff';
-      c.z = Math.max(c.z, 0.28);
-      c.timer = r() * 0.3;
-      const away = Math.atan2(c.y - sy, c.x - sx) + (r() - 0.5) * 0.9;
-      const spd = 150 + r() * 70;
+      c.z = Math.max(c.z, wasPerched ? 0.46 : 0.28);
+      c.timer = r() * 0.26;
+      c.caw = 1;
+      const away = Math.atan2(c.y - sy, c.x - sx) + (r() - 0.5) * 0.85;
+      const spd = 165 + r() * 75;
       c.vx = Math.cos(away) * spd;
       c.vy = Math.sin(away) * spd;
+      // 扑腾起飞时掉落 2~3 片黑色羽毛微粒
+      const featherCount = wasPerched ? 3 : 2;
+      for (let fk = 0; fk < featherCount; fk++) {
+        const pt = this.particles.alloc();
+        pt.active = true;
+        pt.x = c.x + (r() - 0.5) * 14;
+        pt.y = c.y + (r() - 0.5) * 14;
+        pt.vx = (r() - 0.5) * 32 - Math.cos(away) * 18;
+        pt.vy = (r() - 0.5) * 24 + 14;
+        pt.size = 1.6 + r() * 1.1;
+        pt.life = 0.75 + r() * 0.55;
+        pt.maxLife = pt.life;
+        pt.color = '#121315';
+        pt.kind = 'dust';
+      }
     }
     if (count > 0 && loud) {
-      const spatial = this.makeSpatial(f.x, f.y, 720);
+      const spatial = this.makeSpatial(f.x, f.y, 780);
       AudioFX.playCrowTakeoff(count, spatial);
       AudioFX.playCrowCaw(spatial, true);
-      this.emitRipple(f.x, f.y, 110, 'rgba(196, 190, 172, 0.30)');
+      this.emitRipple(f.x, f.y, 125, 'rgba(196, 190, 172, 0.32)');
     }
   }
 
@@ -3091,7 +3156,11 @@ export class GameEngine {
       }
     }
 
-    // 2. 个体级：踱步啄食 / 错峰起飞 / 飞离离场
+    // 2. 个体级：树上警觉张望（手电直射触发警告叫与惊飞）/ 地面踱步啄食 / 错峰起飞 / 飞离离场
+    const beamOn = p.flashlightOn && p.flickerVal > 0.1;
+    const beamDx = Math.cos(p.angle);
+    const beamDy = Math.sin(p.angle);
+    const beamCos = Math.cos((33 * Math.PI) / 180);
     for (let i = 0; i < this.crows.length; i++) {
       const c = this.crows[i];
       if (!c.active) continue;
@@ -3100,13 +3169,42 @@ export class GameEngine {
         c.peck = Math.max(0, c.peck - dt * 3.2);
         c.hop = Math.max(0, c.hop - dt * 4.5);
         const f = this.crowFlocks[c.flock];
-        if (!f.alarmed && dist(c.x, c.y, p.x, p.y) < scareR) {
+        const dPlayer = dist(c.x, c.y, p.x, p.y);
+        if (!f.alarmed && dPlayer < scareR) {
           this.alarmFlock(c.flock, p.x, p.y, true);
         } else if (c.state === 'perched') {
-          c.timer -= dt;
-          if (c.timer <= 0) {
-            c.angle += (r() - 0.5) * 0.5;
-            c.timer = 1.4 + r() * 2.8;
+          // 手电筒光锥直射树上乌鸦：先警觉转头鸣叫，持续照射约 0.55s 整群惊飞
+          let litByBeam = false;
+          if (beamOn && dPlayer < 330 && dPlayer > 10 && !f.alarmed) {
+            const dot = ((c.x - p.x) * beamDx + (c.y - p.y) * beamDy) / dPlayer;
+            if (dot > beamCos) litByBeam = true;
+          }
+          if (litByBeam) {
+            const prevAlert = c.alert;
+            c.alert = Math.min(1, c.alert + dt * 1.75);
+            // 警觉时歪头望向玩家并短促警告鸣叫
+            c.angle = Math.atan2(p.y - c.y, p.x - c.x);
+            if (prevAlert < 0.25 && c.alert >= 0.25) {
+              c.caw = 1;
+              AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 640), false);
+            }
+            if (c.alert >= 1) {
+              this.alarmFlock(c.flock, p.x, p.y, true);
+            }
+          } else {
+            c.alert = Math.max(0, c.alert - dt * 0.9);
+            c.preen = Math.max(0, c.preen - dt * 2.2);
+            c.timer -= dt;
+            if (c.timer <= 0) {
+              if (r() < 0.34) {
+                // 树枝乌鸦整理羽毛 / 短促微扇翅膀
+                c.preen = 1;
+                c.timer = 0.9 + r() * 1.8;
+              } else {
+                c.angle += (r() - 0.5) * 0.85;
+                c.timer = 1.1 + r() * 2.4;
+              }
+            }
           }
         } else {
           c.timer -= dt;
@@ -3129,9 +3227,43 @@ export class GameEngine {
             }
           }
         }
+      } else if (c.state === 'landing') {
+        // 从高空扑腾滑翔飞回并降落到树枝或地面（俯视视觉从大到小收缩落位）
+        const dx = c.targetX - c.x;
+        const dy = c.targetY - c.y;
+        const dRem = Math.hypot(dx, dy);
+        const f = this.crowFlocks[c.flock];
+        if (!f.alarmed && dist(c.x, c.y, p.x, p.y) < scareR * 0.9) {
+          // 降落途中玩家突然逼近，直接惊飞
+          this.alarmFlock(c.flock, p.x, p.y, true);
+        } else if (dRem < 10) {
+          c.x = c.targetX;
+          c.y = c.targetY;
+          c.z = c.targetZ;
+          c.state = c.targetState;
+          c.timer = 0.8 + r() * 1.6;
+          if (r() < 0.35 && dist(c.x, c.y, p.x, p.y) < 580) {
+            c.caw = 0.85;
+            AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 580), false);
+          }
+        } else {
+          const spd = dRem < 75 ? 92 + dRem * 1.15 : 178;
+          c.x += (dx / dRem) * spd * dt;
+          c.y += (dy / dRem) * spd * dt;
+          c.angle = Math.atan2(dy, dx);
+          // 高度 z 随剩余距离平滑降至目标高度（树枝 0.45 / 地面 0）
+          const heightFrac = clamp(dRem / 320, 0, 1);
+          c.z = c.targetZ + (0.96 - c.targetZ) * Math.pow(heightFrac, 0.78);
+          c.wingPhase += dt * (dRem < 85 ? 36 : 22);
+        }
       } else if (c.state === 'takeoff') {
+        // 起飞跃动阶段：高频用力扑腾翅膀 + 微微助跑离地
         c.timer -= dt;
-        c.wingPhase += dt * 30;
+        c.wingPhase += dt * 38;
+        c.z = Math.min(1, c.z + dt * 0.65);
+        c.x += c.vx * 0.24 * dt;
+        c.y += c.vy * 0.24 * dt;
+        c.angle = Math.atan2(c.vy, c.vx);
         if (c.timer <= 0) {
           c.state = 'fly';
           c.flyTime = 0;
@@ -3139,11 +3271,12 @@ export class GameEngine {
         }
       } else {
         c.flyTime += dt;
-        c.z = Math.min(1, c.z + dt * (c.z < 0.4 ? 1.6 : 0.7));
-        const accel = 1 + Math.min(0.6, c.flyTime * 0.25);
+        // 起飞后迅速爬升至高空（z → 1.0），俯视视觉上平滑放大并飞离屏幕
+        c.z = Math.min(1, c.z + dt * (c.z < 0.5 ? 1.45 : 0.62));
+        const accel = 1 + Math.min(0.65, c.flyTime * 0.28);
         c.x += c.vx * accel * dt;
         c.y += c.vy * accel * dt;
-        c.wingPhase += dt * (c.flyTime < 0.6 ? 34 : 20);
+        c.wingPhase += dt * (c.flyTime < 0.9 ? 36 : 22);
         if (
           c.flyTime > 5.5 ||
           Math.abs(c.x - this.camX) > 1100 ||
@@ -3156,7 +3289,7 @@ export class GameEngine {
       this.crowAlive[c.flock]++;
     }
 
-    // 3. 鸦群回收与白昼补充（远处一段时间后重新落地）
+    // 3. 鸦群回收与不定时动态飞回（玩家离开或空出名额后，从高空扑腾飞回降落到树枝/地面）
     let activeFlocks = 0;
     for (let fi = 0; fi < this.crowFlocks.length; fi++) {
       const f = this.crowFlocks[fi];
@@ -3167,11 +3300,13 @@ export class GameEngine {
       }
       activeFlocks++;
     }
-    if (this.phase === 'day' && activeFlocks < this.crowTargetFlocks) {
+    const wantFlocks = night ? 2 : this.crowTargetFlocks;
+    if (activeFlocks < wantFlocks) {
       this.crowRespawnTimer -= dt;
       if (this.crowRespawnTimer <= 0) {
-        this.crowRespawnTimer = 16 + r() * 18;
-        this.spawnCrowFlock(520);
+        this.crowRespawnTimer = 8 + r() * 9;
+        // flyIn = true：从视野外围高空飞回来降落到树枝或树下空地
+        this.spawnCrowFlock(300, true);
       }
     }
 

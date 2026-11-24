@@ -150,7 +150,7 @@ vec4 flashShadowSoft(vec2 px, vec2 lightPx, float rawVis) {
   vec2 dir = toL / dL;
   vec2 perp = vec2(-dir.y, dir.x);
   vec2 invRes = 1.0 / uResolution;
-  float rMax = 3.0 + dL * 0.06;
+  float rMax = 3.5 + dL * 0.055;
 
   float wl = texture(uShadow, (px + perp * rMax) * invRes).r;
   float wr = texture(uShadow, (px - perp * rMax) * invRes).r;
@@ -195,9 +195,8 @@ vec4 flashShadowSoft(vec2 px, vec2 lightPx, float rawVis) {
   float broad = sLit >= dL ? 1.0 : (1.0 - bl) * (1.0 - br);
 
   float blockerDist = max(dL - shadowLen, 10.0);
-  // 等效手电灯头尺寸约 14px（PCSS 项）+ 雾中散射随阴影长度的线性展宽：贴近树根处半影仅 ~1px，远端逐渐放宽到 rMax
-  float pen = clamp(14.0 * shadowLen / blockerDist + shadowLen * 0.03, 0.6, rMax);
-  // 整条射线都无受光点（光锥边界之外 / 贴墙）不是树影，不做半影展宽
+  // 统一平滑半影：避免因离散搜索导致的墙体阴影阶梯/百叶窗条纹
+  float pen = clamp(12.0 * shadowLen / blockerDist + shadowLen * 0.025, 0.8, rMax);
   if (sLit >= dL) pen = min(pen, 1.5);
 
   // 解析半影（无抽样台阶、无噪点）：在垂直光线方向，对“中心与 ±rMax 处状态不同”的一侧二分定位遮挡边界距离 e，
@@ -428,8 +427,8 @@ void main() {
       if (spot <= 0.001) continue;
     }
 
-    // 严格保留各自光源真实色温：手电筒保持冷白/骨白聚焦光束，火把保持浓郁暖橘火光，绝不互相混洗
-    vec3 lc = cc.rgb;
+    // 还原原作 6 张截图的电影级光色对比：手电视野锥带微暖枯黄/麦草骨白感，与锥外冷石板灰自然区分；火把保持浓郁暖橘
+    vec3 lc = (toneOn && cc.a < 0.5) ? mix(cc.rgb, vec3(1.0, 0.94, 0.76), mix(0.42, 0.24, nA)) : cc.rgb;
 
     float vis = 1.0;
     // 电影级手电树影：保留贴近树干/墙体的锐利深黑影柱，远端柔和过渡，杜绝墙后漏光
@@ -447,8 +446,8 @@ void main() {
         // 遮挡多边形外扩 0.05rad -> 边界保护取 0.03rad
         float edgeCos = cn.z * 0.99955 - sinC * 0.029995;
         float wEdge = smoothstep(edgeCos - 0.010, edgeCos + 0.010, cA);
-        // 强化 Darkwood 放射状长黑影的 crisp 锐度：半影更紧致
-        vis = mix(rawR, mix(rawR, fs.x, 0.62), wEdge);
+        // 墙体/建筑阴影使用平滑解析半影，杜绝阶梯百叶窗锯齿（树影改由渲染层绘制贴地渐淡地面投影）
+        vis = mix(rawR, mix(rawR, fs.x, 0.72), wEdge);
         shLen = fs.y;
         visWide = mix(rawR, fs.z, wEdge);
         broadOcc = fs.w;
@@ -484,11 +483,11 @@ void main() {
       float fade = smoothstep(24.0, 340.0, shLen);
       vec2 dirToLight = d > 0.001 ? -toPx / d : -cn.xy;
       float dap = leafDapple(worldPx, dirToLight);
-      // 墙体与树干后方保持深邃压迫黑影（墙后严禁漏光），仅远段树影留极微冷灰透气
-      float fill = (0.018 + 0.075 * fade + 0.06 * dap * fade * (1.0 - broadOcc)) * (1.0 + 0.18 * uRain) * mix(1.0, 0.08, broadOcc) * coneEdgeW;
+      // 墙体后方保持均匀深邃暗影，绝不出现离散条纹或透墙漏光
+      float fill = 0.016 * coneEdgeW;
       directLight += umbraTintColor() * baseI * umbra * fill * (0.55 + 0.45 * ndl);
       float fringe = 4.0 * vis * (1.0 - vis);
-      directLight += lc * vec3(1.0, 0.84, 0.62) * baseI * fringe * 0.045;
+      directLight += lc * vec3(1.0, 0.84, 0.62) * baseI * fringe * 0.032;
     }
 
     // 累计真实光照可见度（用于视野锥内外锐利分界：锥内高清有色，锥外冷灰朦胧记忆层）
@@ -515,17 +514,17 @@ void main() {
     }
   }
 
-  // Darkwood 灵魂：阴郁且极度清晰！锥内高清自然色彩，锥外转为深沉冷灰青记忆层（不做模糊柔焦，保持建筑/地面/枯枝刀刻般清晰）
+  // Darkwood 灵魂：锥内温暖枯黄高清色彩，锥外通透冷石板灰记忆层（对标原作图 2~5：暗而清晰可读，绝不死黑一团）
   vec3 effectiveAlbedo = surfaceAlbedo;
   vec3 effectiveAmbient = ambientLight;
   if (uVisionFog == 1) {
     float reveal = smoothstep(0.05, 0.30, directVis);
     float gray = dot(surfaceAlbedo, vec3(0.299, 0.587, 0.114));
-    // 锥外深沉冷灰石板色（对标用户原版截图：阴郁、深冷、依然清晰锐利）
-    vec3 memoryCold = vec3(gray) * vec3(0.76, 0.84, 0.88);
-    float desatAmt = mix(0.76, 0.92, nA);
+    // 锥外通透冷石板灰（白昼与黄昏下清晰呈现树墩、茶田、木板桥与泥土肌理，黑夜自然沉入深暗）
+    vec3 memoryCold = vec3(gray) * vec3(0.84, 0.88, 0.91);
+    float desatAmt = mix(0.74, 0.90, nA);
     effectiveAlbedo = mix(mix(surfaceAlbedo, memoryCold, desatAmt), surfaceAlbedo, reveal);
-    effectiveAmbient *= mix(mix(0.42, 0.20, nA), 1.0, reveal);
+    effectiveAmbient *= mix(mix(0.58, 0.24, nA), 1.0, reveal);
   }
 
   // 数值安全红线：在 ACES 之前严格 clamp，杜绝 NaN/Inf 黑块
