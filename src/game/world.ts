@@ -33,7 +33,7 @@ import {
   createBuildingLayouts,
 } from './buildings';
 
-export const WORLD_SIZE = 4600;
+export const WORLD_SIZE = 5600;
 export const WORLD_HALF = WORLD_SIZE / 2;
 
 /** 庇护所外框（第三轮扩大为 560 × 380，内分主屋/卧室/储藏间/工作间；南墙与南门位置不变） */
@@ -258,6 +258,8 @@ function buildStaticGrid(walls: RectObstacle[], trees: TreeObstacle[], rocks: Ro
 }
 
 function makePath(width: number, points: Vec2[]): DirtPath {
+  // 整体加宽林间土路（+28%），让道路更宽敞大气、与周边树林自然拉开空间层次
+  const wideW = Math.round(width * 1.28);
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -269,8 +271,8 @@ function makePath(width: number, points: Vec2[]): DirtPath {
     if (p.x > maxX) maxX = p.x;
     if (p.y > maxY) maxY = p.y;
   }
-  const h = width * 0.5 + 4;
-  return { points, width, minX: minX - h, minY: minY - h, maxX: maxX + h, maxY: maxY + h };
+  const h = wideW * 0.5 + 4;
+  return { points, width: wideW, minX: minX - h, minY: minY - h, maxX: maxX + h, maxY: maxY + h };
 }
 
 function addHideoutCabin(walls: RectObstacle[], barricades: BarricadeSlot[], zones: FloorZone[]) {
@@ -970,42 +972,42 @@ export function createWorld(seed = 19847): WorldData {
     return false;
   };
 
-  // Scatter spacious Baltic pine trees（降低树木密度、拉大间距，配合巨型舒展长枝还原原作疏朗压迫感）
+  // Scatter tall, spacious Baltic trees（扩大地图后放疏树干间距、加高加大树冠，为大片破败营地/围栏/泥坑/农田腾出空间）
   let treeId = 0;
-  for (let i = 0; i < 1250; i++) {
-    const x = (rng() * 2 - 1) * (WORLD_HALF - 70);
-    const y = (rng() * 2 - 1) * (WORLD_HALF - 70);
+  for (let i = 0; i < 1350; i++) {
+    const x = (rng() * 2 - 1) * (WORLD_HALF - 80);
+    const y = (rng() * 2 - 1) * (WORLD_HALF - 80);
 
-    // Keep hideout yard clear
+    // Keep hideout yard spacious & clear
     if (
-      x > HIDEOUT_RECT.x - 105 &&
-      x < HIDEOUT_RECT.x + HIDEOUT_RECT.w + 105 &&
-      y > HIDEOUT_RECT.y - 105 &&
-      y < HIDEOUT_RECT.y + HIDEOUT_RECT.h + 105
+      x > HIDEOUT_RECT.x - 155 &&
+      x < HIDEOUT_RECT.x + HIDEOUT_RECT.w + 155 &&
+      y > HIDEOUT_RECT.y - 155 &&
+      y < HIDEOUT_RECT.y + HIDEOUT_RECT.h + 155
     ) {
       continue;
     }
 
-    // Keep POIs navigable
-    if (poiCenters.some((p) => dist(x, y, p.x, p.y) < p.r * 0.82)) continue;
-    // 建筑院落、墓地、信号塔基座等保持开阔
-    if (pointInRects(clearRects, x, y, 10)) continue;
-    // Keep dirt paths unobstructed (guarantees 100% reachability!)
-    if (nearPath(x, y, 38)) continue;
-    if (nearRail(x, y, 32)) continue;
+    // Keep POIs, farms & building yards clearly separated from forest trees
+    if (poiCenters.some((p) => dist(x, y, p.x, p.y) < p.r * 0.96)) continue;
+    // 建筑院落、墓地、信号塔与农场周边留出宽敞空地
+    if (pointInRects(clearRects, x, y, 36)) continue;
+    // 树木充分避让宽阔土路与铁轨，避免挡路且道路两侧视觉开阔
+    if (nearPath(x, y, 68)) continue;
+    if (nearRail(x, y, 48)) continue;
     // Keep away from containers, essences & relay nodes
-    if (tooClose(containers, x, y, 60)) continue;
-    if (tooClose(essences, x, y, 56)) continue;
-    if (tooClose(relayNodes, x, y, 60)) continue;
-    // 拉大树干间距，减少密度，让地面空旷透气、巨型树枝在高空交织
-    if (tooClose(trees, x, y, 112)) continue;
+    if (tooClose(containers, x, y, 64)) continue;
+    if (tooClose(essences, x, y, 58)) continue;
+    if (tooClose(relayNodes, x, y, 64)) continue;
+    // 进一步拉大树干间距（146px），让林地疏朗、树高冠大，破败景观成为视觉主角
+    if (tooClose(trees, x, y, 146)) continue;
 
     trees.push({
       id: treeId++,
       x,
       y,
-      trunkR: 14 + rng() * 8,
-      canopyR: 66 + rng() * 34,
+      trunkR: 15 + rng() * 9,
+      canopyR: 80 + rng() * 38,
       hueShift: (rng() - 0.5) * 14,
       phase: rng() * Math.PI * 2,
     });
@@ -1115,6 +1117,232 @@ function scatterWorldProps(
     }
     return false;
   };
+
+  // 0. 坑坑洼洼、颜色不一的多生态地表斑块（0:湿黑泥洼坑 1:枯黄荒草地 2:干裂黄土地 3:腐叶暗泥坑），先放最底层绘制
+  for (let i = 0; i < 110; i++) {
+    const x = (rng() * 2 - 1) * (WORLD_HALF - 180);
+    const y = (rng() * 2 - 1) * (WORLD_HALF - 180);
+    if (isIndoorsAny(x, y, 18)) continue;
+    out.push({
+      id: pid++,
+      kind: 'groundPatch',
+      x,
+      y,
+      angle: rng() * Math.PI * 2,
+      w: 58 + rng() * 96,
+      h: Math.floor(rng() * 4), // 0..3 地表色系类型
+      seed: rng() * 100,
+    });
+  }
+
+  // 0b. 庇护所与各建筑外墙周围散落的矮木桩与破木板堆（让建筑自然融入破败林地）
+  const stakeTargets: Array<{ x: number; y: number; w: number; h: number }> = [HIDEOUT_RECT, SAWMILL_RECT, ...BUILDINGS];
+  for (let bi = 0; bi < stakeTargets.length; bi++) {
+    const b = stakeTargets[bi];
+    const sides = 3 + Math.floor(rng() * 3);
+    for (let s = 0; s < sides; s++) {
+      const edge = Math.floor(rng() * 4);
+      let sx = b.x + rng() * b.w;
+      let sy = b.y + rng() * b.h;
+      let ang = 0;
+      if (edge === 0) {
+        sy = b.y - 16 - rng() * 16;
+        ang = (rng() - 0.5) * 0.25;
+      } else if (edge === 1) {
+        sy = b.y + b.h + 16 + rng() * 16;
+        ang = (rng() - 0.5) * 0.25;
+      } else if (edge === 2) {
+        sx = b.x - 16 - rng() * 16;
+        ang = Math.PI * 0.5 + (rng() - 0.5) * 0.25;
+      } else {
+        sx = b.x + b.w + 16 + rng() * 16;
+        ang = Math.PI * 0.5 + (rng() - 0.5) * 0.25;
+      }
+      if (isIndoorsAny(sx, sy, 8)) continue;
+      out.push({
+        id: pid++,
+        kind: 'houseStakes',
+        x: sx,
+        y: sy,
+        angle: ang,
+        w: 38 + rng() * 34,
+        h: 4 + Math.floor(rng() * 4),
+        seed: rng() * 100,
+      });
+    }
+  }
+
+  // 0c. 5 处荒野破败露营地（废弃帆布帐篷 + 野外火堆 + 破败围栏 + 被铁链拴着的恶犬）
+  const campSites = [
+    { x: 265, y: -235, ang: 0.45, lit: 1, hasDog: true },   // 庇护所东北近林缘营地（开局探索很快可见！）
+    { x: -320, y: -290, ang: -0.6, lit: 0, hasDog: true },  // 西北废弃猎人营地
+    { x: 540, y: 260, ang: 2.2, lit: 1, hasDog: true },     // 东南荒地燃火营地
+    { x: -640, y: 420, ang: 1.1, lit: 0, hasDog: true },    // 西南沼泽边缘恶犬营地
+    { x: 960, y: -120, ang: -1.4, lit: 0, hasDog: false },  // 东侧深林废营
+  ];
+  for (let i = 0; i < campSites.length; i++) {
+    const cs = campSites[i];
+    if (isIndoorsAny(cs.x, cs.y, 48)) continue;
+    // 帐篷
+    out.push({
+      id: pid++,
+      kind: 'tent',
+      x: cs.x,
+      y: cs.y,
+      angle: cs.ang,
+      w: 56 + rng() * 14,
+      h: 42 + rng() * 10,
+      seed: rng() * 100,
+    });
+    // 帐篷前方的野外火堆（h=1 仍在微弱燃烧冒火星，h=0 熄灭焦灰）
+    const fx = cs.x + Math.cos(cs.ang) * 58;
+    const fy = cs.y + Math.sin(cs.ang) * 58;
+    out.push({
+      id: pid++,
+      kind: 'campfire',
+      x: fx,
+      y: fy,
+      angle: rng() * Math.PI * 2,
+      w: 22 + rng() * 6,
+      h: cs.lit,
+      seed: rng() * 100,
+    });
+    // 营地一侧的破败木围栏
+    const wx = cs.x + Math.cos(cs.ang + 1.55) * 62;
+    const wy = cs.y + Math.sin(cs.ang + 1.55) * 62;
+    out.push({
+      id: pid++,
+      kind: 'brokenFence',
+      x: wx,
+      y: wy,
+      angle: cs.ang + 0.15,
+      w: 96 + rng() * 36,
+      h: 10,
+      seed: rng() * 100,
+    });
+    // 被铁链拴着的恶犬（拴在营地旁木桩上，玩家靠近即扑扯狂吠！）
+    if (cs.hasDog) {
+      const dx = cs.x + Math.cos(cs.ang - 1.4) * 74;
+      const dy = cs.y + Math.sin(cs.ang - 1.4) * 74;
+      if (!isIndoorsAny(dx, dy, 28) && !nearTree(dx, dy, 34)) {
+        out.push({
+          id: pid++,
+          kind: 'chainedDog',
+          x: dx,
+          y: dy,
+          angle: cs.ang,
+          w: 62, // 铁链最大扑扯半径
+          h: 1,
+          seed: rng() * 100,
+        });
+      }
+    }
+  }
+
+  // 0d. 额外 16 段破败木围栏散布在农田、院外与林间荒路旁
+  for (let i = 0; i < 16; i++) {
+    const x = (rng() * 2 - 1) * (WORLD_HALF - 260);
+    const y = (rng() * 2 - 1) * (WORLD_HALF - 260);
+    if (isIndoorsAny(x, y, 52) || nearTree(x, y, 42)) continue;
+    out.push({
+      id: pid++,
+      kind: 'brokenFence',
+      x,
+      y,
+      angle: rng() * Math.PI,
+      w: 88 + rng() * 62,
+      h: 10,
+      seed: rng() * 100,
+    });
+  }
+
+  // 0e. 地面散布的黑色旧电线（从庇护所发电机外墙、锯木厂及荒野残骸向外盘绕伸展）
+  const cableStarts = [
+    { x: HIDEOUT_RECT.x - 18, y: HIDEOUT_RECT.y + 32, ang: 2.85, len: 165 },
+    { x: HIDEOUT_RECT.x + HIDEOUT_RECT.w + 14, y: HIDEOUT_RECT.y + 80, ang: 0.25, len: 180 },
+    { x: HIDEOUT_RECT.x + 60, y: HIDEOUT_RECT.y + HIDEOUT_RECT.h + 18, ang: 1.45, len: 150 },
+    { x: SAWMILL_RECT.x - 16, y: SAWMILL_RECT.y + 90, ang: 2.6, len: 195 },
+  ];
+  for (const cs of cableStarts) {
+    out.push({
+      id: pid++,
+      kind: 'groundCable',
+      x: cs.x,
+      y: cs.y,
+      angle: cs.ang,
+      w: cs.len,
+      h: 2,
+      seed: rng() * 100,
+    });
+  }
+  for (let i = 0; i < 8; i++) {
+    const b = BUILDINGS[i % BUILDINGS.length];
+    const side = rng() > 0.5 ? 1 : -1;
+    out.push({
+      id: pid++,
+      kind: 'groundCable',
+      x: b.x + (side > 0 ? b.w + 10 : -10),
+      y: b.y + b.h * (0.25 + rng() * 0.5),
+      angle: side > 0 ? (rng() - 0.5) * 0.9 : Math.PI + (rng() - 0.5) * 0.9,
+      w: 115 + rng() * 90,
+      h: 2,
+      seed: rng() * 100,
+    });
+  }
+
+  // 0f. 苍蝇环绕、会蠕动的异化尸体（野外林间 3 具 + 荒废房屋房间内 4 具；靠近可能触发机关伏击！）
+  const wildCorpses = [
+    { x: 195, y: 265 },
+    { x: -395, y: -165 },
+    { x: 470, y: -310 },
+  ];
+  for (const wc of wildCorpses) {
+    if (!isIndoorsAny(wc.x, wc.y, 20) && !nearTree(wc.x, wc.y, 26)) {
+      out.push({
+        id: pid++,
+        kind: 'writhingCorpse',
+        x: wc.x,
+        y: wc.y,
+        angle: rng() * Math.PI * 2,
+        w: 24 + rng() * 6,
+        h: 1, // 1 = 野外可触发尸虫伏击
+        seed: rng() * 100,
+      });
+    }
+  }
+  for (let bi = 0; bi < BUILDINGS.length && bi < 8; bi += 2) {
+    const b = BUILDINGS[bi];
+    out.push({
+      id: pid++,
+      kind: 'writhingCorpse',
+      x: b.x + b.w * 0.72,
+      y: b.y + b.h * 0.34,
+      angle: rng() * Math.PI * 2,
+      w: 21 + rng() * 5,
+      h: 0, // 0 = 屋内房间恐怖摆设
+      seed: rng() * 100,
+    });
+  }
+
+  // 0g. 诡异自摆跷跷板（2 座：庇护所西南荒院与农庄旁；无风自己上下动，光源照到 2s 后诡异停下！）
+  const seesawSpots = [
+    { x: -245, y: 120, ang: 0.22 },
+    { x: 465, y: 185, ang: -0.35 },
+  ];
+  for (const ss of seesawSpots) {
+    if (!isIndoorsAny(ss.x, ss.y, 30) && !nearTree(ss.x, ss.y, 44)) {
+      out.push({
+        id: pid++,
+        kind: 'seesaw',
+        x: ss.x,
+        y: ss.y,
+        angle: ss.ang,
+        w: 78,
+        h: 12,
+        seed: rng() * 100,
+      });
+    }
+  }
 
   // 1. 残破木板桥（沿主要林间土路铺设 7 座，跨泥洼且与道路方向精准对齐）
   for (let pi = 0; pi < paths.length && pi < 7; pi++) {
@@ -1706,6 +1934,8 @@ export function collectOccluderSegments(
         g.wallStamp[wi] = stamp;
         const w = world.walls[wi];
         if (!w.blocksLight) continue;
+        // 祭坛小石柱/低矮残柱不再切出通天立影柱，只保留完整建筑墙体与长断墙阻挡光线
+        if (w.kind === 'ruin_wall' && w.w <= 48 && w.h <= 48) continue;
         if (w.x + w.w < ox - pad || w.x > ox + pad || w.y + w.h < oy - pad || w.y > oy + pad) continue;
         pushSeg(out, w.x, w.y, w.x + w.w, w.y);
         pushSeg(out, w.x + w.w, w.y, w.x + w.w, w.y + w.h);
@@ -1744,46 +1974,6 @@ export function collectOccluderSegments(
     }
   }
 
-  // 可拖拽重型家具（单源真相：完好家具对低角度手电光/射线投射柔和缩进遮挡，橡木柜较高阻光更明显）
-  for (let i = 0; i < world.movables.length; i++) {
-    const m = world.movables[i];
-    if (m.hp <= 0) continue;
-    if (m.x + m.w < ox - pad || m.x > ox + pad || m.y + m.h < oy - pad || m.y > oy + pad) continue;
-    // 光源恰好位于家具矩形内部时跳过，避免自遮挡黑块
-    if (ox >= m.x - 2 && ox <= m.x + m.w + 2 && oy >= m.y - 2 && oy <= m.y + m.h + 2) continue;
-    const inset = m.kind === 'cabinet' ? 2 : 5;
-    const x1 = m.x + inset;
-    const y1 = m.y + inset;
-    const x2 = m.x + m.w - inset;
-    const y2 = m.y + m.h - inset;
-    if (x2 <= x1 || y2 <= y1) continue;
-    pushSeg(out, x1, y1, x2, y1);
-    pushSeg(out, x2, y1, x2, y2);
-    pushSeg(out, x2, y2, x1, y2);
-    pushSeg(out, x1, y2, x1, y1);
-  }
-
-  // 树木不再写入 2D 硬遮光多边形（避免产生通天死板黑柱与墙体遮光混叠，改由渲染层在地面绘制由近及远平滑渐淡的真实树影）
-  // 仅保留大型巨石作为局部低矮遮挡
-  const pad2 = pad * pad;
-  for (let cy = cy0; cy <= cy1; cy++) {
-    for (let cx = cx0; cx <= cx1; cx++) {
-      const ci = cy * cols + cx;
-      // Large boulders cast shadows too
-      const rEnd = g.rockStart[ci + 1];
-      for (let k = g.rockStart[ci]; k < rEnd; k++) {
-        const r = world.rocks[g.rockItems[k]];
-        const dx = r.x - ox;
-        const dy = r.y - oy;
-        const d2 = dx * dx + dy * dy;
-        if (d2 > pad2 || d2 < 25) continue;
-        const d = Math.sqrt(d2);
-        const nx = (-dy / d) * (r.r * 0.85);
-        const ny = (dx / d) * (r.r * 0.85);
-        pushSeg(out, r.x - nx, r.y - ny, r.x + nx, r.y + ny);
-      }
-    }
-  }
-
+  // 家具、树木与巨石均为低矮或自带贴地投影的物体，不再写入 2D 硬遮光多边形（彻底消除户外“立起来的影子”长影柱）
   return out;
 }

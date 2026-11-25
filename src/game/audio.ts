@@ -3950,7 +3950,7 @@ class SoundEngine {
    * → 振幅撕裂抖动 → 三个并联共振峰带通（F1/F2/F3 随"张嘴"滑动）+ 胸腔低通
    * 远距离由空间路由自动加低通与更多混响；保留 StereoPanner 方位与隔墙闷化
    */
-  playMonsterSnarl(proximity: number, spatial?: SpatialAudioOpts, kind: 'stalker' | 'hound' | 'banshee' = 'stalker') {
+  playMonsterSnarl(proximity: number, spatial?: SpatialAudioOpts, kind: 'stalker' | 'hound' | 'banshee' | 'dancer' | 'chomper' = 'stalker') {
     const ctx = this.ctx;
     if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
     const now = ctx.currentTime;
@@ -4315,10 +4315,10 @@ class SoundEngine {
       const route = this.createSpatialRoute(spatial);
       shot.addAll(route.nodes);
       out = route.input;
-      vol = 0.075 * clamp(route.gainScale, 0.06, 1) * (urgent ? 1.2 : 1);
+      vol = 0.115 * clamp(route.gainScale, 0.1, 1) * (urgent ? 1.28 : 1);
     } else {
       out = this.distantOut(ctx, shot, randomPan(0.9), rnd(2600, 4200), 0.45).input;
-      vol = (urgent ? 0.06 : 0.048) * rnd(0.8, 1.1);
+      vol = (urgent ? 0.088 : 0.068) * rnd(0.85, 1.15);
     }
     this.crowCawCore(ctx, shot, out, now + 0.02, vol, urgent, 2 + Math.floor(Math.random() * 3));
     shot.seal();
@@ -4369,7 +4369,7 @@ class SoundEngine {
       const lp = this.filt(ctx, shot, 'lowpass', rnd(1300, 1900), 0.9, t0);
       lp.frequency.exponentialRampToValueAtTime(rnd(320, 480), end);
       const g = this.amp(ctx, shot, 0.0001, t0);
-      const peak0 = 0.28 * scale * rnd(0.8, 1.15) * norm;
+      const peak0 = 0.36 * scale * rnd(0.85, 1.18) * norm;
       let t = t0;
       let k = 0;
       while (t < end - 0.12) {

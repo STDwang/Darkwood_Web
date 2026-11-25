@@ -326,7 +326,16 @@ export class GameEngine {
   private crowAlive: number[] = [0, 0, 0, 0, 0, 0];
   private crowTargetFlocks = 4;
   private crowRespawnTimer = 20;
+  private crowPassbyTimer = 14;
   private crowNightCawCd = 9;
+  /** 跷跷板活跃度（1 = 诡异自摆，0 = 被光源照满 2s 后停下；渲染只读） */
+  readonly seesawActivity = new Map<number, number>();
+  private seesawLitSec = new Map<number, number>();
+  /** 野外蠕动尸体机关已触发集合（每具最多触发一次伏击） */
+  private corpseTriggered = new Set<number>();
+  private dogBarkCd = 0;
+  /** 白裙跳舞僵尸被击杀后的重现冷却（打死后又会在林子其他方向出现） */
+  private dancerRespawnCd = 0;
   private playerSprinting = false;
   private chargeAudioOn = false;
 
@@ -643,6 +652,11 @@ export class GameEngine {
     this.traps = [];
     this.flares = [];
     this.toasts = [];
+    this.seesawActivity.clear();
+    this.seesawLitSec.clear();
+    this.corpseTriggered.clear();
+    this.dogBarkCd = 0;
+    this.dancerRespawnCd = 0;
     this.particles.clear();
     this.ripples.clear();
     this.footprints.clear();
@@ -795,6 +809,11 @@ export class GameEngine {
       { x: -720, y: -440, kind: 'hound' },
       { x: 760, y: -380, kind: 'stalker' },
       { x: 640, y: 540, kind: 'stalker' },
+      // 树林里跳舞的白裙僵尸（可被打死，打死后会在林子其他方向重新遇到）
+      { x: -460, y: 360, kind: 'dancer' },
+      // 扭曲爬行的异化食人花
+      { x: 430, y: -560, kind: 'chomper' },
+      { x: -680, y: 520, kind: 'chomper' },
     ];
     for (const s of spots) {
       this.spawnEnemyAt(s.x, s.y, s.kind);
@@ -807,6 +826,10 @@ export class GameEngine {
         ? { r: 13, hp: 52, speed: 122, damage: 15 }
         : kind === 'banshee'
         ? { r: 18, hp: 110, speed: 84, damage: 24 }
+        : kind === 'dancer'
+        ? { r: 15, hp: 64, speed: 96, damage: 17 }
+        : kind === 'chomper'
+        ? { r: 17, hp: 86, speed: 78, damage: 22 }
         : { r: 15, hp: 72, speed: 92, damage: 18 };
 
     this.enemies.push({
@@ -1723,6 +1746,7 @@ export class GameEngine {
 
     // 8b. 乌鸦生态
     this.updateCrows(dt);
+    this.updateWorldPropsInteraction(dt);
 
     // 8c. 超自然异象（跳舞幽灵 / 一闪而逝 / 砸桌女人 / 空椅转向·远门吱呀；只写异象自身状态与手电闪烁）
     this.haunts.update(this, dt, canvasW, canvasH);
@@ -1802,22 +1826,28 @@ export class GameEngine {
     this.weatherTimer -= dt;
     if (this.weatherTimer <= 0) {
       const r = this.rng();
+      // 持续下雨，但雨势在暴雨雷暴与中雨阵雨之间自然起伏变化（不再停雨转晴）
       if (this.phase === 'night') {
         this.weather.kind = r < 0.78 ? 'storm' : 'drizzle';
         if (this.weather.kind === 'storm' && this.mode === 'play') {
-          this.pushToast('乌云压境，林间下起了冰冷的暴雨……', 'warn');
+          this.pushToast('乌云压境，林间暴雨骤然加剧……', 'warn');
         }
       } else if (this.phase === 'dusk') {
         this.weather.kind = r < 0.72 ? 'storm' : 'drizzle';
       } else {
-        // 默认以大雨雷暴为主，偶有短暂转小雨，保持压抑湿冷基调
-        this.weather.kind = r < 0.70 ? 'storm' : r < 0.94 ? 'drizzle' : 'mist';
+        this.weather.kind = r < 0.68 ? 'storm' : 'drizzle';
       }
-      this.weatherTimer = 48 + this.rng() * 38;
+      this.weatherTimer = 32 + this.rng() * 28;
     }
 
+    // 雨势连续动态呼吸变化（阵风强雨波，暴雨峰值达 1.0，阵雨时缓至 0.44~0.62）
+    const rainGust = 0.5 + 0.5 * Math.sin(this.simTime * 0.23) * Math.cos(this.simTime * 0.09 + 0.7);
     const targetRain =
-      this.weather.kind === 'storm' ? 0.94 : this.weather.kind === 'drizzle' ? 0.42 : 0;
+      this.weather.kind === 'storm'
+        ? clamp(0.84 + rainGust * 0.16, 0.8, 1.0)
+        : this.weather.kind === 'drizzle'
+        ? clamp(0.42 + rainGust * 0.22, 0.36, 0.66)
+        : 0;
     this.weather.rainIntensity = expDecay(this.weather.rainIntensity, targetRain, 0.45, dt);
 
     // Wetness builds during rain and evaporates slowly in mist
@@ -3194,15 +3224,21 @@ export class GameEngine {
           } else {
             c.alert = Math.max(0, c.alert - dt * 0.9);
             c.preen = Math.max(0, c.preen - dt * 2.2);
-            c.timer -= dt;
-            if (c.timer <= 0) {
-              if (r() < 0.34) {
-                // 树枝乌鸦整理羽毛 / 短促微扇翅膀
-                c.preen = 1;
-                c.timer = 0.9 + r() * 1.8;
-              } else {
-                c.angle += (r() - 0.5) * 0.85;
-                c.timer = 1.1 + r() * 2.4;
+            // 停在树枝上的乌鸦在玩家处于 180~440px 时缓缓转头盯着角色观察
+            if (dPlayer < 440 && dPlayer > 20) {
+              const targetA = Math.atan2(p.y - c.y, p.x - c.x);
+              c.angle += wrapAngle(targetA - c.angle) * clamp(dt * 2.4, 0, 1);
+            } else {
+              c.timer -= dt;
+              if (c.timer <= 0) {
+                if (r() < 0.34) {
+                  // 树枝乌鸦整理羽毛 / 短促微扇翅膀
+                  c.preen = 1;
+                  c.timer = 0.9 + r() * 1.8;
+                } else {
+                  c.angle += (r() - 0.5) * 0.85;
+                  c.timer = 1.1 + r() * 2.4;
+                }
               }
             }
           }
@@ -3310,7 +3346,41 @@ export class GameEngine {
       }
     }
 
-    // 4. 夜里不出现地面群，只偶发树上鸦叫
+    // 3b. 不定时高空掠过林子的飞鸦（1~3 只扑腾滑翔穿过画面上方，增强森林鲜活与不安感）
+    this.crowPassbyTimer -= dt;
+    if (this.crowPassbyTimer <= 0) {
+      this.crowPassbyTimer = 13 + r() * 14;
+      const nPass = 1 + Math.floor(r() * 3);
+      const fromAng = r() * Math.PI * 2;
+      const flyDir = fromAng + Math.PI + (r() - 0.5) * 0.5;
+      let spawned = 0;
+      for (let i = 0; i < this.crows.length && spawned < nPass; i++) {
+        const c = this.crows[i];
+        if (c.active) continue;
+        c.active = true;
+        c.flock = 0;
+        c.state = 'passby';
+        const distOut = 580 + spawned * 34;
+        c.x = this.camX + Math.cos(fromAng) * distOut + (r() - 0.5) * 90;
+        c.y = this.camY + Math.sin(fromAng) * distOut + (r() - 0.5) * 90;
+        c.z = 0.82 + r() * 0.16;
+        const spd = 165 + r() * 45;
+        c.vx = Math.cos(flyDir) * spd;
+        c.vy = Math.sin(flyDir) * spd;
+        c.angle = flyDir;
+        c.wingPhase = r() * Math.PI * 2;
+        c.flyTime = 0;
+        c.caw = 0;
+        c.seed = r();
+        c.treeId = -1;
+        spawned++;
+      }
+      if (spawned > 0 && r() < 0.65) {
+        AudioFX.playCrowCaw(this.makeSpatial(this.camX + Math.cos(fromAng) * 320, this.camY + Math.sin(fromAng) * 320, 760), false);
+      }
+    }
+
+    // 4. 夜里偶发远处树上鸦叫
     if (night) {
       this.crowNightCawCd -= dt;
       if (this.crowNightCawCd <= 0) {
@@ -3318,6 +3388,92 @@ export class GameEngine {
         const ang = r() * Math.PI * 2;
         const rad = 260 + r() * 320;
         AudioFX.playCrowCaw(this.makeSpatial(p.x + Math.cos(ang) * rad, p.y + Math.sin(ang) * rad, 720), false);
+      }
+    }
+  }
+
+  /**
+   * 场景动态恐怖交互：
+   * 1) 自摆跷跷板：无风自动摇晃，被手电/火把持续照满 2.0s 后诡异停下，光源移开后重新动起来；
+   * 2) 铁链恶犬：玩家靠近 235px 内触发周期性狂吠低吼与声波涟漪；
+   * 3) 野外蠕动异化尸体：玩家首次靠近 120px 触发腐肉伏击机关，从暗处扑出异化怪；
+   * 4) 白裙跳舞僵尸：被打死后隔一段时间又会在林子其他方向重新出现起舞。
+   */
+  private updateWorldPropsInteraction(dt: number) {
+    const p = this.player;
+    const props = this.world.props;
+    const beamOn = p.flashlightOn && p.flickerVal > 0.1;
+    const beamDx = Math.cos(p.angle);
+    const beamDy = Math.sin(p.angle);
+    const beamCos = Math.cos((44 * Math.PI) / 180);
+    const torchOn = this.equip.torchInHand && this.equip.torchLit && this.equip.torchLight > 0.15;
+
+    this.dogBarkCd = Math.max(0, this.dogBarkCd - dt);
+
+    for (let i = 0; i < props.length; i++) {
+      const pr = props[i];
+      if (pr.kind === 'seesaw') {
+        const dx = pr.x - p.x;
+        const dy = pr.y - p.y;
+        const d = Math.hypot(dx, dy);
+        let isLit = false;
+        if (d < 460 && d > 1) {
+          if (beamOn && (dx * beamDx + dy * beamDy) / d > beamCos) isLit = true;
+          if (torchOn && d < 200) isLit = true;
+        }
+        const prevSec = this.seesawLitSec.get(pr.id) ?? 0;
+        const nextSec = isLit ? Math.min(2.6, prevSec + dt) : Math.max(0, prevSec - dt * 0.65);
+        this.seesawLitSec.set(pr.id, nextSec);
+        const curAct = this.seesawActivity.get(pr.id) ?? 1;
+        // 持续受光满 2.0s 后平滑刹停；移开光源后重新慢慢动起来
+        const targetAct = nextSec >= 2.0 ? 0 : 1;
+        this.seesawActivity.set(pr.id, expDecay(curAct, targetAct, targetAct === 0 ? 5.5 : 1.4, dt));
+      } else if (pr.kind === 'chainedDog') {
+        const d = dist(pr.x, pr.y, p.x, p.y);
+        if (d < 235 && this.dogBarkCd <= 0 && this.mode === 'play') {
+          this.dogBarkCd = 1.6 + this.rng() * 1.4;
+          AudioFX.playMonsterSnarl(clamp(1 - d / 260, 0.35, 1), this.makeSpatial(pr.x, pr.y, 460), 'hound');
+          this.emitRipple(pr.x, pr.y, 92, 'rgba(210, 120, 96, 0.34)');
+        }
+      } else if (pr.kind === 'writhingCorpse' && pr.h > 0.5 && this.mode === 'play') {
+        if (!this.corpseTriggered.has(pr.id) && dist(pr.x, pr.y, p.x, p.y) < 118) {
+          this.corpseTriggered.add(pr.id);
+          const ambAng = this.rng() * Math.PI * 2;
+          const sx = clamp(pr.x + Math.cos(ambAng) * 195, -WORLD_HALF + 80, WORLD_HALF - 80);
+          const sy = clamp(pr.y + Math.sin(ambAng) * 195, -WORLD_HALF + 80, WORLD_HALF - 80);
+          if (!isPointInHideout(sx, sy) && !isPointIndoors(sx, sy)) {
+            const ambKind: EnemyKind = this.rng() < 0.65 ? 'chomper' : 'hound';
+            this.spawnEnemyAt(sx, sy, ambKind, 1.2);
+            AudioFX.playMonsterSnarl(0.85, this.makeSpatial(pr.x, pr.y, 520), ambKind);
+            this.emitRipple(pr.x, pr.y, 130, 'rgba(196, 76, 62, 0.42)');
+            this.pushToast('蠕动的腐肉惊动了林中异物……', 'warn');
+          }
+        }
+      }
+    }
+
+    // 白裙跳舞僵尸重现机制：被打死后隔一段时间在林子另一个方向重新出现起舞
+    let hasDancer = false;
+    for (let i = 0; i < this.enemies.length; i++) {
+      if (this.enemies[i].kind === 'dancer') {
+        hasDancer = true;
+        break;
+      }
+    }
+    if (!hasDancer && this.mode === 'play') {
+      if (this.dancerRespawnCd <= 0) {
+        this.dancerRespawnCd = 16 + this.rng() * 14;
+      } else {
+        this.dancerRespawnCd -= dt;
+        if (this.dancerRespawnCd <= 0) {
+          const ang = this.rng() * Math.PI * 2;
+          const rad = 460 + this.rng() * 240;
+          const dx = clamp(p.x + Math.cos(ang) * rad, -WORLD_HALF + 120, WORLD_HALF - 120);
+          const dy = clamp(p.y + Math.sin(ang) * rad, -WORLD_HALF + 120, WORLD_HALF - 120);
+          if (!isPointInHideout(dx, dy) && !isPointIndoors(dx, dy)) {
+            this.spawnEnemyAt(dx, dy, 'dancer');
+          }
+        }
       }
     }
   }

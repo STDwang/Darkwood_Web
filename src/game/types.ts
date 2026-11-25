@@ -119,8 +119,23 @@ export interface RockObstacle {
   seed: number;
 }
 
-/** 原作风格地表场景物件（盘根树墩、残破木板桥、荒废茶田、围栏小地窖、独轮手推车、散落原木） */
-export type WorldPropKind = 'stump' | 'bridge' | 'teaField' | 'cellar' | 'wheelbarrow' | 'fallenLog';
+/** 原作风格地表场景物件与坑洼地形（树墩、木板桥、茶田、小地窖、手推车、原木、多色泥草坑洼、破围栏、帐篷、火堆、铁链恶犬、屋周木桩、地面电线、苍蝇蠕动异化尸体） */
+export type WorldPropKind =
+  | 'stump'
+  | 'bridge'
+  | 'teaField'
+  | 'cellar'
+  | 'wheelbarrow'
+  | 'fallenLog'
+  | 'groundPatch'
+  | 'brokenFence'
+  | 'tent'
+  | 'campfire'
+  | 'chainedDog'
+  | 'houseStakes'
+  | 'groundCable'
+  | 'writhingCorpse'
+  | 'seesaw';
 
 export interface WorldProp {
   id: number;
@@ -197,7 +212,7 @@ export interface ActiveFlare {
   maxLife: number;
 }
 
-export type EnemyKind = 'stalker' | 'hound' | 'banshee';
+export type EnemyKind = 'stalker' | 'hound' | 'banshee' | 'dancer' | 'chomper';
 
 export interface Enemy {
   id: number;
@@ -258,7 +273,7 @@ export interface Crow {
   active: boolean;
   /** 所属鸦群索引 */
   flock: number;
-  state: 'ground' | 'perched' | 'takeoff' | 'fly' | 'landing';
+  state: 'ground' | 'perched' | 'takeoff' | 'fly' | 'landing' | 'passby';
   x: number;
   y: number;
   /** 离地高度 0..1（渲染视差与俯视大小缩放用） */

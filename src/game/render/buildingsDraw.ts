@@ -480,6 +480,8 @@ export function drawBuildingGround(
     const b = bl[i];
     if (b.id === 'mill' || !buildingVisible(b, 30)) continue;
     drawFloor(ctx, b, woodPat);
+    // 按建筑身份分级装饰（富贵人家：暗红金边织花毯与青铜烛台；农家小屋：粗麻草席与腌菜陶坛）
+    drawClassDecor(ctx, b);
     for (let k = 0; k < b.props.length; k++) {
       const p = b.props[k];
       if (GROUND_KINDS[p.kind] === undefined) continue;
@@ -504,6 +506,68 @@ export function drawBuildingGround(
 // ---------------------------------------------------------------------------
 // 陈设层
 // ---------------------------------------------------------------------------
+
+/** 按建筑阶层绘制差异化室内摆件（富贵人家 vs 农家小屋） */
+function drawClassDecor(ctx: CanvasRenderingContext2D, b: Building) {
+  const isWealthy = b.id === 'doctor' || b.id === 'church' || b.id === 'manor' || b.w * b.h > 42000;
+  const cx = b.x + b.w * 0.5;
+  const cy = b.y + b.h * 0.5;
+  ctx.save();
+  if (isWealthy) {
+    // 富贵人家：暗红金边波斯长方毯 + 角落青铜高脚烛台
+    const rw = Math.min(b.w * 0.42, 92);
+    const rh = Math.min(b.h * 0.38, 62);
+    ctx.fillStyle = 'rgba(84, 28, 24, 0.52)';
+    ctx.fillRect(cx - rw * 0.5, cy - rh * 0.5, rw, rh);
+    ctx.strokeStyle = 'rgba(176, 142, 78, 0.45)';
+    ctx.lineWidth = 1.6;
+    ctx.strokeRect(cx - rw * 0.5 + 3, cy - rh * 0.5 + 3, rw - 6, rh - 6);
+    ctx.strokeStyle = 'rgba(196, 166, 98, 0.28)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx - rw * 0.3, cy - rh * 0.3, rw * 0.6, rh * 0.6);
+    // 角落青铜烛台摆件
+    ctx.fillStyle = '#786238';
+    ctx.beginPath();
+    ctx.arc(b.x + 24, b.y + 24, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#d4c8a4';
+    ctx.beginPath();
+    ctx.arc(b.x + 24, b.y + 24, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    // 农家小屋：做旧粗麻编织草席 + 墙角腌菜陶坛
+    const rw = Math.min(b.w * 0.36, 68);
+    const rh = Math.min(b.h * 0.32, 46);
+    ctx.fillStyle = 'rgba(98, 86, 60, 0.38)';
+    ctx.fillRect(cx - rw * 0.5, cy - rh * 0.5, rw, rh);
+    ctx.strokeStyle = 'rgba(54, 46, 32, 0.42)';
+    ctx.lineWidth = 1;
+    for (let y = cy - rh * 0.45; y < cy + rh * 0.45; y += 6) {
+      ctx.beginPath();
+      ctx.moveTo(cx - rw * 0.48, y);
+      ctx.lineTo(cx + rw * 0.48, y);
+      ctx.stroke();
+    }
+    // 墙角两只陶土腌菜坛
+    for (const [ox, oy, rr] of [
+      [22, 22, 5.2],
+      [33, 25, 4.1],
+    ]) {
+      ctx.fillStyle = '#4e3929';
+      ctx.strokeStyle = '#18120d';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.arc(b.x + ox, b.y + oy, rr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#231912';
+      ctx.beginPath();
+      ctx.arc(b.x + ox, b.y + oy, rr * 0.48, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
 
 function woodBox(ctx: CanvasRenderingContext2D, hw: number, hh: number, fill: string) {
   ctx.fillStyle = 'rgba(4, 3, 2, 0.45)';

@@ -92,10 +92,10 @@ const SLIT_COUNT_BY_ID: Record<string, number> = {
 };
 
 // ===== ?v-cine=b 俯视透视雨幕（渲染层私有纯视觉粒子池，容量固定、预分配、每帧零分配）=====
-/** 雨滴池容量（暴雨急雨高密） */
-const RAIN_MAX = 920;
+/** 雨滴池容量（倾盆急雨高密） */
+const RAIN_MAX = 1150;
 /** 落点水花/积水涟漪池容量（池满时直接不生成，绝不扩容） */
-const SPLASH_MAX = 600;
+const SPLASH_MAX = 680;
 /** 庇护所屋檐滴水槽位数（每槽位 2 颗成串水滴） */
 const EAVE_MAX = 64;
 /** 待绘制拖影上限 = 雨滴 + 屋檐滴水 */
@@ -113,8 +113,8 @@ const RAIN_LEN_REF_MIN = 8;
 const RAIN_NEAR_SHORTEN = 0.74;
 /** 透视尺寸桶分界 */
 const RAIN_BUCKET_F = [1.08, 1.2, 1.42];
-/** 三个景深层每秒生成数（暴雨急雨高密基准）：0 = 远层近地密细，1 = 中层，2 = 近镜头粗急 */
-const RAIN_LAYER_RATE = [2750, 960, 130];
+/** 三个景深层每秒生成数（倾盆大雨高密基准）：0 = 远层近地密细，1 = 中层，2 = 近镜头粗急 */
+const RAIN_LAYER_RATE = [3400, 1200, 165];
 /** 各层起始离地高度区间（最小值 + 跨度） */
 const RAIN_Z0_MIN = [0.07, 0.22, 0.48];
 const RAIN_Z0_SPAN = [0.13, 0.2, 0.2];
@@ -966,8 +966,19 @@ export class GameRenderer {
       draws++;
     }
 
-    // 7b. 原作风格地表场景物件（残破木板桥、荒废茶田垄、盘根老树墩、围栏小地窖、独轮手推车与散落原木）
-    draws += drawWorldProps(ctx, engine.world.props, viewL, viewT, viewR, viewB);
+    // 7b. 原作风格地表场景物件（多色坑洼地表、残破木板桥、茶田、树墩、地窖、帐篷、火堆、铁链恶犬、电线、蠕动尸体与自摆跷跷板）
+    draws += drawWorldProps(
+      ctx,
+      engine.world.props,
+      viewL,
+      viewT,
+      viewR,
+      viewB,
+      engine.simTime,
+      engine.player.x,
+      engine.player.y,
+      engine.seesawActivity
+    );
 
     // 8. Bioluminescent Odd Essence Mushrooms (organic cap cluster + stem + glow)
     // ?v-cine=b：降低青色饱和度与光晕半径（30 -> 17），避免霓虹感
@@ -1369,29 +1380,57 @@ export class GameRenderer {
     }
     ctx.globalAlpha = 1;
 
-    // 18. Hideout & Old Sawmill Weathered Shingle Roof Cutaway
-    if (engine.hideoutRoofAlpha > 0.02) {
+    // 18. 建筑屋顶渐隐层（对标原作俯视剖面：角色靠近建筑或光源照向建筑时，屋顶平滑揭开，清晰可见室内地板与所有摆设！）
+    const roofVisFactor = (rx: number, ry: number, rw: number, rh: number): number => {
+      if (engine.mode !== 'play') return 1;
+      const px = engine.player.x;
+      const py = engine.player.y;
+      const nearX = clamp(px, rx, rx + rw);
+      const nearY = clamp(py, ry, ry + rh);
+      const dBox = Math.hypot(px - nearX, py - nearY);
+      // 玩家在建筑附近 240px 内，或手电筒光锥朝向建筑照射时，平滑揭开屋顶露出室内摆设
+      let mul = clamp((dBox - 110) / 140, 0, 1);
+      if (engine.player.flashlightOn && dBox < 460) {
+        const bcx = rx + rw * 0.5;
+        const bcy = ry + rh * 0.5;
+        const dx = bcx - px;
+        const dy = bcy - py;
+        const dl = Math.hypot(dx, dy);
+        if (dl > 1) {
+          const dot = (dx * Math.cos(engine.player.angle) + dy * Math.sin(engine.player.angle)) / dl;
+          if (dot > Math.cos(coneHalfRad + 0.35)) {
+            mul = Math.min(mul, clamp((dBox - 220) / 220, 0, 1));
+          }
+        }
+      }
+      return mul;
+    };
+
+    const hideoutVisA = engine.hideoutRoofAlpha * roofVisFactor(HIDEOUT_RECT.x, HIDEOUT_RECT.y, HIDEOUT_RECT.w, HIDEOUT_RECT.h);
+    if (hideoutVisA > 0.02) {
       this.drawRoofCutaway(
         ctx,
         HIDEOUT_RECT,
-        engine.hideoutRoofAlpha,
+        hideoutVisA,
         engine.generatorOn && engine.generatorFuel > 0,
         engine.simTime,
         true
       );
       draws++;
     }
-    if (engine.sawmillRoofAlpha > 0.02) {
-      this.drawRoofCutaway(ctx, SAWMILL_ROOF_RECT, engine.sawmillRoofAlpha, false, engine.simTime, false);
+    const sawmillVisA = engine.sawmillRoofAlpha * roofVisFactor(SAWMILL_ROOF_RECT.x, SAWMILL_ROOF_RECT.y, SAWMILL_ROOF_RECT.w, SAWMILL_ROOF_RECT.h);
+    if (sawmillVisA > 0.02) {
+      this.drawRoofCutaway(ctx, SAWMILL_ROOF_RECT, sawmillVisA, false, engine.simTime, false);
       draws++;
     }
-    // 18b. 全地图所有可进入 POI 房屋的屋顶渐隐层（屋顶内收至外墙内侧，确保外墙银灰双轨窗框与暖褐大门门廊始终完整外露、一眼辨识）
+    // 18b. 全地图所有可进入 POI 房屋的屋顶渐隐层
     const bList = engine.world.buildings;
     for (let bi = 0; bi < bList.length; bi++) {
       const b = bList[bi];
       if (b.externalRoof) continue;
       if (b.x + b.w < viewL - 40 || b.x > viewR + 40 || b.y + b.h < viewT - 40 || b.y > viewB + 40) continue;
-      const ra = engine.buildingRoofAlpha[bi] === undefined ? 1 : engine.buildingRoofAlpha[bi];
+      const baseRa = engine.buildingRoofAlpha[bi] === undefined ? 1 : engine.buildingRoofAlpha[bi];
+      const ra = baseRa * roofVisFactor(b.x, b.y, b.w, b.h);
       if (ra <= 0.02) continue;
       const inset = Math.max(8, b.t - 2);
       this.drawRoofCutaway(
@@ -3440,22 +3479,89 @@ export class GameRenderer {
       ctx.restore();
     }
 
-    // 第一遍：中低层树冠（丰富锯齿叶簇 + 粗壮扭曲主枝，中等高度视差，让光锥透过叶隙照亮下方地面与树根）
+    // 第零b遍（2.5D 垂直向上的黑色柱状树干，位于树根圆环之上、高空树冠之下）：
+    // 沿顶视针孔透视方向 (t - cam) 向上拔起柱状黑树干，直插上方树枝暗影；
+    // 远处被浓密树冠覆盖，角色靠近树冠渐隐后，即可清晰看到“地面树根 → 迎光圆环 → 垂直向上黑色柱状树干 → 上方淡枝影”！
+    for (const t of engine.world.trees) {
+      const pad = t.trunkR * 3.5 + 70;
+      if (t.x < viewL - pad || t.x > viewR + pad || t.y < viewT - pad || t.y > viewB + pad) continue;
+      const paraX = clamp((t.x - camX) * 0.148, -66, 66);
+      const paraY = clamp((t.y - camY) * 0.148, -66, 66);
+      const topX = t.x + paraX;
+      const topY = t.y + paraY;
+      const r0 = t.trunkR * 0.88;
+      const r1 = r0 * 1.12;
+      const segLen = Math.hypot(paraX, paraY);
+
+      ctx.save();
+      if (segLen > 1.5) {
+        const nx = -paraY / segLen;
+        const ny = paraX / segLen;
+        // 圆柱侧面垂直向上渐变（基部略带暗褐质感，越往上越深黑并融入高空树冠暗影）
+        const colGrad = ctx.createLinearGradient(t.x, t.y, topX, topY);
+        colGrad.addColorStop(0, 'rgba(16, 15, 13, 0.94)');
+        colGrad.addColorStop(0.45, 'rgba(7, 8, 8, 0.96)');
+        colGrad.addColorStop(1, 'rgba(4, 5, 5, 0.88)');
+        ctx.fillStyle = colGrad;
+        ctx.beginPath();
+        ctx.moveTo(t.x + nx * r0, t.y + ny * r0);
+        ctx.lineTo(topX + nx * r1, topY + ny * r1);
+        ctx.lineTo(topX - nx * r1, topY - ny * r1);
+        ctx.lineTo(t.x - nx * r0, t.y - ny * r0);
+        ctx.closePath();
+        ctx.fill();
+      }
+      // 树干顶部暗圆（与上方树冠树心自然衔接）
+      const capGrad = ctx.createRadialGradient(topX, topY, r1 * 0.15, topX, topY, r1 * 1.18);
+      capGrad.addColorStop(0, 'rgba(4, 5, 5, 0.92)');
+      capGrad.addColorStop(0.75, 'rgba(5, 6, 6, 0.72)');
+      capGrad.addColorStop(1, 'rgba(5, 6, 6, 0)');
+      ctx.fillStyle = capGrad;
+      ctx.beginPath();
+      ctx.arc(topX, topY, r1 * 1.18, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 树干基部精致迎光圆环（在手电光锥或火把光圈内压在树根与柱状黑树干交界处，复刻原作特写！）
+      const dxP = t.x - pLightX;
+      const dyP = t.y - pLightY;
+      const dP = Math.hypot(dxP, dyP);
+      if (dP > 8 && dP < 540) {
+        const dot = (dxP * pLookDx + dyP * pLookDy) / dP;
+        const inCone = engine.player.flashlightOn && dot > pLookCos;
+        const inTorch = torchOn && dP < 230;
+        if (inCone || inTorch) {
+          const rimA = clamp((inCone ? 0.68 * (1 - dP / 560) : 0) + (inTorch ? 0.56 * (1 - dP / 240) : 0), 0, 0.82);
+          const toPlayerAng = Math.atan2(-dyP, -dxP);
+          ctx.lineCap = 'round';
+          ctx.strokeStyle = inTorch && !inCone ? `rgba(226, 192, 138, ${rimA.toFixed(3)})` : `rgba(204, 200, 174, ${rimA.toFixed(3)})`;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(t.x, t.y, r0, toPlayerAng - 1.48, toPlayerAng + 1.48);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    // 第一遍：中低层树冠（丰富锯齿叶簇 + 粗壮扭曲主枝；扩大近身渐隐范围，靠近时露出根部与柱状黑树干，上方仍保留淡枝暗影）
     for (const t of engine.world.trees) {
       const size = t.canopyR * (this.cineOn ? 4.35 : 2.85);
       const cPad = size * 0.56 + 68;
       if (t.x < viewL - cPad || t.x > viewR + cPad || t.y < viewT - cPad || t.y > viewB + cPad) continue;
       const dPlayer = dist(engine.player.x, engine.player.y, t.x, t.y);
-      const fadeR = t.canopyR * 1.4 + 26;
-      const canopyAlpha = dPlayer < fadeR ? lerp(0.18, 1.0, clamp((dPlayer - 30) / Math.max(1, fadeR - 30), 0, 1)) : 1.0;
+      const fadeInner = 68;
+      const fadeOuter = t.canopyR * 2.25 + 110;
+      const uFade = clamp((dPlayer - fadeInner) / Math.max(1, fadeOuter - fadeInner), 0, 1);
+      const smoothFade = uFade * uFade * (3 - 2 * uFade);
+      const canopyAlpha = lerp(0.18, 1.0, smoothFade);
       const variantIdx = t.id % this.atlas.canopySprites.length;
 
       const waveBase = swayOn ? Math.sin(engine.simTime * (0.86 * stormWind) + t.phase + t.x * 0.004) : 0;
       const waveBaseY = swayOn ? Math.cos(engine.simTime * (0.68 * stormWind) + t.phase + t.y * 0.004) : 0;
       const baseSwayX = waveBase * (4.6 * stormWind);
       const baseSwayY = waveBaseY * (3.0 * stormWind);
-      const baseParaX = clamp((t.x - camX) * 0.078, -42, 42);
-      const baseParaY = clamp((t.y - camY) * 0.078, -42, 42);
+      const baseParaX = clamp((t.x - camX) * 0.095, -48, 48);
+      const baseParaY = clamp((t.y - camY) * 0.095, -48, 48);
 
       const baseSprite = this.atlas.canopySprites[variantIdx];
       ctx.save();
@@ -3467,13 +3573,16 @@ export class GameRenderer {
       draws++;
     }
 
-    // 第二遍：最高空树梢与失焦暗冠层（更强视差、错相摇曳、最深邃漆黑，统一叠在中低层树冠之上形成森林天盖！）
+    // 第二遍：最高空树梢与失焦暗冠层（远处厚重覆盖，角色靠近大范围平滑剥离至淡淡暗影，绝不遮挡角色四周视线）
     for (const t of engine.world.trees) {
       if (Math.abs(t.x - camX) > W * 0.54 || Math.abs(t.y - camY) > H * 0.58) continue;
       const size = t.canopyR * (this.cineOn ? 4.65 : 3.0);
       const dPlayer = dist(engine.player.x, engine.player.y, t.x, t.y);
-      const fadeR = t.canopyR * 1.48 + 30;
-      const canopyAlpha = dPlayer < fadeR ? lerp(0.14, 1.0, clamp((dPlayer - 28) / Math.max(1, fadeR - 28), 0, 1)) : 1.0;
+      const fadeInner = 76;
+      const fadeOuter = t.canopyR * 2.65 + 135;
+      const uFade = clamp((dPlayer - fadeInner) / Math.max(1, fadeOuter - fadeInner), 0, 1);
+      const smoothFade = uFade * uFade * (3 - 2 * uFade);
+      const canopyAlpha = lerp(0.09, 1.0, smoothFade);
       const variantIdx = t.id % this.atlas.canopyTopSprites.length;
 
       const waveBase = swayOn ? Math.sin(engine.simTime * (0.86 * stormWind) + t.phase + t.x * 0.004) : 0;
@@ -3510,9 +3619,9 @@ export class GameRenderer {
     viewL: number,
     viewT: number
   ) {
-    // 1. 极克制的林缘冷暗雾丝（去掉遮盖画面的灰白雾球，保持画面阴郁沉实且刀刻般清晰）
+    // 1. 流动湿冷雨雾层（大雨时拉高雨雾流动感与真实潮湿压迫氛围，小雨/晴天保持克制清晰）
     const rainFog = clamp(engine.weather.rainIntensity, 0, 1);
-    const baseAlpha = (0.008 + 0.012 * rainFog) * (engine.phase === 'dusk' ? 1.15 : engine.phase === 'night' ? 0.75 : 1);
+    const baseAlpha = (0.012 + 0.045 * rainFog * rainFog) * (engine.phase === 'dusk' ? 1.15 : engine.phase === 'night' ? 0.85 : 1);
     if (baseAlpha > 0.002 && Quality.preset.fogLayers > 0) {
       ctx.save();
       const driftX = (engine.simTime * 11 + viewL * 0.16) % 420;
@@ -5545,6 +5654,99 @@ export class GameRenderer {
       ctx.fillRect(12.5, -3.8, 2.8, 2.1);
       ctx.fillRect(12.5, 1.7, 2.8, 2.1);
       ctx.restore();
+    } else if (e.kind === 'dancer') {
+      // --- 白裙跳舞僵尸（树林中旋转起舞，可被打死并在其他方向重现） ---
+      const spin = e.state === 'prowl' ? time * 2.2 + e.id : Math.sin(time * 7 + e.id) * 0.28;
+      ctx.save();
+      ctx.rotate(spin);
+      // 沾满泥污与暗血的残破惨白连衣裙摆（随旋转波浪起伏）
+      ctx.fillStyle = flash ? '#d88278' : '#c6c2b4';
+      ctx.strokeStyle = '#24221e';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (let k = 0; k <= 12; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        const frill = 14.5 + Math.sin(a * 4 + time * 5.2 + e.id) * 2.8 + Math.cos(a * 3) * 1.4;
+        const px = Math.cos(a) * frill;
+        const py = Math.sin(a) * frill;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      // 裙摆暗红血污与泥渍
+      ctx.fillStyle = 'rgba(112, 24, 20, 0.56)';
+      ctx.beginPath();
+      ctx.ellipse(-4, 5, 5.5, 3.2, 0.4, 0, Math.PI * 2);
+      ctx.ellipse(5, -6, 4.2, 2.4, -0.5, 0, Math.PI * 2);
+      ctx.fill();
+      // 诡异张开舞动的苍白双臂
+      ctx.strokeStyle = flash ? '#d88278' : '#aba598';
+      ctx.lineWidth = 3.2;
+      ctx.lineCap = 'round';
+      for (let side = -1; side <= 1; side += 2) {
+        const sway = Math.sin(time * 4.2 + e.id + side) * 3.5;
+        ctx.beginPath();
+        ctx.moveTo(0, side * 5);
+        ctx.quadraticCurveTo(6, side * (13 + sway), 13 + reachR * 0.4, side * (17 + sway));
+        ctx.stroke();
+      }
+      // 苍白头顶与披散凌乱黑发
+      ctx.fillStyle = '#141312';
+      ctx.beginPath();
+      ctx.ellipse(-1.5, 0, 6.2, 5.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#cfc7b6';
+      ctx.beginPath();
+      ctx.arc(1.5, 0, 3.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    } else if (e.kind === 'chomper') {
+      // --- 扭曲爬行的异化食人花（盘绕黑藤触须 + 巨大开合血红锯齿花口） ---
+      ctx.strokeStyle = flash ? '#a6382f' : '#1b1d15';
+      ctx.lineCap = 'round';
+      // 四周扭曲拖行的粗黑根茎触须
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * Math.PI * 2 + Math.PI * 0.16;
+        const wv = Math.sin(e.walkPhase * 1.4 + k * 1.5 + time * 3.2) * 5.2;
+        ctx.lineWidth = 3.0;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * 6, Math.sin(a) * 6);
+        ctx.quadraticCurveTo(Math.cos(a) * 16 + wv * 0.5, Math.sin(a) * 16 - wv * 0.5, Math.cos(a) * 23 + wv, Math.sin(a) * 23 + wv * 0.4);
+        ctx.stroke();
+      }
+      // 巨大肉质锯齿花瓣（攻击/靠近时猛然张开！）
+      const jawOpen = clamp(0.32 + windE * 0.55 + lungeW * 0.65 + Math.sin(time * 5 + e.id) * 0.12, 0.2, 1.0);
+      for (let petal = 0; petal < 5; petal++) {
+        const pa = (petal / 5) * Math.PI * 2 + Math.sin(time * 2.4 + petal) * 0.08;
+        ctx.save();
+        ctx.rotate(pa);
+        ctx.fillStyle = flash ? '#c84a3c' : petal % 2 === 0 ? '#5b1e19' : '#3d241c';
+        ctx.strokeStyle = '#120d0a';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(8 + jawOpen * 5, -6.5, 14 + jawOpen * 7, 0);
+        ctx.quadraticCurveTo(8 + jawOpen * 5, 6.5, 0, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+      // 中央血红肉口与一圈惨白尖牙
+      ctx.fillStyle = '#2a0907';
+      ctx.beginPath();
+      ctx.arc(2, 0, 5.5 + jawOpen * 3.0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ddd4bc';
+      for (let tooth = 0; tooth < 6; tooth++) {
+        const ta = (tooth / 6) * Math.PI * 2 + time * 0.6;
+        const tr = 4.6 + jawOpen * 2.2;
+        ctx.beginPath();
+        ctx.arc(2 + Math.cos(ta) * tr, Math.sin(ta) * tr, 1.25, 0, Math.PI * 2);
+        ctx.fill();
+      }
     } else if (e.kind === 'banshee') {
       // --- ROOT-WEEPING BANSHEE ---
       ctx.strokeStyle = flash ? '#b84239' : '#1b1511';
