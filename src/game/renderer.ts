@@ -177,6 +177,8 @@ export class GameRenderer {
   private shaftGrad: CanvasGradient | null = null;
   // Darkwood 精绘东欧波斯椭圆旧地毯离屏缓存（首次绘制烘焙一次，零每帧开销）
   private persianRugCanvas: HTMLCanvasElement | null = null;
+  // 盘错地面树根离屏精灵缓存（8 种独立根系 × 镜像与旋转，消除每帧贝塞尔路径重绘热点）
+  private treeRootSprites: HTMLCanvasElement[] | null = null;
   // 室内吊灯物理钟摆摇晃状态（受雷暴/震屏/玩家走过激发，带动光斑与阴影同步摇曳）
   private lampSwingX = new Float32Array(2);
   private lampSwingY = new Float32Array(2);
@@ -347,10 +349,25 @@ export class GameRenderer {
     this.drawDisabled = on;
   }
 
+  /** 将画布局部 CSS 坐标转换为世界坐标（自动匹配当前相机缩放与震屏偏移，供手机端点击场景交互图标直触使用） */
+  screenToWorld(sx: number, sy: number, engine: GameEngine): { x: number; y: number } {
+    const zoom = this.getCameraZoom();
+    const W = this.width / zoom;
+    const H = this.height / zoom;
+    const cx = engine.camX + engine.shakeOffsetX;
+    const cy = engine.camY + engine.shakeOffsetY;
+    return {
+      x: cx - W * 0.5 + sx / zoom,
+      y: cy - H * 0.5 + sy / zoom,
+    };
+  }
+
   resize(cssWidth: number, cssHeight: number) {
     this.width = Math.max(320, Math.floor(cssWidth));
     this.height = Math.max(240, Math.floor(cssHeight));
-    const maxDpr = Quality.preset.maxDpr * Quality.dynamicScale;
+    // 手机横屏小视口将 DPR 上限收敛至 1.5，大幅降低高分屏像素填充开销且保持锐利
+    const mobileCap = Math.min(this.width, this.height) <= 520 ? 1.5 : Quality.preset.maxDpr;
+    const maxDpr = Math.min(Quality.preset.maxDpr, mobileCap) * Quality.dynamicScale;
     this.dpr = clamp(window.devicePixelRatio || 1, 1, Math.max(1, maxDpr));
 
     this.canvas.width = Math.floor(this.width * this.dpr);
@@ -646,7 +663,8 @@ export class GameRenderer {
 
       const ambient = this.getAmbientRGB(engine);
       const lowHp = clamp((40 - engine.player.hp) / 40, 0, 1);
-      const bloodDread = clamp(lowHp * 0.55 + engine.player.hitFlash * 1.15, 0, 1);
+      const nightOppress = this.getNightAmount(engine) * (engine.nightShadowSurge > 0 ? 0.45 : 0.14);
+      const bloodDread = clamp(lowHp * 0.55 + engine.player.hitFlash * 1.15 + nightOppress, 0, 1);
 
       this.webgl.compose(this.albedoCanvas, this.normalCanvas, this.shadowCanvas, {
         width: W,
@@ -765,7 +783,8 @@ export class GameRenderer {
     const warm = this.getDuskWarmth(engine);
     if (this.isToneOn()) {
       const dayCol = cold ? { r: 0.49, g: 0.51, b: 0.48 } : { r: 0.46, g: 0.50, b: 0.44 };
-      const nightCol = cold ? { r: 0.132, g: 0.152, b: 0.176 } : { r: 0.11, g: 0.14, b: 0.17 };
+      // 深夜底光大幅压深（Darkwood 窒息级黑暗，手电/火把/吊灯成为唯一生命线）
+      const nightCol = cold ? { r: 0.068, g: 0.082, b: 0.104 } : { r: 0.058, g: 0.074, b: 0.094 };
       const duskTint = cold ? { r: 0.045, g: 0.012, b: -0.018 } : { r: 0.055, g: 0.01, b: -0.022 };
       return {
         r: clamp(lerp(dayCol.r, nightCol.r, night) + duskTint.r * warm, 0.02, 0.8),
@@ -3356,13 +3375,15 @@ export class GameRenderer {
     }
     const coldPalette = Variants.val.palette !== 'a';
     if (engine.generatorOn && engine.generatorFuel > 0) {
-      const sputter =
+      const baseSputter =
         engine.generatorFuel < 16
           ? Math.sin(engine.simTime * 24) > 0.35
             ? 0.32
             : 0.96
           : 0.96 + Math.sin(engine.simTime * 7.2) * 0.04;
-      const lampR = 248;
+      // 叠加黑夜电压骤降/噬影侵蚀闪烁系数
+      const sputter = baseSputter * clamp(engine.nightFlicker, 0.04, 1);
+      const lampR = 248 * (0.55 + 0.45 * clamp(engine.nightFlicker, 0.04, 1));
       for (let li = 0; li < SHELTER_LAMPS.length; li++) {
         const lamp = SHELTER_LAMPS[li];
         if (this.gpuLights.length >= maxLights) break;
@@ -3818,6 +3839,74 @@ export class GameRenderer {
     }
     ctx.globalAlpha = 1;
 
+    // 3b. 黑夜安全屋地板腐化菌斑与室内噬影侵蚀（世界空间，直接压在暗部之上确保威胁清晰可辨）
+    if (engine.nightSpores.length > 0) {
+      for (const sp of engine.nightSpores) {
+        const fade = clamp(Math.min(sp.life * 0.8, (sp.maxLife - sp.life) * 1.4), 0, 1);
+        const pulse = 0.88 + 0.12 * Math.sin(engine.simTime * 5.2 + sp.seed);
+        const rad = sp.r * pulse;
+        const g = ctx.createRadialGradient(sp.x, sp.y, rad * 0.12, sp.x, sp.y, rad);
+        g.addColorStop(0, `rgba(118, 22, 26, ${(0.78 * fade).toFixed(3)})`);
+        g.addColorStop(0.58, `rgba(62, 16, 22, ${(0.56 * fade).toFixed(3)})`);
+        g.addColorStop(1, 'rgba(24, 10, 12, 0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, rad, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 脉动暗红菌丝环与上升毒孢子微粒
+        ctx.strokeStyle = `rgba(176, 48, 42, ${(0.48 * fade).toFixed(3)})`;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, rad * 0.68, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = `rgba(164, 212, 118, ${(0.62 * fade).toFixed(3)})`;
+        for (let k = 0; k < 4; k++) {
+          const a = sp.seed + k * 1.57 + engine.simTime * 0.9;
+          const d = rad * (0.22 + 0.55 * ((k * 0.37 + engine.simTime * 0.35) % 1));
+          ctx.beginPath();
+          ctx.arc(sp.x + Math.cos(a) * d, sp.y + Math.sin(a) * d, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
+    if (engine.nightShadowSurge > 0 && engine.mode === 'play') {
+      const surgeA = clamp(engine.nightShadowSurge / 1.5, 0, 1);
+      const corners = [
+        [HIDEOUT_RECT.x + 28, HIDEOUT_RECT.y + 28],
+        [HIDEOUT_RECT.x + HIDEOUT_RECT.w - 28, HIDEOUT_RECT.y + 28],
+        [HIDEOUT_RECT.x + 28, HIDEOUT_RECT.y + HIDEOUT_RECT.h - 28],
+        [HIDEOUT_RECT.x + HIDEOUT_RECT.w - 28, HIDEOUT_RECT.y + HIDEOUT_RECT.h - 28],
+      ];
+      for (let ci = 0; ci < corners.length; ci++) {
+        const [cx0, cy0] = corners[ci];
+        const swayX = Math.sin(engine.simTime * 2.1 + ci * 1.9) * 14;
+        const swayY = Math.cos(engine.simTime * 1.8 + ci * 2.3) * 12;
+        const sx = cx0 + swayX;
+        const sy = cy0 + swayY;
+        const sg = ctx.createRadialGradient(sx, sy, 8, sx, sy, 84);
+        sg.addColorStop(0, `rgba(4, 3, 5, ${(0.86 * surgeA).toFixed(3)})`);
+        sg.addColorStop(1, 'rgba(4, 3, 5, 0)');
+        ctx.fillStyle = sg;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 84, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 暗影角落一闪而逝的猩红窥视双目
+        const blink = Math.sin(engine.simTime * 3.4 + ci * 2.7);
+        if (blink > 0.25) {
+          const ea = clamp((blink - 0.25) * 1.3 * surgeA, 0, 0.92);
+          ctx.fillStyle = `rgba(226, 46, 36, ${ea.toFixed(3)})`;
+          ctx.beginPath();
+          ctx.arc(sx - 4, sy, 1.8, 0, Math.PI * 2);
+          ctx.arc(sx + 4, sy, 1.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
     // 4. Dusk/Night Hideout Return Compass Arrow
     if (engine.mode === 'play' && (engine.phase === 'dusk' || engine.phase === 'night')) {
       const dHome = dist(engine.player.x, engine.player.y, 0, 0);
@@ -3851,7 +3940,9 @@ export class GameRenderer {
         snapPrompt.worldX,
         snapPrompt.worldY,
         snapPrompt.label,
-        engine.player.action.kind !== 'none' ? 0 : snapPrompt.progress
+        engine.player.action.kind !== 'none' ? 0 : snapPrompt.progress,
+        engine.isTouchUi,
+        engine.simTime
       );
     }
 
@@ -4765,9 +4856,11 @@ export class GameRenderer {
     }
 
     if (engine.generatorOn && engine.generatorFuel > 0) {
+      const nf = clamp(engine.nightFlicker, 0.04, 1);
+      const rLamp = 195 * (0.55 + 0.45 * nf);
       for (const lamp of SHELTER_LAMPS) {
-        computeVisibilityPolygon(engine.world, lamp.x, lamp.y, 195, this.lampPolyScratch);
-        punch(lamp.x, lamp.y, 195, this.lampPolyScratch, 0.95);
+        computeVisibilityPolygon(engine.world, lamp.x, lamp.y, rLamp, this.lampPolyScratch);
+        punch(lamp.x, lamp.y, rLamp, this.lampPolyScratch, 0.95 * nf);
       }
     }
 
@@ -7522,7 +7615,104 @@ export class GameRenderer {
     ctx.restore();
   }
 
-  /** 绘制每棵树独一无二的蜿蜒盘错地面树根（按 treeId 确定性生成，大树与被砍倒的树墩完全共享同一套根系） */
+  /** 首次按需预烘焙 8 套蜿蜒盘错的地面树根离屏精灵（192×192，基准树干半径 20px），大幅降低每帧 2D 路径光栅化耗时 */
+  private ensureTreeRootSprites(): HTMLCanvasElement[] {
+    if (this.treeRootSprites) return this.treeRootSprites;
+    const variants = 8;
+    const size = 192;
+    const half = size * 0.5;
+    const r = 20;
+    const list: HTMLCanvasElement[] = [];
+
+    for (let v = 0; v < variants; v++) {
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const g = c.getContext('2d');
+      if (g) {
+        const rng = createRng(((v + 1) * 7919 + 31337) >>> 0);
+        const rootCount = Math.max(6, Math.min(10, Math.round(7 + rng() * 3)));
+        g.save();
+        g.translate(half, half);
+        g.lineCap = 'round';
+        g.lineJoin = 'round';
+
+        for (let i = 0; i < rootCount; i++) {
+          const baseA = (i / rootCount) * Math.PI * 2 + (rng() - 0.5) * 0.52;
+          const totalLen = r * (1.55 + rng() * 1.75);
+          const w0 = Math.max(2.2, r * (0.2 + rng() * 0.14));
+          let cx = Math.cos(baseA) * (r * 0.58);
+          let cy = Math.sin(baseA) * (r * 0.58);
+          let a = baseA;
+          const segs = 4;
+
+          for (let s = 0; s < segs; s++) {
+            const t = s / segs;
+            const segLen = (totalLen / segs) * (0.76 + rng() * 0.5);
+            a += (rng() - 0.5) * (0.72 + t * 0.25);
+            const midA = a + (rng() - 0.5) * 0.45;
+            const mx = cx + Math.cos(midA) * segLen * 0.52;
+            const my = cy + Math.sin(midA) * segLen * 0.52;
+            const nx = cx + Math.cos(a) * segLen;
+            const ny = cy + Math.sin(a) * segLen;
+            const w = Math.max(0.75, w0 * Math.pow(1 - t * 0.72, 1.15));
+
+            // 贴地暗影
+            g.strokeStyle = 'rgba(5, 6, 5, 0.78)';
+            g.lineWidth = w + 1.8;
+            g.beginPath();
+            g.moveTo(cx + 1.2, cy + 1.6);
+            g.quadraticCurveTo(mx + 1.2, my + 1.6, nx + 1.0, ny + 1.4);
+            g.stroke();
+
+            // 树根主干本体
+            g.strokeStyle = s === 0 ? '#1d1914' : '#26211b';
+            g.lineWidth = w;
+            g.beginPath();
+            g.moveTo(cx, cy);
+            g.quadraticCurveTo(mx, my, nx, ny);
+            g.stroke();
+
+            // 根脊微弱受光纹理
+            if (w > 1.8) {
+              g.strokeStyle = 'rgba(84, 74, 58, 0.34)';
+              g.lineWidth = Math.max(0.6, w * 0.28);
+              g.beginPath();
+              g.moveTo(cx - 0.5, cy - 0.5);
+              g.quadraticCurveTo(mx - 0.5, my - 0.5, nx - 0.4, ny - 0.4);
+              g.stroke();
+            }
+
+            // 蜿蜒分叉的二级细根须
+            if (s >= 1 && s <= 2 && rng() < 0.68) {
+              const fa = a + (rng() > 0.5 ? 1 : -1) * (0.42 + rng() * 0.55);
+              const fl = segLen * (0.75 + rng() * 0.65);
+              const fmx = nx + Math.cos(fa + (rng() - 0.5) * 0.5) * fl * 0.52;
+              const fmy = ny + Math.sin(fa + (rng() - 0.5) * 0.5) * fl * 0.52;
+              const fnx = nx + Math.cos(fa) * fl;
+              const fny = ny + Math.sin(fa) * fl;
+              g.strokeStyle = 'rgba(10, 10, 9, 0.8)';
+              g.lineWidth = Math.max(0.7, w * 0.56);
+              g.beginPath();
+              g.moveTo(nx, ny);
+              g.quadraticCurveTo(fmx, fmy, fnx, fny);
+              g.stroke();
+            }
+
+            cx = nx;
+            cy = ny;
+          }
+        }
+        g.restore();
+      }
+      list.push(c);
+    }
+
+    this.treeRootSprites = list;
+    return list;
+  }
+
+  /** 绘制每棵树独一无二的蜿蜒盘错地面树根（按 treeId 选取预烘焙精灵并叠加镜像与旋转，大树与树墩完全一致） */
   private drawUniqueTreeRoots(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -7531,80 +7721,16 @@ export class GameRenderer {
     treeId: number,
     phase: number
   ) {
-    const rng = createRng((treeId * 7919 + 31337) >>> 0);
-    const rootCount = Math.max(5, Math.min(11, Math.round(5 + r * 0.28 + rng() * 2)));
+    const sprites = this.ensureTreeRootSprites();
+    const idx = ((treeId % sprites.length) + sprites.length) % sprites.length;
+    const sp = sprites[idx];
+    const scale = r / 20;
+    const halfDraw = (sp.width * 0.5) * scale;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(phase * 0.35);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    for (let i = 0; i < rootCount; i++) {
-      const baseA = (i / rootCount) * Math.PI * 2 + (rng() - 0.5) * 0.52;
-      const totalLen = r * (1.55 + rng() * 1.95);
-      const w0 = Math.max(2.1, r * (0.2 + rng() * 0.14));
-      let cx = Math.cos(baseA) * (r * 0.58);
-      let cy = Math.sin(baseA) * (r * 0.58);
-      let a = baseA;
-      const segs = 4;
-
-      for (let s = 0; s < segs; s++) {
-        const t = s / segs;
-        const segLen = (totalLen / segs) * (0.76 + rng() * 0.52);
-        a += (rng() - 0.5) * (0.72 + t * 0.25);
-        const midA = a + (rng() - 0.5) * 0.45;
-        const mx = cx + Math.cos(midA) * segLen * 0.52;
-        const my = cy + Math.sin(midA) * segLen * 0.52;
-        const nx = cx + Math.cos(a) * segLen;
-        const ny = cy + Math.sin(a) * segLen;
-        const w = Math.max(0.75, w0 * Math.pow(1 - t * 0.72, 1.15));
-
-        // 贴地暗影
-        ctx.strokeStyle = 'rgba(5, 6, 5, 0.78)';
-        ctx.lineWidth = w + 1.8;
-        ctx.beginPath();
-        ctx.moveTo(cx + 1.2, cy + 1.6);
-        ctx.quadraticCurveTo(mx + 1.2, my + 1.6, nx + 1.0, ny + 1.4);
-        ctx.stroke();
-
-        // 树根主干本体
-        ctx.strokeStyle = s === 0 ? '#1d1914' : '#26211b';
-        ctx.lineWidth = w;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.quadraticCurveTo(mx, my, nx, ny);
-        ctx.stroke();
-
-        // 根脊微弱受光纹理
-        if (w > 1.8) {
-          ctx.strokeStyle = 'rgba(84, 74, 58, 0.34)';
-          ctx.lineWidth = Math.max(0.6, w * 0.28);
-          ctx.beginPath();
-          ctx.moveTo(cx - 0.5, cy - 0.5);
-          ctx.quadraticCurveTo(mx - 0.5, my - 0.5, nx - 0.4, ny - 0.4);
-          ctx.stroke();
-        }
-
-        // 蜿蜒分叉的二级细根须
-        if (s >= 1 && s <= 2 && rng() < 0.68) {
-          const fa = a + (rng() > 0.5 ? 1 : -1) * (0.42 + rng() * 0.55);
-          const fl = segLen * (0.75 + rng() * 0.65);
-          const fmx = nx + Math.cos(fa + (rng() - 0.5) * 0.5) * fl * 0.52;
-          const fmy = ny + Math.sin(fa + (rng() - 0.5) * 0.5) * fl * 0.52;
-          const fnx = nx + Math.cos(fa) * fl;
-          const fny = ny + Math.sin(fa) * fl;
-          ctx.strokeStyle = 'rgba(10, 10, 9, 0.8)';
-          ctx.lineWidth = Math.max(0.7, w * 0.56);
-          ctx.beginPath();
-          ctx.moveTo(nx, ny);
-          ctx.quadraticCurveTo(fmx, fmy, fnx, fny);
-          ctx.stroke();
-        }
-
-        cx = nx;
-        cy = ny;
-      }
-    }
+    if ((treeId & 1) === 1) ctx.scale(-1, 1);
+    ctx.drawImage(sp, -halfDraw, -halfDraw, halfDraw * 2, halfDraw * 2);
     ctx.restore();
   }
 
@@ -7697,22 +7823,34 @@ export class GameRenderer {
     ctx.restore();
   }
 
-  /** 所见即所得的物理交互徽章：用专属图形符号 + 环形进度 + 极简按键角标替代大段文字条 */
+  /** 所见即所得的物理交互徽章：桌面端带极简 E 键角标，手机端改为可直点轻触呼吸光环 */
   private drawDiegeticPrompt(
     ctx: CanvasRenderingContext2D,
     x: number,
     y: number,
     labelKey: string,
-    progress: number
+    progress: number,
+    isTouchUi = false,
+    simTime = 0
   ) {
     ctx.save();
     const cy = y - 16;
-    const r = 18;
+    const r = isTouchUi ? 21 : 18;
+
+    // 手机端：外圈轻触呼吸提示波纹，直观表明“点一下即可交互”
+    if (isTouchUi) {
+      const pulse = 0.5 + 0.5 * Math.sin(simTime * 5.2);
+      ctx.strokeStyle = `rgba(232, 190, 108, ${(0.28 + 0.36 * pulse).toFixed(3)})`;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(x, cy, r + 4 + pulse * 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
     // 柔和外晕 + 蚀刻暗铜圆徽章
-    ctx.fillStyle = 'rgba(10, 9, 8, 0.84)';
-    ctx.strokeStyle = progress > 0.01 ? '#e8bc68' : 'rgba(216, 186, 130, 0.78)';
-    ctx.lineWidth = 1.8;
+    ctx.fillStyle = 'rgba(10, 9, 8, 0.86)';
+    ctx.strokeStyle = progress > 0.01 || isTouchUi ? '#e8bc68' : 'rgba(216, 186, 130, 0.78)';
+    ctx.lineWidth = isTouchUi ? 2.1 : 1.8;
     ctx.beginPath();
     ctx.arc(x, cy, r, 0, Math.PI * 2);
     ctx.fill();
@@ -7804,16 +7942,29 @@ export class GameRenderer {
     }
     ctx.restore();
 
-    // 右下角极简 E 键徽标
-    ctx.fillStyle = '#d8b463';
-    ctx.beginPath();
-    ctx.arc(x + r * 0.72, cy + r * 0.72, 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#12100d';
-    ctx.font = '700 9px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('E', x + r * 0.72, cy + r * 0.74);
+    // 桌面端显示极简 E 键徽标；手机端不显示键盘字母，改为精致暗金菱形触点提示
+    if (!isTouchUi) {
+      ctx.fillStyle = '#d8b463';
+      ctx.beginPath();
+      ctx.arc(x + r * 0.72, cy + r * 0.72, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#12100d';
+      ctx.font = '700 9px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('E', x + r * 0.72, cy + r * 0.74);
+    } else {
+      const dx = x;
+      const dy = cy + r + 1;
+      ctx.fillStyle = '#e8bc68';
+      ctx.beginPath();
+      ctx.moveTo(dx, dy - 3.5);
+      ctx.lineTo(dx + 3.5, dy);
+      ctx.lineTo(dx, dy + 3.5);
+      ctx.lineTo(dx - 3.5, dy);
+      ctx.closePath();
+      ctx.fill();
+    }
 
     // 外圈金色环形进度条
     if (progress > 0.01) {

@@ -231,6 +231,8 @@ export class GameEngine {
   static readonly DYING_END_T = DYING_END_T;
 
   world: WorldData;
+  /** 当前处于受击震动或倒下动画中的树木索引（避免 updateTrees 每帧遍历全图树木） */
+  private activeTreeIndices: number[] = [];
   mode: GameMode = 'title';
   simTime = 0;
   day = 1;
@@ -309,6 +311,8 @@ export class GameEngine {
   touchAimActive = false;
   touchSprint = false;
   touchInteract = false;
+  /** 是否处于手机/触控交互模式（由 App 层同步，用于交互徽章去 E 键帽与点击直触交互） */
+  isTouchUi = false;
 
   // Stats & counters
   containersLooted = 0;
@@ -326,6 +330,18 @@ export class GameEngine {
   dyingEnemies: LiveRing<DyingEnemy>;
   /** 超自然异象系统（逻辑由 haunts.ts 独占推进；渲染只读；自带种子，不消耗 this.rng） */
   haunts = new HauntSystem();
+  /** 黑夜安全屋电压稳定系数（1 = 正常，0.06..0.3 = 电压骤降/噬影侵蚀期剧烈闪烁） */
+  nightFlicker = 1;
+  /** 黑夜室内噬影侵蚀剩余秒数（>0 时室内骤暗并滋生暗影，无光源会持续受侵蚀掉血） */
+  nightShadowSurge = 0;
+  /** 安全屋地板渗出的黑夜腐化菌斑（踩中减速并持续毒蚀，逼迫屋内走位） */
+  nightSpores: Array<{ x: number; y: number; r: number; life: number; maxLife: number; seed: number }> = [];
+  private nightRng = createRng(91207);
+  private nightEventCd = 11;
+  private nightShadowTick = 0;
+  private nightSporeTick = 0;
+  private nightKnockQueue: number[] = [];
+  private lastNightEventKind = -1;
   /** 内心独白浮字队列（thoughts.ts 推进；渲染只读；自带种子，不消耗 this.rng） */
   thoughts = new ThoughtSystem();
   private crowRng = createRng(19847 ^ 0x2c5a);
@@ -620,6 +636,7 @@ export class GameEngine {
   reset(seed = 19847, startPlaying = false) {
     this.rng = createRng(seed);
     this.world = createWorld(seed);
+    this.activeTreeIndices.length = 0;
     this.simTime = 0;
     this.day = 1;
     this.dayTime = 0.08;
@@ -681,6 +698,15 @@ export class GameEngine {
     this.enemiesDefeated = 0;
     this.essenceCollected = 0;
     this.dangerLevel = 0;
+    this.nightFlicker = 1;
+    this.nightShadowSurge = 0;
+    this.nightSpores = [];
+    this.nightRng = createRng((seed * 2654435761 + 91207) >>> 0);
+    this.nightEventCd = 11;
+    this.nightShadowTick = 0;
+    this.nightSporeTick = 0;
+    this.nightKnockQueue = [];
+    this.lastNightEventKind = -1;
     this.draggedFurnitureId = null;
     this.relayInstalled = 0;
     this.endlessMode = false;
@@ -1135,6 +1161,9 @@ export class GameEngine {
       const chopDmg = isAxe ? (heavy ? 3 : 2) : heavy ? 2 : 1;
       t.hp = Math.max(0, curHp - chopDmg);
       t.hitShake = 0.28;
+      if (!this.activeTreeIndices.includes(i)) {
+        this.activeTreeIndices.push(i);
+      }
 
       this.spawnBurst(t.x, t.y, heavy || isAxe ? 14 : 9, 'wood', '#8c6841');
       this.crowAlarmAt(t.x, t.y, 260, true);
@@ -1816,6 +1845,7 @@ export class GameEngine {
 
     // 8. Enemies & Night Siege
     this.updateEnemies(dt);
+    this.updateNightHazards(dt);
     this.updateDyingEnemies(dt);
 
     // 8b. 乌鸦生态
@@ -2119,6 +2149,12 @@ export class GameEngine {
     for (const e of this.enemies) {
       e.state = 'flee_dawn';
     }
+    // 破晓驱散安全屋内的暗影侵蚀与地板腐菌
+    this.nightFlicker = 1;
+    this.nightShadowSurge = 0;
+    this.nightSpores.length = 0;
+    this.nightKnockQueue.length = 0;
+    this.nightEventCd = 11;
     // 过夜重生：所有已被砍倒变成树墩的树重新长成参天大树
     for (let i = 0; i < this.world.trees.length; i++) {
       const t = this.world.trees[i];
@@ -2156,11 +2192,19 @@ export class GameEngine {
     if (this.resourceGains.length > 5) this.resourceGains.shift();
   }
 
-  /** 推进树木受击震动与物理倒下动画，落地瞬间产生烟尘木屑、闷响与震屏 */
+  /** 推进树木受击震动与物理倒下动画，落地瞬间产生烟尘木屑、闷响与震屏（仅迭代活跃树索引，常态零遍历） */
   private updateTrees(dt: number) {
+    const active = this.activeTreeIndices;
+    if (active.length === 0) return;
     const trees = this.world.trees;
-    for (let i = 0; i < trees.length; i++) {
-      const t = trees[i];
+    for (let k = active.length - 1; k >= 0; k--) {
+      const idx = active[k];
+      const t = trees[idx];
+      if (!t) {
+        active[k] = active[active.length - 1];
+        active.pop();
+        continue;
+      }
       if (t.hitShake && t.hitShake > 0) {
         t.hitShake = Math.max(0, t.hitShake - dt);
       }
@@ -2186,6 +2230,12 @@ export class GameEngine {
           triggerXhsVibrate('heavy');
           this.emitRipple(impactX, impactY, 220, 'rgba(196, 168, 122, 0.5)');
         }
+      }
+      const stillShaking = Boolean(t.hitShake && t.hitShake > 0);
+      const stillFalling = Boolean(t.chopped && t.fallTimer !== undefined && t.fallTimer > 0 && t.fallTimer < 1);
+      if (!stillShaking && !stillFalling) {
+        active[k] = active[active.length - 1];
+        active.pop();
       }
     }
   }
@@ -3119,6 +3169,184 @@ export class GameEngine {
     });
   }
 
+  /**
+   * 致敬《Darkwood》原作的「安全屋可避险，但不安全」黑夜危机推进：
+   * 1) 电压骤降与室内噬影侵蚀（骤暗时必须开手电/点火把/照明弹，否则黑暗吞噬掉血）
+   * 2) 地板腐化菌斑渗出（逼迫在安全屋内不断走位，无法安心挂机）
+   * 3) 深夜三连重敲大门（心理压迫 + 门外催生窥伺威胁）
+   */
+  private updateNightHazards(dt: number) {
+    const p = this.player;
+    if (this.phase !== 'night') {
+      this.nightFlicker = expDecay(this.nightFlicker, 1, 6, dt);
+      this.nightShadowSurge = Math.max(0, this.nightShadowSurge - dt * 2.5);
+      for (let i = this.nightSpores.length - 1; i >= 0; i--) {
+        this.nightSpores[i].life -= dt * 3;
+        if (this.nightSpores[i].life <= 0) this.nightSpores.splice(i, 1);
+      }
+      return;
+    }
+
+    const inHideout = isPointInHideout(p.x, p.y);
+
+    // 1) 推进深夜三连叩门队列
+    for (let i = this.nightKnockQueue.length - 1; i >= 0; i--) {
+      this.nightKnockQueue[i] -= dt;
+      if (this.nightKnockQueue[i] <= 0) {
+        this.nightKnockQueue.splice(i, 1);
+        const doorX = 0;
+        const doorY = HIDEOUT_RECT.y + HIDEOUT_RECT.h;
+        AudioFX.playImpact('wood', {
+          worldX: doorX,
+          worldY: doorY,
+          listenerX: p.x,
+          listenerY: p.y,
+          muffled: inHideout,
+          maxDist: 780,
+        });
+        this.shake = Math.min(12, this.shake + 2.8);
+        this.emitRipple(doorX, doorY, 175, 'rgba(214, 92, 68, 0.62)');
+        triggerXhsVibrate('light');
+      }
+    }
+
+    // 2) 推进安全屋地板腐化菌斑（踩入即黏滞减速并持续毒蚀）
+    let steppedSpore = false;
+    for (let i = this.nightSpores.length - 1; i >= 0; i--) {
+      const sp = this.nightSpores[i];
+      sp.life -= dt;
+      if (sp.life <= 0) {
+        this.nightSpores.splice(i, 1);
+        continue;
+      }
+      if (this.mode === 'play' && dist(p.x, p.y, sp.x, sp.y) < sp.r + p.r * 0.45) {
+        steppedSpore = true;
+      }
+    }
+    if (steppedSpore) {
+      p.vx *= Math.exp(-5.5 * dt);
+      p.vy *= Math.exp(-5.5 * dt);
+      this.nightSporeTick += dt;
+      if (this.nightSporeTick >= 0.68) {
+        this.nightSporeTick = 0;
+        this.applyNightHazardDamage(4);
+        this.spawnBurst(p.x, p.y, 6, 'spore', '#8a3430');
+      }
+    } else {
+      this.nightSporeTick = 0;
+    }
+
+    // 3) 电压波动与室内噬影侵蚀
+    if (this.nightShadowSurge > 0) {
+      this.nightShadowSurge = Math.max(0, this.nightShadowSurge - dt);
+      const pulse = Math.sin(this.simTime * 31) * Math.cos(this.simTime * 17.3);
+      this.nightFlicker = pulse > 0.55 ? 0.34 : pulse > 0.15 ? 0.14 : 0.04;
+
+      if (this.mode === 'play' && inHideout) {
+        // 判断玩家是否有近身照明自保（手电 / 手持燃火把 / 附近照明弹或地上火把）
+        let hasLight =
+          (p.flashlightOn && p.battery > 0.5) ||
+          (this.equip.torchInHand && this.equip.torchLight > 0.15);
+        if (!hasLight) {
+          for (const f of this.flares) {
+            if (dist(p.x, p.y, f.x, f.y) < 190) {
+              hasLight = true;
+              break;
+            }
+          }
+        }
+        if (!hasLight) {
+          for (const gt of this.equip.groundTorches) {
+            if (gt.active && gt.flameH > 0.15 && dist(p.x, p.y, gt.x, gt.y) < 150) {
+              hasLight = true;
+              break;
+            }
+          }
+        }
+        if (!hasLight) {
+          this.nightShadowTick += dt;
+          if (this.nightShadowTick >= 0.95) {
+            this.nightShadowTick = 0;
+            this.applyNightHazardDamage(5);
+            this.shake = Math.min(10, this.shake + 2.2);
+            this.pushToast('黑暗正在吞噬你！立刻打开手电或点亮火把！', 'danger');
+          }
+        } else {
+          this.nightShadowTick = Math.max(0, this.nightShadowTick - dt * 0.8);
+        }
+      }
+    } else {
+      // 深夜常态电压轻微不稳（燃油偏低或有怪贴墙时更明显）
+      const stress = this.generatorFuel < 30 || this.dangerLevel > 55 ? 0.16 : 0.05;
+      const micro = 1 - stress * Math.max(0, Math.sin(this.simTime * 19.7) * Math.sin(this.simTime * 7.3));
+      this.nightFlicker = expDecay(this.nightFlicker, micro, 12, dt);
+      this.nightShadowTick = 0;
+    }
+
+    // 4) 周期性触发「安全屋内部黑夜事件」（仅在游玩态且玩家身处安全屋时触发）
+    if (this.mode !== 'play' || !inHideout) return;
+    this.nightEventCd -= dt;
+    if (this.nightEventCd > 0) return;
+
+    this.nightEventCd = Math.max(13, 21 - this.day * 1.5) + this.nightRng() * 7;
+    let kind = Math.floor(this.nightRng() * 3);
+    if (kind === this.lastNightEventKind) kind = (kind + 1) % 3;
+    this.lastNightEventKind = kind;
+
+    if (kind === 0) {
+      // 事件 1：电压骤降 + 室内噬影侵蚀
+      this.nightShadowSurge = 6.5 + this.nightRng() * 2.2;
+      AudioFX.playClick(false);
+      this.triggerDangerCrows(0, HIDEOUT_RECT.y - 40);
+      this.pushToast('灯泡剧烈闪烁！黑影正从屋角渗入——守住光源！', 'danger');
+      this.think('灯快撑不住了……别让黑暗围过来。');
+    } else if (kind === 1) {
+      // 事件 2：安全屋地板渗出腐化菌斑（避开玩家 64px 防止瞬间误伤）
+      const count = 2 + (this.day >= 2 ? 1 : 0);
+      let spawned = 0;
+      for (let tries = 0; tries < 18 && spawned < count; tries++) {
+        const sx = HIDEOUT_RECT.x + 56 + this.nightRng() * (HIDEOUT_RECT.w - 112);
+        const sy = HIDEOUT_RECT.y + 56 + this.nightRng() * (HIDEOUT_RECT.h - 112);
+        if (dist(sx, sy, p.x, p.y) < 68) continue;
+        this.nightSpores.push({
+          x: sx,
+          y: sy,
+          r: 30 + this.nightRng() * 12,
+          life: 14.5,
+          maxLife: 14.5,
+          seed: this.nightRng() * 100,
+        });
+        spawned++;
+      }
+      if (spawned > 0) {
+        this.pushToast('地板缝隙渗出暗红腐菌！留意脚下走位！', 'warn');
+        this.think('木板底下长出了什么东西……');
+      }
+    } else {
+      // 事件 3：深夜大门三连叩门 + 门外催生威胁
+      this.nightKnockQueue.push(0.05, 0.48, 0.94);
+      this.pushToast('门外响起了沉重而缓慢的三下敲门声……', 'danger');
+      this.think('别开门。外面不是人。');
+      if (this.enemies.length < Math.min(10, 4 + this.day * 2)) {
+        this.spawnEnemyAt((this.nightRng() - 0.5) * 90, HIDEOUT_RECT.y + HIDEOUT_RECT.h + 150, 'stalker', 1.8);
+      }
+    }
+  }
+
+  /** 黑夜暗影/腐菌等环境危机扣血（尊重闪避无敌帧并统一处理死亡切换） */
+  private applyNightHazardDamage(dmg: number) {
+    const p = this.player;
+    if (this.mode !== 'play' || p.dodgeInvuln > 0) return;
+    p.hp = Math.max(0, p.hp - dmg);
+    p.hitFlash = Math.max(p.hitFlash, 0.28);
+    AudioFX.playImpact('flesh');
+    triggerXhsVibrate('light');
+    if (p.hp <= 0) {
+      this.mode = 'dead';
+    }
+    this.emitHud();
+  }
+
   private updateDyingEnemies(dt: number) {
     for (let i = 0; i < this.dyingEnemies.count; i++) {
       const d = this.dyingEnemies.items[i];
@@ -3808,15 +4036,24 @@ export class GameEngine {
     const p = this.player;
 
     if (this.phase === 'night') {
-      const maxNightEnemies = Math.min(8, 3 + this.day * 2);
-      this.spawnTimer -= dt;
+      const maxNightEnemies = Math.min(10, 4 + this.day * 2);
+      const outsideMul = isPointInHideout(p.x, p.y) ? 1 : 1.38;
+      this.spawnTimer -= dt * outsideMul;
       if (this.spawnTimer <= 0 && this.enemies.length < maxNightEnemies) {
         this.spawnNightHorror();
-        this.spawnTimer = Math.max(5.5, 11 - this.day * 1.1);
+        this.spawnTimer = Math.max(4.0, 9.0 - this.day * 1.1);
       }
     }
 
-    let maxDanger = 0;
+    let maxDanger =
+      this.phase === 'night'
+        ? isPointInHideout(p.x, p.y)
+          ? 0.24
+          : 0.44
+        : 0;
+    if (this.nightShadowSurge > 0) {
+      maxDanger = Math.max(maxDanger, 0.82);
+    }
 
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
@@ -3962,10 +4199,10 @@ export class GameEngine {
               targetY = by;
               desiredSpeed = 0;
               if (e.attackCd <= 0) {
-                e.attackCd = e.kind === 'banshee' ? 1.0 : 1.35;
+                e.attackCd = e.kind === 'banshee' ? 0.88 : 1.15;
                 e.clawPhase = 1.0;
                 e.clawSide = -e.clawSide; // 双臂交替刮擦门板
-                const bDmg = e.kind === 'banshee' ? 28 : 16;
+                const bDmg = e.kind === 'banshee' ? 34 : 22;
                 bestBar.hp = Math.max(0, bestBar.hp - bDmg);
                 AudioFX.playImpact('wood', {
                   worldX: bx,

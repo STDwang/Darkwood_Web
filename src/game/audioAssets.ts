@@ -11,6 +11,9 @@ import rainDrip from '../assets/audio/rain_drip.webm';
 import rainRoof from '../assets/audio/rain_roof.webm';
 import thunder1 from '../assets/audio/thunder_1.webm';
 import thunder2 from '../assets/audio/thunder_2.webm';
+import sfxGunshot from '../assets/audio/sfx_gunshot.mp3';
+import sfxChopWood from '../assets/audio/sfx_chop_wood.mp3';
+import sfxHitFlesh from '../assets/audio/sfx_hit_flesh.mp3';
 
 AudioFX.registerRecordings({
   outdoorLight: rainLight,
@@ -19,4 +22,11 @@ AudioFX.registerRecordings({
   dripAfter: rainDrip,
   indoorRoof: rainRoof,
   thunder: [thunder1, thunder2],
+});
+
+// CC0 真实录制核心战斗与砍伐音效（捷克手枪实录 / 斧头砍木 / 肉体打击，已统一响度归一化）
+AudioFX.registerCombatSfx({
+  gunshot: sfxGunshot,
+  chopWood: sfxChopWood,
+  hitFlesh: sfxHitFlesh,
 });

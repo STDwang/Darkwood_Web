@@ -999,7 +999,7 @@ export function WorldMapView({
   return (
     <canvas
       ref={canvasRef}
-      className="block w-full h-[min(64vh,420px)] rounded border border-[#b8ae9c]/30 bg-[#14110d]"
+      className="worldmap-canvas block w-full rounded border border-[#b8ae9c]/30 bg-[#14110d]"
     />
   );
 }

@@ -27,6 +27,8 @@ import {
   PistolInkIcon,
   ReloadInkIcon,
   ResourceInkIcon,
+  SoulDivider,
+  SoulFrameCorners,
   TrapInkIcon,
   WeatherInkIcon,
 } from './components/InkIcons';
@@ -111,6 +113,9 @@ export default function App() {
       const coarse = window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window;
       const mobileLike = Boolean(coarse || shouldForceLandscape || Math.min(vw, vh) <= 520 || isMiniToolEnv());
       setIsTouch(mobileLike);
+      if (runtimeRef.current) {
+        runtimeRef.current.engine.isTouchUi = mobileLike;
+      }
       applyXhsWindowMetrics();
     };
 
@@ -214,6 +219,9 @@ export default function App() {
     const rt = new GameRuntime(canvas, () => {
       requestAnimationFrame(() => setVeilHidden(true));
     });
+    rt.engine.isTouchUi =
+      forceLandscapeRef.current ||
+      Boolean(window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window || isMiniToolEnv());
     runtimeRef.current = rt;
 
     rt.engine.setWorkbenchCallback(() => {
@@ -324,6 +332,23 @@ export default function App() {
       if (e.target !== canvas) return;
       AudioFX.unlock();
       if (e.button === 0) {
+        // 手机/触控模式下，先检测是否点中了世界中的物理交互徽章（点一下即可直接交互，不误触攻击）
+        if (rt.engine.isTouchUi) {
+          const prompt = rt.engine.getHudSnapshot().prompt;
+          if (prompt) {
+            const sx = forceLandscapeRef.current ? e.clientY : e.clientX - canvas.getBoundingClientRect().left;
+            const sy = forceLandscapeRef.current
+              ? window.innerWidth - e.clientX
+              : e.clientY - canvas.getBoundingClientRect().top;
+            const worldPt = rt.renderer.screenToWorld(sx, sy, rt.engine);
+            if (Math.hypot(worldPt.x - prompt.worldX, worldPt.y - (prompt.worldY - 16)) <= 62) {
+              rt.engine.triggerInstantInteract();
+              return;
+            }
+          }
+          // 手机端画面直接点地不触发挥砍（攻击走右侧大红按钮），避免误触
+          return;
+        }
         rt.engine.mouseDownLeft = true;
         rt.engine.beginAttackCharge();
       } else if (e.button === 2) {
@@ -493,8 +518,28 @@ export default function App() {
 
   return (
     <div id="app" className="bg-[#070807] text-[#e7e2d8]">
-      {/* 游戏画布：骨白圆环准星 CSS 光标（标题层/弹层覆盖画布时自动回到系统指针） */}
-      <canvas id="view" ref={canvasRef} className="block w-full h-full ember-cursor" />
+      {/* 游戏画布：骨白圆环准星 CSS 光标（手机端支持直接轻点场景中的物理交互徽章一键交互） */}
+      <canvas
+        id="view"
+        ref={canvasRef}
+        onPointerDown={(e) => {
+          if (!isTouch || e.pointerType === 'mouse') return;
+          const rt = runtimeRef.current;
+          if (!rt || rt.engine.mode !== 'play' || topLayer !== null) return;
+          AudioFX.unlock();
+          const prompt = rt.engine.getHudSnapshot().prompt;
+          if (!prompt) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const sx = forceLandscapeRef.current ? e.clientY : e.clientX - rect.left;
+          const sy = forceLandscapeRef.current ? window.innerWidth - e.clientX : e.clientY - rect.top;
+          const worldPt = rt.renderer.screenToWorld(sx, sy, rt.engine);
+          if (Math.hypot(worldPt.x - prompt.worldX, worldPt.y - (prompt.worldY - 16)) <= 66) {
+            e.stopPropagation();
+            rt.engine.triggerInstantInteract();
+          }
+        }}
+        className="block w-full h-full ember-cursor"
+      />
 
       {/* Smooth pitch-black #veil curtain */}
       <div
@@ -527,7 +572,7 @@ export default function App() {
                 {lang === 'zh' ? '东欧暗林恐怖生存 · 实时法线光影' : 'Eastern European Survival Horror'}
               </span>
               <div
-                className="flex items-center gap-3"
+                className="title-top-actions flex items-center gap-3"
                 style={{ marginTop: 'var(--xhs-cap-offset, 0px)' }}
               >
                 {isDev && (
@@ -1108,15 +1153,21 @@ export default function App() {
         </div>
       )}
 
-      {/* UNIFIED LAYER STACK MODALS（全窗口实物载体美术：旧纸页 / 牛皮卷轴 / 旧木工台+麻布袋 / 线装日记本 / 牛皮档案袋） */}
+      {/* UNIFIED LAYER STACK MODALS（类魂游实物载体美术：四角蚀刻雕花 / 渐隐暗金分隔纹 / 严格上下留白不顶边） */}
       {topLayer && (
         <div
-          className="fixed inset-0 z-30 flex items-center justify-center bg-black/68 backdrop-blur-[2px] p-4 sm:p-5"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-black/72 backdrop-blur-[2px]"
+          style={{
+            paddingLeft: 'max(16px, var(--gl))',
+            paddingRight: 'max(16px, var(--gr))',
+            paddingTop: 'max(16px, var(--gt))',
+            paddingBottom: 'max(16px, var(--gb))',
+          }}
           onClick={() => popLayer()}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className={`w-full ${topLayer === 'map' || topLayer === 'craft' ? 'max-w-xl' : 'max-w-lg'} max-h-[86vh] flex flex-col overflow-hidden carrier-sheet ${
+            className={`w-full ${topLayer === 'map' || topLayer === 'craft' ? 'max-w-xl' : 'max-w-lg'} max-h-full sm:max-h-[86vh] flex flex-col overflow-hidden carrier-sheet ${
               topLayer === 'map'
                 ? 'carrier-scroll'
                 : topLayer === 'craft'
@@ -1128,14 +1179,17 @@ export default function App() {
                 : 'carrier-dossier'
             }`}
           >
+            {/* 类魂游四角暗金雕花角饰 */}
+            <SoulFrameCorners />
+
             {/* 卷轴顶部木杆装饰（仅地图卷轴显示） */}
             {topLayer === 'map' && <div className="carrier-scroll__rod" aria-hidden="true" />}
 
             {/* Fixed Modal Header (zero position: sticky) */}
-            <div className="carrier-header flex items-center justify-between px-5 py-3.5 shrink-0">
+            <div className="carrier-header flex items-center justify-between px-5 py-3 shrink-0">
               <div className="flex items-center gap-2.5">
                 <span className="carrier-seal" aria-hidden="true" />
-                <h2 className="font-display text-lg font-semibold tracking-wider text-[#f0e6d2]">
+                <h2 className="font-display text-base sm:text-lg font-semibold tracking-[0.14em] text-[#f0e6d2]">
                   {topLayer === 'pause' && t('暂停')}
                   {topLayer === 'craft' && t('工作台')}
                   {topLayer === 'journal' && t('生存日志')}
@@ -1154,23 +1208,24 @@ export default function App() {
                 <X className="w-5 h-5" />
               </button>
             </div>
+            <SoulDivider className="px-4 shrink-0" />
 
             {/* Scrollable Body */}
-            <div className="ember-scroll overflow-y-auto px-5 py-4 flex-1 space-y-4">
+            <div className="carrier-body ember-scroll overflow-y-auto px-5 py-3.5 flex-1 space-y-3.5">
               {topLayer === 'pause' && (
-                <div className="flex flex-col gap-2.5">
+                <div className="soul-pause-grid flex flex-col gap-2">
                   <button
                     type="button"
                     onClick={() => clearLayers()}
-                    className="min-h-[46px] px-4 bg-[#b87b3b] hover:bg-[#cc8b46] text-[#110e0a] font-semibold text-sm rounded transition-colors flex items-center justify-center gap-2 whitespace-nowrap"
+                    className="soul-menuitem soul-menuitem--primary"
                   >
-                    <Play className="w-4 h-4 fill-current" />
+                    <Play className="w-3.5 h-3.5 fill-current text-[#e5be72]" />
                     <span>{t('继续求生')}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => pushLayer('journal')}
-                    className="min-h-[46px] px-4 border border-[#b8ae9c]/25 hover:border-[#d8be8a]/60 text-[#f0e6d2] text-sm font-medium rounded transition-colors flex items-center justify-center gap-2 whitespace-nowrap"
+                    className="soul-menuitem"
                   >
                     <BookOpen className="w-4 h-4 text-[#c8a974]" />
                     <span>{t('羊皮生存日志')}</span>
@@ -1178,7 +1233,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => pushLayer('craft')}
-                    className="min-h-[46px] px-4 border border-[#b8ae9c]/25 hover:border-[#d8be8a]/60 text-[#f0e6d2] text-sm font-medium rounded transition-colors flex items-center justify-center gap-2 whitespace-nowrap"
+                    className="soul-menuitem"
                   >
                     <Hammer className="w-4 h-4 text-[#d1a464]" />
                     <span>{t('工作台制作')}</span>
@@ -1186,44 +1241,42 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => pushLayer('settings')}
-                    className="min-h-[46px] px-4 border border-[#b8ae9c]/25 hover:border-[#d8be8a]/60 text-[#f0e6d2] text-sm font-medium rounded transition-colors flex items-center justify-center gap-2 whitespace-nowrap"
+                    className="soul-menuitem"
                   >
-                    <Settings className="w-4 h-4" />
+                    <Settings className="w-4 h-4 text-[#c4b49a]" />
                     <span>{t('设置')}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => pushLayer('controls')}
-                    className="min-h-[46px] px-4 border border-[#b8ae9c]/25 hover:border-[#d8be8a]/60 text-[#f0e6d2] text-sm font-medium rounded transition-colors whitespace-nowrap"
+                    className="soul-menuitem"
                   >
-                    {t('操作说明')}
+                    <span>{t('操作说明')}</span>
                   </button>
-                  <div className="pt-2 border-t border-[#b8ae9c]/15 grid grid-cols-2 gap-2.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        clearLayers();
-                        runtimeRef.current?.engine.reset(
-                          (runtimeRef.current.engine.world.seed + 7) % 99991,
-                          true
-                        );
-                      }}
-                      className="min-h-[44px] px-4 border border-[#b8ae9c]/20 hover:border-[#c95347]/60 text-[#d8c7c4] text-sm rounded transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>{t('重新开始')}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        clearLayers();
-                        runtimeRef.current?.engine.reset(19847, false);
-                      }}
-                      className="min-h-[44px] px-4 border border-[#b8ae9c]/20 hover:border-[#b8ae9c]/50 text-[#b8ae9c] text-sm rounded transition-colors whitespace-nowrap"
-                    >
-                      {t('回到标题')}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearLayers();
+                      runtimeRef.current?.engine.reset(
+                        (runtimeRef.current.engine.world.seed + 7) % 99991,
+                        true
+                      );
+                    }}
+                    className="soul-menuitem soul-menuitem--danger text-[#d8c2bc]"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>{t('重新开始')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearLayers();
+                      runtimeRef.current?.engine.reset(19847, false);
+                    }}
+                    className="soul-menuitem text-[#b8ae9c]"
+                  >
+                    <span>{t('回到标题')}</span>
+                  </button>
                 </div>
               )}
 
@@ -1518,11 +1571,12 @@ export default function App() {
               )}
             </div>
 
-            <div className="carrier-footer px-5 py-3 flex justify-end shrink-0">
+            <SoulDivider className="px-4 shrink-0" />
+            <div className="carrier-footer px-5 py-2.5 flex justify-end shrink-0">
               <button
                 type="button"
                 onClick={() => popLayer()}
-                className="min-h-[44px] px-5 text-sm text-[#ddd0b8] hover:text-white border border-[#c9b38a]/35 bg-black/25 rounded-xs transition-colors whitespace-nowrap"
+                className="soul-menuitem min-h-[44px] px-6 text-sm"
               >
                 {t('返回')}
               </button>
@@ -1533,10 +1587,19 @@ export default function App() {
         </div>
       )}
 
-      {/* VICTORY SUMMARY: 破雾撤离通关结算（金色火漆封缄手抄信笺） */}
+      {/* VICTORY SUMMARY: 破雾撤离通关结算（类魂游金色火漆封缄手抄信笺） */}
       {hud?.mode === 'victory' && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs p-5">
-          <div className="w-full max-w-md p-6 text-center space-y-5 carrier-sheet carrier-parchment carrier-parchment--gold">
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs"
+          style={{
+            paddingLeft: 'max(16px, var(--gl))',
+            paddingRight: 'max(16px, var(--gr))',
+            paddingTop: 'max(16px, var(--gt))',
+            paddingBottom: 'max(16px, var(--gb))',
+          }}
+        >
+          <div className="w-full max-w-md max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center space-y-4 carrier-sheet carrier-parchment carrier-parchment--gold">
+            <SoulFrameCorners />
             <div className="flex justify-center">
               <Sun className="w-9 h-9 text-[#dfb763]" />
             </div>
@@ -1603,10 +1666,19 @@ export default function App() {
         </div>
       )}
 
-      {/* GAME OVER SUMMARY（血染遗书手稿纸页） */}
+      {/* GAME OVER SUMMARY（类魂游血染遗书手稿纸页） */}
       {hud?.mode === 'dead' && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs p-5">
-          <div className="w-full max-w-md p-6 text-center space-y-5 carrier-sheet carrier-parchment carrier-parchment--blood">
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs"
+          style={{
+            paddingLeft: 'max(16px, var(--gl))',
+            paddingRight: 'max(16px, var(--gr))',
+            paddingTop: 'max(16px, var(--gt))',
+            paddingBottom: 'max(16px, var(--gb))',
+          }}
+        >
+          <div className="w-full max-w-md max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center space-y-4 carrier-sheet carrier-parchment carrier-parchment--blood">
+            <SoulFrameCorners />
             <div className="flex justify-center">
               <ShieldAlert className="w-9 h-9 text-[#c95347]" />
             </div>

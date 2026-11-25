@@ -477,6 +477,18 @@ class SoundEngine {
   private recThunder: AudioBuffer[] = [];
   /** 室内屋顶木质 EQ 链入口（程序化木瓦层与录音篷顶层共用） */
   private roofIn: BiquadFilterNode | null = null;
+  /** 动作瞬间雨声闪避增益（独立于 updateAmbience 的 rainBus/roofOut，避免参数调度冲突） */
+  private rainDuckGain: GainNode | null = null;
+  private roofDuckGain: GainNode | null = null;
+
+  // —— 真实 CC0 战斗音效采样（手枪 / 斧头砍木 / 肉体打击，归一化至 -12 LUFS） ——
+  private combatSfxUrls: { gunshot?: string; chopWood?: string; hitFlesh?: string } | null = null;
+  private combatSfxLoading = false;
+  private combatSfxBuf: {
+    gunshot: AudioBuffer | null;
+    chopWood: AudioBuffer | null;
+    hitFlesh: AudioBuffer | null;
+  } = { gunshot: null, chopWood: null, hitFlesh: null };
 
   // —— 身体反馈（常驻链，每帧只做参数平滑，不分配节点） ——
   /** 身体总线：呼吸/心跳/耳鸣/憋气，骨传导感——不经低血量低通；增益与主增益同步跟随静音/切后台 */
@@ -640,8 +652,9 @@ class SoundEngine {
         this.setupBodyBeds(ctx);
         this.setupToolBeds(ctx);
         this.initialized = true;
-        // 已登记的录音在上下文就绪后开始异步解码（不阻塞初始化）
+        // 已登记的录音与战斗采样在上下文就绪后开始异步解码（不阻塞初始化）
         this.startRecordingLoad();
+        this.startCombatSfxLoad();
       } catch {
         // 初始化失败：释放半成品上下文，下次交互再重试
         const failed = this.ctx;
@@ -1510,16 +1523,20 @@ class SoundEngine {
     rainTone.frequency.setValueAtTime(9500, now);
     rainTone.Q.setValueAtTime(0, now);
     rainBus.connect(rainTone);
+    const rainDuckGain = ctx.createGain();
+    rainDuckGain.gain.setValueAtTime(1, now);
+    rainTone.connect(rainDuckGain);
     if (typeof ctx.createStereoPanner === 'function') {
       const rp = ctx.createStereoPanner();
       rp.pan.setValueAtTime(0, now);
-      rainTone.connect(rp);
+      rainDuckGain.connect(rp);
       rp.connect(outBus);
       this.rainPan = rp;
     } else {
-      rainTone.connect(outBus);
+      rainDuckGain.connect(outBus);
     }
     this.rainBus = rainBus;
+    this.rainDuckGain = rainDuckGain;
 
     if (this.pinkBuf) {
       // 1. 森林寒风低频底噪
@@ -1675,16 +1692,20 @@ class SoundEngine {
       roofBody.gain.setValueAtTime(3, now);
       const roofOut = ctx.createGain();
       roofOut.gain.setValueAtTime(1, now);
+      const roofDuckGain = ctx.createGain();
+      roofDuckGain.gain.setValueAtTime(1, now);
       roofLP.connect(roofPeak);
       roofPeak.connect(roofBody);
       roofBody.connect(roofOut);
-      roofOut.connect(master);
+      roofOut.connect(roofDuckGain);
+      roofDuckGain.connect(master);
       if (this.hutIn) {
         const roofSend = ctx.createGain();
         roofSend.gain.setValueAtTime(0.38, now);
-        roofOut.connect(roofSend);
+        roofDuckGain.connect(roofSend);
         roofSend.connect(this.hutIn);
       }
+      this.roofDuckGain = roofDuckGain;
       const rRates = [0.982, 1.021];
       this.roofLayers = [];
       for (let i = 0; i < 2; i++) {
@@ -3187,6 +3208,8 @@ class SoundEngine {
     const white = this.whiteBuf;
     if (!ctx || !master || !pink || !white || this.muted || this.pageHidden) return;
     const now = ctx.currentTime;
+    // 挥砍瞬间压低雨声，确保破空声与枪声/命中处于同一响度级并盖过暴雨
+    this.duckRainForAction(heavy ? 0.22 : 0.28, heavy ? 0.22 : 0.14, 0.34);
     const shot = new OneShot();
     const bus: AudioNode = this.nearBus ?? master;
     const jit = rnd(0.92, 1.08);
@@ -3196,41 +3219,42 @@ class SoundEngine {
     const peakT = now + dur * (heavy ? 0.45 : 0.4);
     const end = now + dur;
 
-    const out = this.amp(ctx, shot, 1, now);
+    const out = this.amp(ctx, shot, 1.35, now);
+    const dest = this.wrapCombatComp(ctx, shot, bus, now);
     if (typeof ctx.createStereoPanner === 'function') {
       const p = shot.add(ctx.createStereoPanner());
       p.pan.setValueAtTime(-0.45 * this.swingSide, now);
       p.pan.linearRampToValueAtTime(0.5 * this.swingSide, end);
       out.connect(p);
-      p.connect(bus);
+      p.connect(dest);
     } else {
-      out.connect(bus);
+      out.connect(dest);
     }
 
-    // 1. 破空主体
+    // 1. 破空主体（强化前景峰值，与枪声对齐响度）
     const f0 = (heavy ? 300 : 520) * jit;
-    const fPk = (heavy ? 900 : 1500) * jit;
+    const fPk = (heavy ? 920 : 1520) * jit;
     const fEnd = (heavy ? 160 : 300) * jit;
     const src = this.noiseSource(ctx, shot, pink, now, dur + 0.05);
-    const bp = this.filt(ctx, shot, 'bandpass', f0, heavy ? 1.1 : 1.5, now);
+    const bp = this.filt(ctx, shot, 'bandpass', f0, heavy ? 1.05 : 1.4, now);
     bp.frequency.exponentialRampToValueAtTime(fPk, peakT);
     bp.frequency.exponentialRampToValueAtTime(fEnd, end);
     const g = this.amp(ctx, shot, 0.0001, now);
-    const pk = heavy ? 0.36 : 0.24;
-    g.gain.exponentialRampToValueAtTime(pk * 0.22, now + (peakT - now) * 0.55);
+    const pk = heavy ? 1.05 : 0.85;
+    g.gain.exponentialRampToValueAtTime(pk * 0.28, now + (peakT - now) * 0.52);
     g.gain.exponentialRampToValueAtTime(pk, peakT);
     g.gain.exponentialRampToValueAtTime(0.0001, end + 0.02);
     src.connect(bp);
     bp.connect(g);
     g.connect(out);
 
-    // 2. "咻"哨音：窄带通沿同一多普勒曲线
+    // 2. "咻"哨音：窄带通沿同一多普勒曲线（切开雨幕的高频锋利感）
     const ws = this.noiseSource(ctx, shot, white, now, dur + 0.05);
-    const wbp = this.filt(ctx, shot, 'bandpass', f0 * 2.4, 8, now);
+    const wbp = this.filt(ctx, shot, 'bandpass', f0 * 2.4, 7, now);
     wbp.frequency.exponentialRampToValueAtTime(fPk * 2.2, peakT);
     wbp.frequency.exponentialRampToValueAtTime(fEnd * 2.6, end);
     const wg = this.amp(ctx, shot, 0.0001, now);
-    wg.gain.exponentialRampToValueAtTime(heavy ? 0.12 : 0.1, peakT);
+    wg.gain.exponentialRampToValueAtTime(heavy ? 0.36 : 0.28, peakT);
     wg.gain.exponentialRampToValueAtTime(0.0001, end);
     ws.connect(wbp);
     wbp.connect(wg);
@@ -3240,17 +3264,17 @@ class SoundEngine {
     const cl = this.noiseSource(ctx, shot, white, now, 0.12);
     const cbp = this.filt(ctx, shot, 'bandpass', rnd(2200, 3200), 0.9, now);
     const cg = this.amp(ctx, shot, 0.0001, now);
-    this.perc(cg.gain, now, heavy ? 0.05 : 0.035, 0.012, 0.08);
+    this.perc(cg.gain, now, heavy ? 0.14 : 0.1, 0.012, 0.08);
     cl.connect(cbp);
     cbp.connect(cg);
-    cg.connect(bus);
+    cg.connect(dest);
 
     if (heavy) {
       // 4. 推开空气的低频"轰"
       const sub = this.oscSource(ctx, shot, 'sine', 120 * jit, now, end + 0.05);
       sub.frequency.exponentialRampToValueAtTime(42, end);
       const sg = this.amp(ctx, shot, 0.0001, now);
-      sg.gain.exponentialRampToValueAtTime(0.22, peakT);
+      sg.gain.exponentialRampToValueAtTime(0.58, peakT);
       sg.gain.exponentialRampToValueAtTime(0.0001, end + 0.03);
       sub.connect(sg);
       sg.connect(out);
@@ -3259,10 +3283,10 @@ class SoundEngine {
       const low = this.noiseSource(ctx, shot, pink, lt, 0.26);
       const llp = this.filt(ctx, shot, 'lowpass', 260, 0.9, lt);
       const lg = this.amp(ctx, shot, 0.0001, lt);
-      this.perc(lg.gain, lt, 0.2, 0.04, 0.18);
+      this.perc(lg.gain, lt, 0.45, 0.04, 0.18);
       low.connect(llp);
       llp.connect(lg);
-      lg.connect(bus);
+      lg.connect(dest);
     }
     shot.seal();
   }
@@ -3425,9 +3449,42 @@ class SoundEngine {
     const jitter = 0.9 + Math.random() * 0.2;
 
     if (kind === 'flesh') {
+      if (scale >= 0.3) this.duckRainForAction(0.24, 0.16, 0.32);
+      const fleshBuf = this.combatSfxBuf.hitFlesh;
+      if (fleshBuf) {
+        const heavy = now - this.lastHeavySwingAt < 0.6;
+        const dest = this.wrapCombatComp(ctx, shot, route.input, now);
+        this.playSampleOneShot(ctx, shot, fleshBuf, dest, (heavy ? 1.65 : 1.48) * scale, heavy ? rnd(0.88, 0.96) : rnd(0.95, 1.05), now);
+        // 补一层极短低频胸腔闷击增强命中重量感
+        const th = this.oscSource(ctx, shot, 'sine', (heavy ? 88 : 112) * jitter, now, now + 0.15);
+        th.frequency.exponentialRampToValueAtTime(38, now + 0.12);
+        const tg = this.amp(ctx, shot, 0.0001, now);
+        this.perc(tg.gain, now, (heavy ? 0.36 : 0.24) * scale, 0.002, 0.1);
+        th.connect(tg);
+        tg.connect(dest);
+        shot.seal();
+        return;
+      }
       this.impactFlesh(ctx, shot, route.input, scale, now);
       shot.seal();
       return;
+    }
+
+    if (kind === 'wood') {
+      if (scale >= 0.3) this.duckRainForAction(0.24, 0.16, 0.32);
+      const woodBuf = this.combatSfxBuf.chopWood;
+      if (woodBuf) {
+        const dest = this.wrapCombatComp(ctx, shot, route.input, now);
+        this.playSampleOneShot(ctx, shot, woodBuf, dest, 1.55 * scale, rnd(0.92, 1.08), now);
+        const reverbIn = this.listenerIndoor ? this.hutIn : this.forestIn;
+        if (reverbIn) {
+          const send = this.amp(ctx, shot, 0.28 * scale, now);
+          dest.connect(send);
+          send.connect(reverbIn);
+        }
+        shot.seal();
+        return;
+      }
     }
 
     const startFreq = kind === 'metal' ? 620 : kind === 'wood' ? 195 : 140;
@@ -5168,6 +5225,95 @@ class SoundEngine {
     this.startRecordingLoad();
   }
 
+  /**
+   * 登记真实 CC0 战斗音效采样（由 audioAssets.ts / audioAssets.minitool.ts 注入，经 loudnorm -12 LUFS 统一响度）。
+   * 未就绪或解码失败时自动回退至内置程序化合成，确保零阻塞与离线小工具合规。
+   */
+  registerCombatSfx(urls: { gunshot?: string; chopWood?: string; hitFlesh?: string }): void {
+    if (!urls || typeof urls !== 'object') return;
+    this.combatSfxUrls = urls;
+    this.startCombatSfxLoad();
+  }
+
+  /** 异步解码已登记的真实战斗采样（仅执行一次） */
+  private startCombatSfxLoad(): void {
+    const ctx = this.ctx;
+    const urls = this.combatSfxUrls;
+    if (!ctx || !this.initialized || !urls || this.combatSfxLoading) return;
+    this.combatSfxLoading = true;
+    const load = (u: string | undefined): Promise<AudioBuffer | null> =>
+      this.urlToArrayBuffer(typeof u === 'string' ? u : '')
+        .then((ab) => this.decodeBuffer(ctx, ab))
+        .catch(() => null);
+    Promise.all([load(urls.gunshot), load(urls.chopWood), load(urls.hitFlesh)])
+      .then(([gunshot, chopWood, hitFlesh]) => {
+        if (gunshot) this.combatSfxBuf.gunshot = gunshot;
+        if (chopWood) this.combatSfxBuf.chopWood = chopWood;
+        if (hitFlesh) this.combatSfxBuf.hitFlesh = hitFlesh;
+      })
+      .catch(() => {
+        // 静默回退至程序化合成
+      });
+  }
+
+  /**
+   * 动作瞬间雨声闪避：在开枪 / 挥砍 / 砍中瞬间 12ms 内把室外与屋顶雨声压低至 depth，
+   * 维持 holdSec 后经 releaseSec 平滑恢复，让前景动作声在发声一瞬稳稳盖过暴雨。
+   */
+  private duckRainForAction(depth = 0.24, holdSec = 0.16, releaseSec = 0.34): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const d = clamp(depth, 0.12, 0.85);
+    const apply = (node: GainNode | null) => {
+      if (!node) return;
+      const g = node.gain;
+      const cur = clamp(g.value, 0.1, 1);
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(cur, now);
+      g.linearRampToValueAtTime(Math.min(cur, d), now + 0.012);
+      g.setValueAtTime(Math.min(cur, d), now + 0.012 + holdSec);
+      g.linearRampToValueAtTime(1, now + 0.012 + holdSec + releaseSec);
+    };
+    apply(this.rainDuckGain);
+    apply(this.roofDuckGain);
+  }
+
+  /** 为前景动作/战斗音挂接统一软压缩，确保枪声、砍怪、砍树、挥砍处于同一响度级且绝不削波 */
+  private wrapCombatComp(ctx: AudioContext, shot: OneShot, out: AudioNode, now: number): AudioNode {
+    if (typeof ctx.createDynamicsCompressor !== 'function') return out;
+    const comp = shot.add(ctx.createDynamicsCompressor());
+    comp.threshold.setValueAtTime(-9, now);
+    comp.knee.setValueAtTime(12, now);
+    comp.ratio.setValueAtTime(5.5, now);
+    comp.attack.setValueAtTime(0.001, now);
+    comp.release.setValueAtTime(0.11, now);
+    comp.connect(out);
+    return comp;
+  }
+
+  /** 一次性播放已解码的真实采样缓冲并纳入 OneShot 回收链 */
+  private playSampleOneShot(
+    ctx: AudioContext,
+    shot: OneShot,
+    buf: AudioBuffer,
+    out: AudioNode,
+    gainVal: number,
+    rate: number,
+    t: number
+  ): void {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const r = clamp(rate, 0.5, 2);
+    src.playbackRate.setValueAtTime(r, t);
+    const dur = buf.duration / r;
+    shot.src(src, t + dur + 0.03);
+    const g = this.amp(ctx, shot, gainVal, t);
+    src.connect(g);
+    g.connect(out);
+    src.start(t);
+  }
+
   /** 录音层混入进度（0 = 纯程序化，1 = 录音全量）：解码完成后 2s 平滑交叉 */
   private recMixK(now: number): number {
     if (!this.recReady) return 0;
@@ -5407,41 +5553,37 @@ class SoundEngine {
     shot.addAll(route.nodes);
     const d01 = route.dist01;
     const scale = clamp(route.gainScale, 0.1, 1);
+    // 开枪瞬间大幅压低雨声，确保枪声穿透暴雨
+    if (own || d01 < 0.65) {
+      this.duckRainForAction(0.18, 0.24, 0.42);
+    }
     const out: AudioNode = own ? this.nearOut(ctx, shot, 0.05) : route.input;
     const srcIndoor = spatial && spatial.muffled ? !this.listenerIndoor : this.listenerIndoor;
-    const v = scale * rnd(0.96, 1.1);
-    // 枪声响度翻倍 + 柔和压缩限幅（确保响亮震耳而不削波失真）
-    const mix = this.amp(ctx, shot, own ? 3.1 : 2.5, now);
-    if (typeof ctx.createDynamicsCompressor === 'function') {
-      const comp = shot.add(ctx.createDynamicsCompressor());
-      comp.threshold.setValueAtTime(-10, now);
-      comp.knee.setValueAtTime(12, now);
-      comp.ratio.setValueAtTime(6, now);
-      comp.attack.setValueAtTime(0.001, now);
-      comp.release.setValueAtTime(0.12, now);
-      mix.connect(comp);
-      comp.connect(out);
-    } else {
-      mix.connect(out);
-    }
+    const v = scale * rnd(0.96, 1.06);
+    const gunshotBuf = this.combatSfxBuf.gunshot;
+    const dest = this.wrapCombatComp(ctx, shot, out, now);
+    const mix = this.amp(ctx, shot, gunshotBuf ? (own ? 1.55 : 1.35) : own ? 3.1 : 2.5, now);
+    mix.connect(dest);
 
-    // 1) 超强穿透爆裂瞬态 + 高频火药裂响 + 中频爆燃体（让手枪枪声干脆震耳、极具威慑力）
-    this.nburst(ctx, shot, mix, white, now, 0.0002, 0.006, 'highpass', 1400, 0.55, 1.15 * v);
-    this.nburst(ctx, shot, mix, white, now + 0.001, 0.0005, 0.045, 'bandpass', 2400, 0.9, 0.92 * v);
-    const bf = this.nburst(ctx, shot, mix, pink, now, 0.0006, 0.11, 'lowpass', 4200, 0.65, 0.88 * v);
-    bf.frequency.exponentialRampToValueAtTime(620, now + 0.12);
-    // 2) 重低频胸腔冲击（双重下潜正弦 + 褐噪轰鸣）
-    this.tone(ctx, shot, mix, 'sine', now, 185, 38, 0.001, 0.16, 0.85 * v);
-    this.tone(ctx, shot, mix, 'triangle', now, 340, 88, 0.0008, 0.075, 0.45 * v);
-    this.nburst(ctx, shot, mix, brown, now, 0.0015, 0.18, 'lowpass', 240, 0.85, 0.92 * v);
-    // 3) 击锤/套筒金属后坐复进（清晰清脆的金属回响）
-    if (d01 < 0.75) {
-      const mk = (1 - d01) * v;
-      this.mechClick(ctx, shot, mix, now + 0.003, 0.28 * mk, 3200, 0.022);
-      this.mechClick(ctx, shot, mix, now + rnd(0.026, 0.038), 0.22 * mk, 2500, 0.036);
+    if (gunshotBuf) {
+      // 使用真实 CC0 手枪采样（经 -12 LUFS 归一化，与挥砍/砍怪/砍树同一响度级）
+      this.playSampleOneShot(ctx, shot, gunshotBuf, mix, v, rnd(0.96, 1.04), now);
+    } else {
+      // 未就绪时的程序化回退
+      this.nburst(ctx, shot, mix, white, now, 0.0002, 0.006, 'highpass', 1400, 0.55, 1.15 * v);
+      this.nburst(ctx, shot, mix, white, now + 0.001, 0.0005, 0.045, 'bandpass', 2400, 0.9, 0.92 * v);
+      const bf = this.nburst(ctx, shot, mix, pink, now, 0.0006, 0.11, 'lowpass', 4200, 0.65, 0.88 * v);
+      bf.frequency.exponentialRampToValueAtTime(620, now + 0.12);
+      this.tone(ctx, shot, mix, 'sine', now, 185, 38, 0.001, 0.16, 0.85 * v);
+      this.tone(ctx, shot, mix, 'triangle', now, 340, 88, 0.0008, 0.075, 0.45 * v);
+      this.nburst(ctx, shot, mix, brown, now, 0.0015, 0.18, 'lowpass', 240, 0.85, 0.92 * v);
+      if (d01 < 0.75) {
+        const mk = (1 - d01) * v;
+        this.mechClick(ctx, shot, mix, now + 0.003, 0.28 * mk, 3200, 0.022);
+        this.mechClick(ctx, shot, mix, now + rnd(0.026, 0.038), 0.22 * mk, 2500, 0.036);
+      }
+      this.nburst(ctx, shot, mix, pink, now + 0.085, 0.015, 0.32, 'bandpass', 1100, 0.8, 0.34 * v);
     }
-    // 4) 远林枪声尾韵回响（延迟 90ms 再补一层冷冽林间反射）
-    this.nburst(ctx, shot, mix, pink, now + 0.085, 0.015, 0.32, 'bandpass', 1100, 0.8, 0.34 * v);
     // 5) 送入声源所在空间混响（大量）
     const reverbIn = srcIndoor ? this.hutIn : this.forestIn;
     if (reverbIn) {

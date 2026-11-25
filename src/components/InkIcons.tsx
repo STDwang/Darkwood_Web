@@ -325,3 +325,34 @@ export function FlameInkIcon({ className = 'w-4 h-4' }: IconProps) {
     </svg>
   );
 }
+
+/** 类魂游暗金蚀刻四角雕花装饰（用于全部实体载体窗口，零外链纯 SVG） */
+export function SoulFrameCorners() {
+  const corner = (cls: string) => (
+    <svg viewBox="0 0 28 28" fill="none" className={`soul-corner ${cls}`} aria-hidden="true">
+      <path d="M2 26V8C2 4.5 4.5 2 8 2H26" stroke="#c8a468" strokeWidth="1.4" strokeOpacity="0.82" />
+      <path d="M6 22V9.5C6 7.5 7.5 6 9.5 6H22" stroke="#8f7044" strokeWidth="0.9" strokeOpacity="0.65" />
+      <path d="M9 9L13 5L11 11L5 13Z" fill="#d9b472" fillOpacity="0.72" />
+      <circle cx="5.2" cy="5.2" r="1.4" fill="#e6c888" fillOpacity="0.85" />
+    </svg>
+  );
+  return (
+    <>
+      {corner('soul-corner--tl')}
+      {corner('soul-corner--tr')}
+      {corner('soul-corner--bl')}
+      {corner('soul-corner--br')}
+    </>
+  );
+}
+
+/** 类魂游水平渐隐暗金菱形分隔线 */
+export function SoulDivider({ className = '' }: { className?: string }) {
+  return (
+    <div className={`soul-divider ${className}`} aria-hidden="true">
+      <span className="soul-divider__line" />
+      <span className="soul-divider__gem" />
+      <span className="soul-divider__line soul-divider__line--r" />
+    </div>
+  );
+}

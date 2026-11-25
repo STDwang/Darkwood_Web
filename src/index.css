@@ -68,21 +68,22 @@ html.force-landscape #app {
   height: 100vw;
   transform: rotate(90deg);
   transform-origin: top left;
-  /* 物理竖屏顶部(状态栏/小红书原生胶囊)旋转后变为横屏右侧，留足安全区；物理底部变为横屏左侧 */
-  --gl: max(22px, var(--sb));
-  --gr: max(56px, var(--st));
+  /* 顺时针旋转 90° 后：物理竖屏顶部(时间状态栏 + 刘海 + 小红书胶囊 ... ◎，底边约 86–94px)变为横屏左侧(--gl)；
+     物理竖屏底部(Home Indicator 细条)变为横屏右侧(--gr) */
+  --gl: max(96px, calc(var(--st) + 52px), calc(var(--xhs-cap-offset, 0px) + 52px));
+  --gr: max(28px, var(--sb));
   --gt: 12px;
   --gb: 12px;
 }
 
 /* 手机触控双摇杆与动作集群定位（自动避让左右安全区与底部快捷键栏） */
 .touch-stick--move {
-  left: calc(var(--gl) + 4px);
-  bottom: calc(var(--gb) + 72px);
+  left: calc(var(--gl) + 6px);
+  bottom: calc(var(--gb) + 66px);
 }
 .touch-cluster {
-  right: calc(var(--gr) + 4px);
-  bottom: calc(var(--gb) + 72px);
+  right: calc(var(--gr) + 6px);
+  bottom: calc(var(--gb) + 66px);
 }
 
 .font-display {
@@ -1420,7 +1421,41 @@ button.paper-hud:hover {
   }
 }
 
-/* 强制横屏（竖屏容器旋转 90° 后逻辑高度即原竖屏宽度 390px）直接套用与横屏手机一致的紧凑横屏 HUD */
+/* 强制横屏（竖屏容器旋转 90° 后逻辑高度即原竖屏宽度 390px）直接套用与横屏手机一致的紧凑横屏 HUD，并避让物理顶部胶囊与状态栏 */
+html.force-landscape .title-top-actions {
+  margin-top: 0 !important;
+}
+html.force-landscape .carrier-sheet {
+  max-height: calc(100% - 14px) !important;
+  max-width: min(520px, calc(100% - 16px)) !important;
+}
+html.force-landscape .carrier-sheet.carrier-scroll,
+html.force-landscape .carrier-sheet.carrier-workbench {
+  max-width: min(560px, calc(100% - 16px)) !important;
+}
+html.force-landscape .carrier-header {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+html.force-landscape .carrier-footer {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+html.force-landscape .carrier-body {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+html.force-landscape .worldmap-canvas {
+  height: 186px !important;
+}
+html.force-landscape .soul-pause-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+html.force-landscape .soul-pause-grid > .soul-menuitem--primary {
+  grid-column: 1 / -1;
+}
 html.force-landscape .hud2-bottom {
   grid-template-columns: 1fr auto 1fr;
   grid-template-areas: "vit qb res";
@@ -1432,40 +1467,40 @@ html.force-landscape .hud2-tr {
   margin-top: 0;
 }
 html.force-landscape .hud2-minimap {
-  width: 96px;
-  height: 96px;
+  width: 90px;
+  height: 90px;
 }
 html.force-landscape .hud2-keyhints {
   display: none;
 }
 html.force-landscape .hud2-bar {
-  width: 138px;
+  width: 118px;
 }
 html.force-landscape .hud2-bar--hp {
-  height: 14px;
+  height: 13px;
 }
 html.force-landscape .hud2-bar--st {
-  height: 8px;
+  height: 7px;
 }
 html.force-landscape .hud2-slot {
-  width: 50px;
-  height: 50px;
+  width: 46px;
+  height: 46px;
 }
 html.force-landscape .hud2-slot__svg {
-  width: 25px;
-  height: 25px;
+  width: 22px;
+  height: 22px;
 }
 html.force-landscape .hud2-res {
-  column-gap: 7px;
-  max-width: 205px;
+  column-gap: 6px;
+  max-width: 192px;
 }
 html.force-landscape .hud2-res__item {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 html.force-landscape .hud2-toasts {
-  bottom: calc(var(--gb) + 66px);
-  width: min(52vw, 380px);
+  bottom: calc(var(--gb) + 62px);
+  width: min(52vh, 360px);
 }
 @media (max-width: 639px) {
   .hud2-tr {
@@ -1691,23 +1726,128 @@ html.force-landscape .hud2-toasts {
 }
 
 /* ================================================================
- * 全窗口实物载体美术系统（旧纸页 / 牛皮卷轴 / 旧木工台+麻布袋 / 线装日记本 / 牛皮档案袋）
+ * 全窗口类魂游实物载体美术系统（暗金蚀刻角饰 / 羊皮纸 / 牛皮卷轴 / 旧木工台 / 线装日记本 / 牛皮档案袋）
  * ================================================================ */
+.worldmap-canvas {
+  height: min(54vh, 380px);
+}
+@media (max-height: 500px) {
+  .worldmap-canvas {
+    height: 186px;
+  }
+  .carrier-sheet {
+    max-height: calc(100% - 14px);
+  }
+  .carrier-header {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .carrier-footer {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .soul-pause-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .soul-pause-grid > .soul-menuitem--primary {
+    grid-column: 1 / -1;
+  }
+}
+
 .carrier-sheet {
   position: relative;
-  border-radius: 3px;
+  border-radius: 2px;
   box-shadow:
-    0 22px 54px rgba(0, 0, 0, 0.85),
-    0 0 0 1px rgba(10, 8, 6, 0.95),
-    inset 0 0 38px rgba(0, 0, 0, 0.52);
+    0 24px 60px rgba(0, 0, 0, 0.9),
+    0 0 0 1px rgba(8, 6, 4, 0.96),
+    inset 0 0 0 1px rgba(210, 174, 114, 0.14),
+    inset 0 0 42px rgba(0, 0, 0, 0.62);
 }
+/* 类魂游四角蚀刻雕花 SVG 定位 */
+.soul-corner {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  z-index: 4;
+}
+.soul-corner--tl { top: 4px; left: 4px; }
+.soul-corner--tr { top: 4px; right: 4px; transform: scaleX(-1); }
+.soul-corner--bl { bottom: 4px; left: 4px; transform: scaleY(-1); }
+.soul-corner--br { bottom: 4px; right: 4px; transform: scale(-1, -1); }
+
+/* 类魂游渐隐菱形分隔线 */
+.soul-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  pointer-events: none;
+}
+.soul-divider__line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(196, 162, 104, 0.55));
+}
+.soul-divider__line--r {
+  background: linear-gradient(90deg, rgba(196, 162, 104, 0.55), transparent);
+}
+.soul-divider__gem {
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+  background: #cfa763;
+  box-shadow: 0 0 8px rgba(207, 167, 99, 0.6);
+  flex-shrink: 0;
+}
+
+/* 类魂游菜单项：暗黑半透蚀刻条 + 渐变暗金细框 + 菱形余烬点 */
+.soul-menuitem {
+  position: relative;
+  min-height: 44px;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13.5px;
+  letter-spacing: 0.08em;
+  color: #e4dac4;
+  background: linear-gradient(90deg, rgba(16, 13, 10, 0.15), rgba(26, 21, 15, 0.84) 22%, rgba(26, 21, 15, 0.84) 78%, rgba(16, 13, 10, 0.15));
+  border-top: 1px solid rgba(186, 154, 102, 0.24);
+  border-bottom: 1px solid rgba(186, 154, 102, 0.24);
+  border-left: 1px solid rgba(186, 154, 102, 0.12);
+  border-right: 1px solid rgba(186, 154, 102, 0.12);
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease;
+  white-space: nowrap;
+}
+.soul-menuitem:hover,
+.soul-menuitem:active {
+  color: #f7ecd4;
+  border-color: rgba(226, 186, 114, 0.72);
+  background: linear-gradient(90deg, rgba(168, 118, 52, 0.06), rgba(168, 118, 52, 0.26) 50%, rgba(168, 118, 52, 0.06));
+}
+.soul-menuitem--primary {
+  color: #f6e7c8;
+  font-weight: 600;
+  border-top: 1px solid rgba(224, 180, 104, 0.72);
+  border-bottom: 1px solid rgba(224, 180, 104, 0.72);
+  background: linear-gradient(90deg, rgba(168, 110, 42, 0.08), rgba(168, 110, 42, 0.34) 50%, rgba(168, 110, 42, 0.08));
+  box-shadow: inset 0 0 18px rgba(212, 154, 72, 0.14);
+}
+.soul-menuitem--danger:hover,
+.soul-menuitem--danger:active {
+  border-color: rgba(201, 83, 71, 0.72);
+  background: linear-gradient(90deg, rgba(168, 52, 42, 0.06), rgba(168, 52, 42, 0.24) 50%, rgba(168, 52, 42, 0.06));
+}
+
 .carrier-header {
-  border-bottom: 1px dashed rgba(196, 168, 120, 0.3);
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.28), transparent);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.08));
 }
 .carrier-footer {
-  border-top: 1px dashed rgba(196, 168, 120, 0.24);
-  background: linear-gradient(0deg, rgba(0, 0, 0, 0.28), transparent);
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.08));
 }
 /* 火漆蜡封角徽 */
 .carrier-seal {
