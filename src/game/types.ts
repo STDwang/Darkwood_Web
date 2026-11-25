@@ -109,6 +109,19 @@ export interface TreeObstacle {
   canopyR: number;
   hueShift: number;
   phase: number;
+  /** 当前耐久（砍伐用，默认 3；砍倒后为 0，过夜破晓自动重生） */
+  hp?: number;
+  maxHp?: number;
+  /** 是否已被砍倒为树墩（过夜后重生为完整大树） */
+  chopped?: boolean;
+  /** 受击震动计时（秒） */
+  hitShake?: number;
+  /** 物理倒下动画进度 0..1（0=未开始或已重生，0<t<1=正在倾倒，>=1=已倒下成树墩） */
+  fallTimer?: number;
+  /** 倒下方向角（弧度） */
+  fallAngle?: number;
+  /** 倒地砸尘特效是否已触发 */
+  fallDecalDone?: boolean;
 }
 
 export interface RockObstacle {
@@ -430,6 +443,21 @@ export interface InteractPrompt {
   hold: boolean;
 }
 
+export type ResourceGainKind =
+  | ResourceKey
+  | 'flares'
+  | 'bandages'
+  | 'traps'
+  | 'ammo'
+  | 'relayParts';
+
+export interface ResourceGainEvent {
+  id: number;
+  kind: ResourceGainKind;
+  amount: number;
+  timer: number;
+}
+
 export interface ToastMessage {
   id: number;
   text: string;
@@ -462,6 +490,8 @@ export interface HudSnapshot {
   activeSlot: number;
   prompt: InteractPrompt | null;
   toasts: ToastMessage[];
+  /** 顶部滚动显示的资源获取事件队列 */
+  resourceGains: ResourceGainEvent[];
   containersLooted: number;
   totalContainers: number;
   enemiesDefeated: number;

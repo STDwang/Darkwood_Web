@@ -813,3 +813,193 @@ export default function Minimap({ runtimeRef, exploreRef, className }: MinimapPr
     />
   );
 }
+
+/**
+ * 真实世界探索大地图（按 M 或手机端点击右上角小地图直接展开）
+ * 复用同一套探索迷雾网格（exploreRef）与世界墨图，清晰呈现玩家走过的范围、庇护所、已发现地标与中继零件。
+ */
+export function WorldMapView({
+  runtimeRef,
+  exploreRef,
+}: {
+  runtimeRef: { current: GameRuntime | null };
+  exploreRef: { current: MinimapExploreState | null };
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let raf = 0;
+    let last = 0;
+    let bakedWorld: WorldData | null = null;
+    let ink: HTMLCanvasElement | null = null;
+    let fog: HTMLCanvasElement | null = null;
+    let layer: HTMLCanvasElement | null = null;
+
+    const draw = (now: number) => {
+      raf = window.requestAnimationFrame(draw);
+      if (now - last < 120) return;
+      last = now;
+
+      const engine = runtimeRef.current?.engine;
+      if (!engine || !engine.world) return;
+      const world = engine.world;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const cssW = Math.max(200, Math.round(canvas.clientWidth || 460));
+      const cssH = Math.max(200, Math.round(canvas.clientHeight || 320));
+      const W = Math.round(cssW * dpr);
+      const H = Math.round(cssH * dpr);
+      if (canvas.width !== W || canvas.height !== H) {
+        canvas.width = W;
+        canvas.height = H;
+        layer = makeCanvas(W, H);
+      }
+
+      if (!exploreRef.current) exploreRef.current = createExploreState();
+      const st = exploreRef.current;
+      if (st.world !== world) {
+        st.world = world;
+        st.grid.fill(0);
+        revealAt(st, HIDEOUT_RECT.x + HIDEOUT_RECT.w * 0.5, HIDEOUT_RECT.y + HIDEOUT_RECT.h * 0.5, 420);
+        st.dirty = true;
+      }
+      const px = engine.player.x;
+      const py = engine.player.y;
+      revealAt(st, px, py, 320);
+
+      if (bakedWorld !== world || !ink) {
+        bakedWorld = world;
+        ink = bakeWorldInk(world);
+      }
+      if (!fog) fog = makeCanvas(GRID, GRID);
+      const fctx = fog.getContext('2d');
+      if (fctx) {
+        const img = fctx.createImageData(GRID, GRID);
+        const data = img.data;
+        const g = st.grid;
+        for (let i = 0; i < g.length; i++) {
+          data[i * 4 + 3] = g[i];
+        }
+        fctx.putImageData(img, 0, 0);
+      }
+
+      const viewSpan = Math.min(WORLD_SIZE, 4400);
+      const scale = Math.min(W, H) / viewSpan;
+      const offX = W * 0.5;
+      const offY = H * 0.5;
+      const toX = (wx: number) => offX + wx * scale;
+      const toY = (wy: number) => offY + wy * scale;
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#18140f';
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.strokeStyle = 'rgba(184, 158, 118, 0.08)';
+      ctx.lineWidth = 1 * dpr;
+      const step = 600 * scale;
+      for (let gx = offX % step; gx < W; gx += step) {
+        ctx.beginPath();
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, H);
+        ctx.stroke();
+      }
+      for (let gy = offY % step; gy < H; gy += step) {
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(W, gy);
+        ctx.stroke();
+      }
+
+      if (layer && ink && fog) {
+        const lctx = layer.getContext('2d');
+        if (lctx) {
+          lctx.setTransform(1, 0, 0, 1, 0, 0);
+          lctx.globalCompositeOperation = 'source-over';
+          lctx.clearRect(0, 0, W, H);
+          lctx.fillStyle = '#9c8b6d';
+          lctx.fillRect(0, 0, W, H);
+          const dx = toX(-HALF);
+          const dy = toY(-HALF);
+          const dw = WORLD_SIZE * scale;
+          const dh = WORLD_SIZE * scale;
+          lctx.imageSmoothingEnabled = true;
+          lctx.drawImage(ink, dx, dy, dw, dh);
+          lctx.globalCompositeOperation = 'destination-in';
+          lctx.imageSmoothingQuality = 'high';
+          lctx.drawImage(fog, dx, dy, dw, dh);
+          lctx.globalCompositeOperation = 'source-over';
+          ctx.drawImage(layer, 0, 0);
+        }
+      }
+
+      const hx = HIDEOUT_RECT.x + HIDEOUT_RECT.w * 0.5;
+      const hy = HIDEOUT_RECT.y + HIDEOUT_RECT.h * 0.5;
+      ctx.strokeStyle = '#e5c176';
+      ctx.lineWidth = 1.6 * dpr;
+      ctx.strokeRect(toX(HIDEOUT_RECT.x), toY(HIDEOUT_RECT.y), HIDEOUT_RECT.w * scale, HIDEOUT_RECT.h * scale);
+      drawHouse(ctx, toX(hx), toY(hy), 12 * dpr);
+
+      const discovered = engine.discoveredZones;
+      for (const poi of world.poiCenters ?? []) {
+        if (!discovered || !discovered.has(poi.name)) continue;
+        const meta = POI_GLYPH[poi.name];
+        const mx = toX(poi.x);
+        const my = toY(poi.y);
+        drawPoiGlyph(ctx, meta ? meta.kind : 'other', mx, my, 12 * dpr);
+        const short = meta ? I18n.t(meta.short) : poi.name.slice(0, 3);
+        drawLabel(ctx, short, mx, my + 10 * dpr, 10 * dpr);
+      }
+
+      const tSec = performance.now() / 1000;
+      for (const rn of world.relayNodes ?? []) {
+        const known = (discovered && discovered.has(rn.zone)) || exploredAt(st, rn.x, rn.y) > 120;
+        if (!known) continue;
+        const mx = toX(rn.x);
+        const my = toY(rn.y);
+        ctx.save();
+        if (!rn.collected) {
+          const pulse = 0.55 + 0.45 * Math.sin(tSec * 2.8);
+          ctx.strokeStyle = `rgba(116, 224, 202, ${(0.6 + pulse * 0.35).toFixed(3)})`;
+          ctx.lineWidth = 1.8 * dpr;
+          ctx.beginPath();
+          ctx.arc(mx, my, (5.5 + pulse * 2) * dpr, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = '#7ad8c5';
+          ctx.beginPath();
+          ctx.arc(mx, my, 2.4 * dpr, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.strokeStyle = '#7ad8c5';
+          ctx.lineWidth = 2 * dpr;
+          ctx.beginPath();
+          ctx.moveTo(mx - 4 * dpr, my);
+          ctx.lineTo(mx - 1 * dpr, my + 3.5 * dpr);
+          ctx.lineTo(mx + 4.5 * dpr, my - 3.5 * dpr);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      drawPlayerArrow(ctx, toX(px), toY(py), engine.player.angle, 9 * dpr);
+
+      ctx.fillStyle = 'rgba(235, 220, 188, 0.72)';
+      ctx.font = `700 ${11 * dpr}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('N', W * 0.5, 16 * dpr);
+    };
+
+    raf = window.requestAnimationFrame(draw);
+    return () => window.cancelAnimationFrame(raf);
+  }, [runtimeRef, exploreRef]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="block w-full h-[min(64vh,420px)] rounded border border-[#b8ae9c]/30 bg-[#14110d]"
+    />
+  );
+}

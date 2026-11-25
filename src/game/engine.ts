@@ -60,6 +60,8 @@ import {
   RainDrop,
   RainRipple,
   RelayNode,
+  ResourceGainEvent,
+  ResourceGainKind,
   ResourceKey,
   SoundRipple,
   TimePhase,
@@ -275,6 +277,9 @@ export class GameEngine {
   traps: BearTrap[] = [];
   flares: ActiveFlare[] = [];
   toasts: ToastMessage[] = [];
+  resourceGains: ResourceGainEvent[] = [];
+  private nextGainId = 1;
+  private crowDangerCd = 0;
 
   particles: LiveRing<Particle>;
   ripples: LiveRing<SoundRipple>;
@@ -653,6 +658,8 @@ export class GameEngine {
     this.traps = [];
     this.flares = [];
     this.toasts = [];
+    this.resourceGains = [];
+    this.crowDangerCd = 0;
     this.seesawActivity.clear();
     this.seesawLitSec.clear();
     this.corpseTriggered.clear();
@@ -882,6 +889,8 @@ export class GameEngine {
     // 夜袭怪物自带 1.4s - 2.4s 门窗外窥伺试探期，杜绝入夜秒杀
     const stalkDuration = 1.4 + this.rng() * 1.0;
     this.spawnEnemyAt(x, y, kind, stalkDuration);
+    // 危险前兆：怪物生成方位惊起乌鸦并伴随明亮鸦啼警示
+    this.triggerDangerCrows(x, y);
   }
 
   // --- Player Actions ---
@@ -1107,6 +1116,49 @@ export class GameEngine {
       triggerXhsVibrate(heavy ? 'heavy' : 'medium');
       this.emitRipple(p.x, p.y, heavy ? 175 : 135, 'rgba(214, 108, 92, 0.52)');
     }
+
+    // 伐木斧 / 近战砍树：命中扇区内未倒下的树木，产生木屑飞溅与震动，耐久归零后物理倒下并掉落木材
+    const chopReach = reach + 16;
+    let choppedHit = false;
+    for (let i = 0; i < this.world.trees.length; i++) {
+      const t = this.world.trees[i];
+      if (t.chopped) continue;
+      const d = dist(p.x, p.y, t.x, t.y);
+      if (d > chopReach + t.trunkR) continue;
+      const toTree = Math.atan2(t.y - p.y, t.x - p.x);
+      if (Math.abs(angleDiff(p.angle, toTree)) > arcHalf) continue;
+
+      choppedHit = true;
+      const maxHp = t.maxHp ?? (t.trunkR > 20 ? 4 : 3);
+      t.maxHp = maxHp;
+      const curHp = t.hp ?? maxHp;
+      const chopDmg = isAxe ? (heavy ? 3 : 2) : heavy ? 2 : 1;
+      t.hp = Math.max(0, curHp - chopDmg);
+      t.hitShake = 0.28;
+
+      this.spawnBurst(t.x, t.y, heavy || isAxe ? 14 : 9, 'wood', '#8c6841');
+      this.crowAlarmAt(t.x, t.y, 260, true);
+
+      if (t.hp <= 0) {
+        t.chopped = true;
+        t.fallTimer = 0.001;
+        t.fallAngle = toTree + (this.rng() - 0.5) * 0.3;
+        t.fallDecalDone = false;
+        const woodGain = t.trunkR > 19 ? 3 : 2;
+        this.inv.wood += woodGain;
+        this.pushResourceGain('wood', woodGain);
+        this.emitHud();
+      }
+      break;
+    }
+
+    if (choppedHit && !hitSomething) {
+      this.hitStop = heavy ? 0.05 : 0.032;
+      this.shake = Math.min(14, this.shake + (heavy || isAxe ? 6.5 : 4.0));
+      AudioFX.playImpact('wood', this.makeSpatial(p.x, p.y, 480));
+      triggerXhsVibrate(heavy || isAxe ? 'medium' : 'light');
+      this.emitRipple(p.x, p.y, 150, 'rgba(186, 152, 108, 0.45)');
+    }
   }
 
   throwFlare() {
@@ -1216,10 +1268,19 @@ export class GameEngine {
       this.inv[k] -= needed;
     }
 
-    if (recipe.id === 'bandage') this.inv.bandages += 1;
-    else if (recipe.id === 'flare') this.inv.flares += 2;
-    else if (recipe.id === 'trap') this.inv.traps += 1;
-    else if (recipe.id === 'cell') this.inv.battery += 1;
+    if (recipe.id === 'bandage') {
+      this.inv.bandages += 1;
+      this.pushResourceGain('bandages', 1);
+    } else if (recipe.id === 'flare') {
+      this.inv.flares += 2;
+      this.pushResourceGain('flares', 2);
+    } else if (recipe.id === 'trap') {
+      this.inv.traps += 1;
+      this.pushResourceGain('traps', 1);
+    } else if (recipe.id === 'cell') {
+      this.inv.battery += 1;
+      this.pushResourceGain('battery', 1);
+    }
     else if (recipe.id === 'axe') {
       this.inv.weaponTier = 2;
       this.pushToast('武器已升级为锈蚀伐木斧！', 'loot');
@@ -1257,6 +1318,7 @@ export class GameEngine {
     if (relay) {
       relay.collected = true;
       this.inv.relayParts++;
+      this.pushResourceGain('relayParts', 1);
       AudioFX.playRelayChime(false);
       this.spawnBurst(relay.x, relay.y, 14, 'spark', '#7ad8c5');
       this.emitRipple(relay.x, relay.y, 130, 'rgba(122, 216, 197, 0.48)');
@@ -1653,6 +1715,16 @@ export class GameEngine {
       this.pushToast('南门外传来急促的挠门与脚步声……先搜刮门口背包，必要时拖家具堵门！', 'warn');
     }
 
+    // 0b. 更新树木受击震动与物理倒下动画
+    this.updateTrees(dt);
+
+    // 0c. 衰减资源顶部滚动队列与危险鸦啼冷却
+    if (this.crowDangerCd > 0) this.crowDangerCd = Math.max(0, this.crowDangerCd - dt);
+    for (let i = this.resourceGains.length - 1; i >= 0; i--) {
+      this.resourceGains[i].timer -= dt;
+      if (this.resourceGains[i].timer <= 0) this.resourceGains.splice(i, 1);
+    }
+
     // 衰减家具受击闪烁
     for (let i = 0; i < this.world.movables.length; i++) {
       const m = this.world.movables[i];
@@ -2010,6 +2082,8 @@ export class GameEngine {
           '林中的雾气彻底化为墨色，门窗外传来指甲刮擦木板的刺耳声响。守住灯光，撑到天亮。'
         );
         this.spawnTimer = 2.0;
+        // 危险前兆：夜幕降临，乌鸦群掠过发出明亮预警啼叫
+        this.triggerDangerCrows(this.player.x + 280, this.player.y - 180);
       }
       this.emitHud();
     }
@@ -2045,12 +2119,160 @@ export class GameEngine {
     for (const e of this.enemies) {
       e.state = 'flee_dawn';
     }
+    // 过夜重生：所有已被砍倒变成树墩的树重新长成参天大树
+    for (let i = 0; i < this.world.trees.length; i++) {
+      const t = this.world.trees[i];
+      if (t.chopped) {
+        t.chopped = false;
+        t.hp = t.maxHp ?? (t.trunkR > 20 ? 4 : 3);
+        t.fallTimer = 0;
+        t.hitShake = 0;
+        t.fallDecalDone = false;
+      }
+    }
     // 白昼鸦群重新落地（3–6 群，远离玩家）
     this.crowTargetFlocks = 3 + Math.floor(this.crowRng() * 4);
     for (let k = 0, tries = 0; k < this.crowTargetFlocks && tries < this.crowTargetFlocks * 3; tries++) {
       if (this.spawnCrowFlock(420)) k++;
     }
     this.crowRespawnTimer = 16 + this.crowRng() * 18;
+  }
+
+  /** 推送顶部滚动资源获取事件（合并同类极近事件，最多保留 5 条） */
+  private pushResourceGain(kind: ResourceGainKind, amount: number) {
+    if (amount <= 0) return;
+    const existing = this.resourceGains.find((g) => g.kind === kind && g.timer > 2.2);
+    if (existing) {
+      existing.amount += amount;
+      existing.timer = 2.8;
+      return;
+    }
+    this.resourceGains.push({
+      id: this.nextGainId++,
+      kind,
+      amount,
+      timer: 2.8,
+    });
+    if (this.resourceGains.length > 5) this.resourceGains.shift();
+  }
+
+  /** 推进树木受击震动与物理倒下动画，落地瞬间产生烟尘木屑、闷响与震屏 */
+  private updateTrees(dt: number) {
+    const trees = this.world.trees;
+    for (let i = 0; i < trees.length; i++) {
+      const t = trees[i];
+      if (t.hitShake && t.hitShake > 0) {
+        t.hitShake = Math.max(0, t.hitShake - dt);
+      }
+      if (t.chopped && t.fallTimer !== undefined && t.fallTimer > 0 && t.fallTimer < 1) {
+        t.fallTimer = Math.min(1, t.fallTimer + dt / 1.05);
+        if (t.fallTimer >= 1 && !t.fallDecalDone) {
+          t.fallDecalDone = true;
+          const fa = t.fallAngle ?? 0;
+          const impactX = t.x + Math.cos(fa) * (t.canopyR * 0.95);
+          const impactY = t.y + Math.sin(fa) * (t.canopyR * 0.95);
+          this.spawnBurst(impactX, impactY, 16, 'dust', '#6b6252');
+          this.spawnBurst(impactX, impactY, 10, 'wood', '#7d5c3a');
+          this.pushDecal({
+            kind: 'wood',
+            x: impactX,
+            y: impactY,
+            angle: fa,
+            scale: 1.35,
+            seed: this.rng() * 100,
+          });
+          this.shake = Math.min(16, this.shake + 7.5);
+          AudioFX.playImpact('wood', this.makeSpatial(impactX, impactY, 620));
+          triggerXhsVibrate('heavy');
+          this.emitRipple(impactX, impactY, 220, 'rgba(196, 168, 122, 0.5)');
+        }
+      }
+    }
+  }
+
+  /** 危险前兆乌鸦预警：部分乌鸦飞落到角色附近的树冠上盯梢并抖羽鸣叫，部分从危险方位掠过，伴随明亮穿透的乌鸦急啼 */
+  private triggerDangerCrows(dangerX: number, dangerY: number) {
+    if (this.mode !== 'play' || this.crowDangerCd > 0) return;
+    this.crowDangerCd = 4.8;
+    const p = this.player;
+    const r = this.crowRng;
+    const baseAng = Math.atan2(p.y - dangerY, p.x - dangerX);
+    const startDist = 280;
+    const sx0 = p.x - Math.cos(baseAng) * startDist;
+    const sy0 = p.y - Math.sin(baseAng) * startDist;
+
+    // 搜寻玩家附近 130..360px 内未倒下的树，供危险乌鸦飞来停落观察
+    const nearTrees: number[] = [];
+    for (let ti = 0; ti < this.world.trees.length && nearTrees.length < 6; ti++) {
+      const t = this.world.trees[ti];
+      if (t.chopped) continue;
+      const dT = dist(t.x, t.y, p.x, p.y);
+      if (dT >= 130 && dT <= 360) nearTrees.push(ti);
+    }
+
+    let spawned = 0;
+    for (let i = 0; i < this.crows.length && spawned < 4; i++) {
+      const c = this.crows[i];
+      if (c.active) continue;
+      const spread = (spawned - 1.5) * 44;
+      const perpX = -Math.sin(baseAng) * spread;
+      const perpY = Math.cos(baseAng) * spread;
+      const startX = sx0 + perpX + (r() - 0.5) * 32;
+      const startY = sy0 + perpY + (r() - 0.5) * 32;
+
+      c.active = true;
+      c.flock = -1;
+      c.x = startX;
+      c.y = startY;
+      c.z = 0.62 + r() * 0.25;
+      c.timer = 0.6 + r() * 1.1;
+      c.peck = 0;
+      c.hop = 0;
+      c.caw = 1;
+      c.preen = 0.8;
+      c.wingPhase = r() * Math.PI * 2;
+      c.flyTime = 0;
+      c.seed = r() * 100;
+      c.alert = 0.85;
+
+      // 前 2 只优先飞落到玩家附近的树枝上停栖监视，其余从上空掠过
+      if (spawned < 2 && nearTrees.length > 0) {
+        const ti = nearTrees[spawned % nearTrees.length];
+        const t = this.world.trees[ti];
+        const pAng = Math.atan2(p.y - t.y, p.x - t.x) + (r() - 0.5) * 1.1;
+        const pRad = t.canopyR * (0.28 + r() * 0.42);
+        const ox = Math.cos(pAng) * pRad;
+        const oy = Math.sin(pAng) * pRad;
+        const tx = t.x + ox;
+        const ty = t.y + oy;
+        const toTreeAng = Math.atan2(ty - startY, tx - startX);
+        const spd = 220 + r() * 55;
+        c.state = 'landing';
+        c.treeId = ti;
+        c.perchOffX = ox;
+        c.perchOffY = oy;
+        c.targetX = tx;
+        c.targetY = ty;
+        c.targetZ = 0.48;
+        c.targetState = 'perched';
+        c.vx = Math.cos(toTreeAng) * spd;
+        c.vy = Math.sin(toTreeAng) * spd;
+        c.angle = toTreeAng;
+      } else {
+        const flyAng = baseAng + (r() - 0.5) * 0.24;
+        const spd = 240 + r() * 75;
+        c.state = 'passby';
+        c.treeId = -1;
+        c.vx = Math.cos(flyAng) * spd;
+        c.vy = Math.sin(flyAng) * spd;
+        c.angle = flyAng;
+      }
+      spawned++;
+    }
+    // 同时惊飞危险源附近的已有鸦群
+    this.crowAlarmAt(dangerX, dangerY, 420, false);
+    AudioFX.playCrowDangerOmen(this.makeSpatial(dangerX, dangerY, 920));
+    this.emitRipple(dangerX, dangerY, 260, 'rgba(218, 132, 96, 0.52)');
   }
 
   private updatePlayer(
@@ -2616,10 +2838,13 @@ export class GameEngine {
       if (!qty) continue;
       this.inv[k] += qty;
       if (k === 'essence') this.essenceCollected += qty;
+      this.pushResourceGain(k, qty);
       parts.push(`${I18n.t(RESOURCE_LABELS[k])} ×${qty}`);
     }
     // R3：少量手枪子弹（确定性分配，保持稀缺）
+    const ammoBefore = this.inv.ammo;
     const ammoPart = equipLootBonus(this, c);
+    if (this.inv.ammo > ammoBefore) this.pushResourceGain('ammo', this.inv.ammo - ammoBefore);
     if (ammoPart) parts.push(ammoPart);
     if (Variants.val.foley === 'a') AudioFX.playLootChime();
     else {
@@ -2829,6 +3054,7 @@ export class GameEngine {
     node.harvested = true;
     this.inv.essence++;
     this.essenceCollected++;
+    this.pushResourceGain('essence', 1);
     if (Variants.val.foley === 'a') AudioFX.playLootChime();
     else {
       AudioFX.playLootPickup('organic', {
@@ -3202,47 +3428,84 @@ export class GameEngine {
       if (c.state === 'ground' || c.state === 'perched') {
         c.peck = Math.max(0, c.peck - dt * 3.2);
         c.hop = Math.max(0, c.hop - dt * 4.5);
-        const f = this.crowFlocks[c.flock];
+        const f = c.flock >= 0 ? this.crowFlocks[c.flock] : null;
         const dPlayer = dist(c.x, c.y, p.x, p.y);
-        if (!f.alarmed && dPlayer < scareR) {
+        // 停栖的树被砍倒时立刻惊飞
+        if (c.state === 'perched' && c.treeId >= 0 && this.world.trees[c.treeId]?.chopped) {
+          c.state = 'takeoff';
+          c.timer = 0.05;
+          c.caw = 1;
+          const away = Math.atan2(c.y - p.y, c.x - p.x);
+          c.vx = Math.cos(away) * 200;
+          c.vy = Math.sin(away) * 200;
+          continue;
+        }
+        if (f && !f.alarmed && dPlayer < scareR) {
           this.alarmFlock(c.flock, p.x, p.y, true);
+        } else if (!f && c.state === 'perched' && dPlayer < 105) {
+          // 危险预警树梢鸦被玩家极近逼近后惊飞离去
+          c.state = 'takeoff';
+          c.timer = 0.06;
+          c.caw = 1;
+          const away = Math.atan2(c.y - p.y, c.x - p.x) + (r() - 0.5) * 0.5;
+          c.vx = Math.cos(away) * 220;
+          c.vy = Math.sin(away) * 220;
+          AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 720), true);
         } else if (c.state === 'perched') {
           // 手电筒光锥直射树上乌鸦：先警觉转头鸣叫，持续照射约 0.55s 整群惊飞
           let litByBeam = false;
-          if (beamOn && dPlayer < 330 && dPlayer > 10 && !f.alarmed) {
+          if (beamOn && dPlayer < 330 && dPlayer > 10 && (!f || !f.alarmed)) {
             const dot = ((c.x - p.x) * beamDx + (c.y - p.y) * beamDy) / dPlayer;
             if (dot > beamCos) litByBeam = true;
           }
           if (litByBeam) {
             const prevAlert = c.alert;
             c.alert = Math.min(1, c.alert + dt * 1.75);
-            // 警觉时歪头望向玩家并短促警告鸣叫
+            // 警觉时歪头望向玩家并短促警告鸣叫 + 扑棱抖羽
             c.angle = Math.atan2(p.y - c.y, p.x - c.x);
+            c.preen = Math.max(c.preen, 0.55);
             if (prevAlert < 0.25 && c.alert >= 0.25) {
               c.caw = 1;
-              AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 640), false);
+              AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 680), true);
             }
             if (c.alert >= 1) {
-              this.alarmFlock(c.flock, p.x, p.y, true);
+              if (f) this.alarmFlock(c.flock, p.x, p.y, true);
+              else {
+                c.state = 'takeoff';
+                c.timer = 0.05;
+                c.caw = 1;
+                const away = Math.atan2(c.y - p.y, c.x - p.x);
+                c.vx = Math.cos(away) * 230;
+                c.vy = Math.sin(away) * 230;
+                AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 720), true);
+              }
             }
           } else {
-            c.alert = Math.max(0, c.alert - dt * 0.9);
-            c.preen = Math.max(0, c.preen - dt * 2.2);
-            // 停在树枝上的乌鸦在玩家处于 180~440px 时缓缓转头盯着角色观察
-            if (dPlayer < 440 && dPlayer > 20) {
+            // 独立危险预警树梢鸦保持高警觉红眼并周期性做出鲜明动作（抖羽/张喙啼叫/歪头盯视）
+            const minAlert = !f ? 0.65 : 0;
+            c.alert = Math.max(minAlert, c.alert - dt * 0.9);
+            c.preen = Math.max(0, c.preen - dt * 1.8);
+            c.timer -= dt;
+            if (dPlayer < 460 && dPlayer > 20) {
               const targetA = Math.atan2(p.y - c.y, p.x - c.x);
-              c.angle += wrapAngle(targetA - c.angle) * clamp(dt * 2.4, 0, 1);
-            } else {
-              c.timer -= dt;
-              if (c.timer <= 0) {
-                if (r() < 0.34) {
-                  // 树枝乌鸦整理羽毛 / 短促微扇翅膀
-                  c.preen = 1;
-                  c.timer = 0.9 + r() * 1.8;
-                } else {
-                  c.angle += (r() - 0.5) * 0.85;
-                  c.timer = 1.1 + r() * 2.4;
-                }
+              c.angle += wrapAngle(targetA - c.angle) * clamp(dt * 2.8, 0, 1);
+            }
+            if (c.timer <= 0) {
+              const actRoll = r();
+              if (actRoll < 0.48) {
+                // 树枝乌鸦明显扑棱抖羽/半展双翅
+                c.preen = 1;
+                c.timer = 0.85 + r() * 1.4;
+              } else if (actRoll < 0.78) {
+                // 树梢张喙鸣叫，让玩家清晰分辨树上乌鸦
+                c.caw = 1;
+                c.preen = 0.65;
+                if (dPlayer < 520) AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 680), !f);
+                c.timer = 1.6 + r() * 2.2;
+              } else {
+                // 歪头左右张望
+                c.angle += (r() - 0.5) * 1.1;
+                c.timer = 0.9 + r() * 1.6;
               }
             }
           }
@@ -3256,7 +3519,7 @@ export class GameEngine {
             } else if (roll < 0.85) {
               c.hop = 1;
               c.angle += (r() - 0.5) * 1.2;
-              if (dist(c.x, c.y, f.x, f.y) > 40) c.angle = Math.atan2(f.y - c.y, f.x - c.x);
+              if (f && dist(c.x, c.y, f.x, f.y) > 40) c.angle = Math.atan2(f.y - c.y, f.x - c.x);
               const stepLen = 5 + r() * 9;
               c.x += Math.cos(c.angle) * stepLen;
               c.y += Math.sin(c.angle) * stepLen;
@@ -3272,8 +3535,8 @@ export class GameEngine {
         const dx = c.targetX - c.x;
         const dy = c.targetY - c.y;
         const dRem = Math.hypot(dx, dy);
-        const f = this.crowFlocks[c.flock];
-        if (!f.alarmed && dist(c.x, c.y, p.x, p.y) < scareR * 0.9) {
+        const f = c.flock >= 0 ? this.crowFlocks[c.flock] : null;
+        if (f && !f.alarmed && dist(c.x, c.y, p.x, p.y) < scareR * 0.9) {
           // 降落途中玩家突然逼近，直接惊飞
           this.alarmFlock(c.flock, p.x, p.y, true);
         } else if (dRem < 10) {
@@ -3281,8 +3544,12 @@ export class GameEngine {
           c.y = c.targetY;
           c.z = c.targetZ;
           c.state = c.targetState;
-          c.timer = 0.8 + r() * 1.6;
-          if (r() < 0.35 && dist(c.x, c.y, p.x, p.y) < 580) {
+          c.timer = !f ? 0.55 + r() * 0.9 : 0.8 + r() * 1.6;
+          if (!f) {
+            c.angle = Math.atan2(p.y - c.y, p.x - c.x);
+            c.preen = 1;
+            c.caw = 1;
+          } else if (r() < 0.35 && dist(c.x, c.y, p.x, p.y) < 580) {
             c.caw = 0.85;
             AudioFX.playCrowCaw(this.makeSpatial(c.x, c.y, 580), false);
           }
@@ -3634,6 +3901,9 @@ export class GameEngine {
           continue;
         }
       } else if (dToPlayer < sightRange || this.phase === 'night' || (provoked && dToPlayer < 420)) {
+        if (e.state === 'prowl' && dToPlayer < 480) {
+          this.triggerDangerCrows(e.x, e.y);
+        }
         e.state = 'chase';
         desiredSpeed = e.speed * (this.phase === 'night' ? 1.06 : 0.94);
 
@@ -4217,6 +4487,7 @@ export class GameEngine {
       activeSlot: this.activeSlot,
       prompt: this.currentPrompt ? { ...this.currentPrompt } : null,
       toasts: this.toasts.map((t) => ({ ...t })),
+      resourceGains: this.resourceGains.map((g) => ({ ...g })),
       containersLooted: this.containersLooted,
       totalContainers: this.world.containers.length,
       enemiesDefeated: this.enemiesDefeated,

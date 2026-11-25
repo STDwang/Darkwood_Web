@@ -1669,6 +1669,7 @@ export function resolveWorldCollision(
           const end = g.treeStart[ci + 1];
           for (let k = g.treeStart[ci]; k < end; k++) {
             const t = trees[g.treeItems[k]];
+            if (t.chopped) continue;
             if (Math.abs(px - t.x) > 48 || Math.abs(py - t.y) > 48) continue;
             const pushed = resolveCircleCircle(px, py, radius, t.x, t.y, t.trunkR);
             if (pushed) {
@@ -1807,6 +1808,7 @@ export function resolveFurnitureCollision(world: WorldData, furn: MovableFurnitu
           const tEnd = g.treeStart[ci + 1];
           for (let k = g.treeStart[ci]; k < tEnd; k++) {
             const t = world.trees[g.treeItems[k]];
+            if (t.chopped) continue;
             if (Math.abs(fx + furn.w * 0.5 - t.x) > 80 || Math.abs(fy + furn.h * 0.5 - t.y) > 80) continue;
             const pushed = resolveCircleRect(t.x, t.y, t.trunkR, fx, fy, furn.w, furn.h);
             if (pushed) {

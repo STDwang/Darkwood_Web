@@ -568,6 +568,13 @@ export class GameRenderer {
     ctx.restore();
   }
 
+  /** 根据屏幕高度动态计算世界镜头倍率：手机横屏自动放大，使角色、房屋与物件清晰易辨 */
+  private getCameraZoom(): number {
+    if (this.height <= 500) return 1.28;
+    if (this.height <= 680) return 1.12;
+    return 1.04;
+  }
+
   render(engine: GameEngine) {
     if (this.drawDisabled) return;
 
@@ -588,8 +595,9 @@ export class GameRenderer {
 
     this.drainDecals(engine);
 
-    const W = this.width;
-    const H = this.height;
+    const zoom = this.getCameraZoom();
+    const W = this.width / zoom;
+    const H = this.height / zoom;
     const cx = engine.camX + engine.shakeOffsetX;
     const cy = engine.camY + engine.shakeOffsetY;
     const viewL = cx - W * 0.5;
@@ -674,7 +682,7 @@ export class GameRenderer {
 
       const ctx = this.ctx;
       ctx.save();
-      ctx.scale(this.dpr, this.dpr);
+      ctx.scale(this.dpr * zoom, this.dpr * zoom);
       ctx.drawImage(this.webgl.canvas, 0, 0, W, H);
       draws++;
 
@@ -688,7 +696,7 @@ export class GameRenderer {
     } else {
       const ctx = this.ctx;
       ctx.save();
-      ctx.scale(this.dpr, this.dpr);
+      ctx.scale(this.dpr * zoom, this.dpr * zoom);
       draws += this.renderSceneAlbedo(
         ctx,
         engine,
@@ -716,13 +724,34 @@ export class GameRenderer {
   }
 
   /**
-   * 昼夜混合量（只读 engine 的 phase 与阶段进度，不自行计时）：白昼 0，黄昏按进度 0→1，黑夜 1。
-   * 用于后期暗框强度、夜晚曝光呼吸与门窗缝隙光的昼弱夜强。
+   * 完全连续的昼夜混合量 0..1（首尾闭合，杜绝跨天或阶段切换时的光暗突变）：
+   * - 0.00..0.08 破晓渐亮 (0.45 → 0.0)
+   * - 0.08..0.44 白昼 (0.0)
+   * - 0.44..0.64 黄昏入夜 (0.0 → 1.0)
+   * - 0.64..0.88 深夜 (1.0)
+   * - 0.88..1.00 黎明前微亮 (1.0 → 0.45)
    */
   private getNightAmount(engine: GameEngine): number {
-    if (engine.phase === 'night') return 1;
-    if (engine.phase === 'dusk') return clamp(engine.getPhaseProgress(), 0, 1);
-    return 0;
+    const dt = ((engine.dayTime % 1) + 1) % 1;
+    const smooth = (u: number) => {
+      const x = clamp(u, 0, 1);
+      return x * x * (3 - 2 * x);
+    };
+    if (dt < 0.08) return lerp(0.45, 0, smooth(dt / 0.08));
+    if (dt < 0.44) return 0;
+    if (dt < 0.64) return smooth((dt - 0.44) / 0.2);
+    if (dt < 0.88) return 1;
+    return lerp(1, 0.45, smooth((dt - 0.88) / 0.12));
+  }
+
+  /** 黄昏/破晓琥珀暮色权重 0..1（完全连续，平滑起伏） */
+  private getDuskWarmth(engine: GameEngine): number {
+    const dt = ((engine.dayTime % 1) + 1) % 1;
+    // 黄昏峰值在 0.54，破晓微暖峰值在 0.96 / 0.02
+    const duskBell = Math.exp(-Math.pow((dt - 0.53) / 0.075, 2));
+    const dawnDist = Math.min(Math.abs(dt - 0.98), Math.abs(dt + 0.02));
+    const dawnBell = Math.exp(-Math.pow(dawnDist / 0.065, 2)) * 0.55;
+    return clamp(duskBell + dawnBell, 0, 1);
   }
 
   /** ?v-tone=b（仅 cine=b 生效）：R3 协调曝光——锥外可读、夜间环境光下限抬高、轻雾、锥内降增益 */
@@ -732,52 +761,26 @@ export class GameRenderer {
 
   private getAmbientRGB(engine: GameEngine): { r: number; g: number; b: number } {
     const cold = Variants.val.palette !== 'a';
+    const night = this.getNightAmount(engine);
+    const warm = this.getDuskWarmth(engine);
     if (this.isToneOn()) {
-      // Darkwood 昼夜基调：白昼阴沉湿冷东欧林地（锥内外层次分明）；黄昏低彩铁锈青灰暮色；黑夜深邃压迫，靠旧手电与琥珀微光切开黑暗
-      const t = engine.getPhaseProgress();
-      if (engine.phase === 'day') {
-        return cold
-          ? { r: lerp(0.51, 0.43, t), g: lerp(0.53, 0.45, t), b: lerp(0.50, 0.43, t) }
-          : { r: lerp(0.48, 0.41, t), g: lerp(0.52, 0.44, t), b: lerp(0.45, 0.39, t) };
-      }
-      if (engine.phase === 'dusk') {
-        return cold
-          ? { r: lerp(0.42, 0.17, t), g: lerp(0.41, 0.19, t), b: lerp(0.39, 0.22, t) }
-          : { r: lerp(0.41, 0.16, t), g: lerp(0.39, 0.18, t), b: lerp(0.34, 0.21, t) };
-      }
-      return cold ? { r: 0.132, g: 0.152, b: 0.176 } : { r: 0.11, g: 0.14, b: 0.17 };
-    }
-    if (engine.phase === 'day') {
-      const t = engine.getPhaseProgress();
-      if (cold) {
-        return {
-          r: lerp(0.56, 0.44, t),
-          g: lerp(0.54, 0.43, t),
-          b: lerp(0.52, 0.42, t),
-        };
-      }
+      const dayCol = cold ? { r: 0.49, g: 0.51, b: 0.48 } : { r: 0.46, g: 0.50, b: 0.44 };
+      const nightCol = cold ? { r: 0.132, g: 0.152, b: 0.176 } : { r: 0.11, g: 0.14, b: 0.17 };
+      const duskTint = cold ? { r: 0.045, g: 0.012, b: -0.018 } : { r: 0.055, g: 0.01, b: -0.022 };
       return {
-        r: lerp(0.46, 0.36, t),
-        g: lerp(0.50, 0.38, t),
-        b: lerp(0.45, 0.34, t),
+        r: clamp(lerp(dayCol.r, nightCol.r, night) + duskTint.r * warm, 0.02, 0.8),
+        g: clamp(lerp(dayCol.g, nightCol.g, night) + duskTint.g * warm, 0.02, 0.8),
+        b: clamp(lerp(dayCol.b, nightCol.b, night) + duskTint.b * warm, 0.02, 0.8),
       };
     }
-    if (engine.phase === 'dusk') {
-      const t = engine.getPhaseProgress();
-      if (cold) {
-        return {
-          r: lerp(0.44, 0.11, t),
-          g: lerp(0.32, 0.10, t),
-          b: lerp(0.26, 0.12, t),
-        };
-      }
-      return {
-        r: lerp(0.38, 0.08, t),
-        g: lerp(0.24, 0.08, t),
-        b: lerp(0.20, 0.11, t),
-      };
-    }
-    return cold ? { r: 0.044, g: 0.048, b: 0.058 } : { r: 0.032, g: 0.038, b: 0.048 };
+    const dayCol = cold ? { r: 0.53, g: 0.51, b: 0.49 } : { r: 0.44, g: 0.47, b: 0.42 };
+    const nightCol = cold ? { r: 0.044, g: 0.048, b: 0.058 } : { r: 0.032, g: 0.038, b: 0.048 };
+    const duskTint = cold ? { r: 0.08, g: -0.01, b: -0.04 } : { r: 0.08, g: -0.02, b: -0.04 };
+    return {
+      r: clamp(lerp(dayCol.r, nightCol.r, night) + duskTint.r * warm, 0.02, 0.8),
+      g: clamp(lerp(dayCol.g, nightCol.g, night) + duskTint.g * warm, 0.02, 0.8),
+      b: clamp(lerp(dayCol.b, nightCol.b, night) + duskTint.b * warm, 0.02, 0.8),
+    };
   }
 
   private renderSceneAlbedo(
@@ -1160,6 +1163,7 @@ export class GameRenderer {
     // 极淡柔和的高空树冠地面投影（绝不把锐利黑枝印在树根旁边，把清晰长影留给树干背光阴影）
     ctx.save();
     for (const t of engine.world.trees) {
+      if (t.chopped) continue;
       const shSize = t.canopyR * (this.cineOn ? 3.2 : 2.25);
       const pad = shSize * 0.55 + 36;
       if (t.x < viewL - pad || t.x > viewR + pad || t.y < viewT - pad || t.y > viewB + pad) continue;
@@ -1169,7 +1173,7 @@ export class GameRenderer {
       const shY = t.y + 22 + syOff;
       const sprite = this.atlas.canopySprites[t.id % this.atlas.canopySprites.length];
       ctx.save();
-      ctx.globalAlpha = engine.phase === 'night' ? 0.09 : 0.13;
+      ctx.globalAlpha = lerp(0.13, 0.09, this.getNightAmount(engine));
       ctx.translate(shX, shY);
       ctx.rotate(t.phase + 0.14);
       ctx.scale(1.04, 0.92);
@@ -1201,8 +1205,15 @@ export class GameRenderer {
     const torchOn = engine.equip.torchInHand && engine.equip.torchLit && engine.equip.torchLight > 0.1;
 
     for (const t of engine.world.trees) {
-      const pad = t.trunkR * 3.0 + 16;
+      const pad = t.trunkR * 3.6 + 26;
       if (t.x < viewL - pad || t.x > viewR + pad || t.y < viewT - pad || t.y > viewB + pad) continue;
+      // 每棵树（无论站立还是已砍倒变成树墩）都拥有独一无二、蜿蜒盘错在地面上的立体树根
+      this.drawUniqueTreeRoots(ctx, t.x, t.y, t.trunkR, t.id, t.phase);
+      // 已被砍倒的树：原地绘制斧劈树墩（保留同一棵树的蜿蜒盘根，过夜破晓后自动重生为大树）
+      if (t.chopped) {
+        this.drawChoppedStump(ctx, t.x, t.y, t.trunkR, t.phase);
+        continue;
+      }
       if (
         Math.abs(t.x - camX) > W * 0.50 &&
         Math.abs(t.y - camY) > H * 0.50 &&
@@ -3504,6 +3515,7 @@ export class GameRenderer {
     const torchOn = engine.equip.torchInHand && engine.equip.torchLit && engine.equip.torchLight > 0.1;
 
     for (const t of engine.world.trees) {
+      if (t.chopped) continue;
       if (t.x < viewL - 220 || t.x > viewR + 220 || t.y < viewT - 220 || t.y > viewB + 220) continue;
       const dxP = t.x - pLightX;
       const dyP = t.y - pLightY;
@@ -3540,12 +3552,21 @@ export class GameRenderer {
       ctx.restore();
     }
 
-    // 第零b遍（柔边 2.5D 垂直向上黑色柱状树干：左右柔边过渡 + 纵向融入高空树冠，告别生硬黑直管）
+    // 第零b遍（柔边 2.5D 垂直向上黑色柱状树干 + 正在倒下树木的物理倾倒动画）
     for (const t of engine.world.trees) {
-      const pad = t.trunkR * 3.5 + 70;
+      const pad = t.trunkR * 3.5 + 140;
       if (t.x < viewL - pad || t.x > viewR + pad || t.y < viewT - pad || t.y > viewB + pad) continue;
-      const paraX = clamp((t.x - camX) * 0.148, -66, 66);
-      const paraY = clamp((t.y - camY) * 0.148, -66, 66);
+      if (t.chopped) {
+        const ft = t.fallTimer ?? 1;
+        if (ft > 0 && ft < 1) {
+          this.drawFallingTree(ctx, t, ft);
+          draws++;
+        }
+        continue;
+      }
+      const shakeOff = t.hitShake && t.hitShake > 0 ? Math.sin(engine.simTime * 56 + t.id) * t.hitShake * 14 : 0;
+      const paraX = clamp((t.x - camX) * 0.148, -66, 66) + shakeOff;
+      const paraY = clamp((t.y - camY) * 0.148, -66, 66) + shakeOff * 0.4;
       const topX = t.x + paraX;
       const topY = t.y + paraY;
       const r0 = t.trunkR * 0.88;
@@ -3609,6 +3630,7 @@ export class GameRenderer {
 
     // 第一遍：中低层树冠（树冠茂密程度与树大小正相关：幼树通透疏朗，参天古树浓密厚重）
     for (const t of engine.world.trees) {
+      if (t.chopped) continue;
       const size = t.canopyR * (this.cineOn ? 4.35 : 2.85);
       const cPad = size * 0.56 + 68;
       if (t.x < viewL - cPad || t.x > viewR + cPad || t.y < viewT - cPad || t.y > viewB + cPad) continue;
@@ -3621,10 +3643,11 @@ export class GameRenderer {
       const densityMul = clamp(0.64 + (t.canopyR - 68) / 110, 0.64, 1.0);
       const variantIdx = t.id % this.atlas.canopySprites.length;
 
+      const shakeOff = t.hitShake && t.hitShake > 0 ? Math.sin(engine.simTime * 52 + t.id) * t.hitShake * 18 : 0;
       const waveBase = swayOn ? Math.sin(engine.simTime * (0.86 * stormWind) + t.phase + t.x * 0.004) : 0;
       const waveBaseY = swayOn ? Math.cos(engine.simTime * (0.68 * stormWind) + t.phase + t.y * 0.004) : 0;
-      const baseSwayX = waveBase * (4.6 * stormWind);
-      const baseSwayY = waveBaseY * (3.0 * stormWind);
+      const baseSwayX = waveBase * (4.6 * stormWind) + shakeOff;
+      const baseSwayY = waveBaseY * (3.0 * stormWind) + shakeOff * 0.5;
       const baseParaX = clamp((t.x - camX) * 0.095, -48, 48);
       const baseParaY = clamp((t.y - camY) * 0.095, -48, 48);
 
@@ -3640,6 +3663,7 @@ export class GameRenderer {
 
     // 第二遍：最高空树梢与失焦暗冠层（茂密程度同样与树型大小正相关）
     for (const t of engine.world.trees) {
+      if (t.chopped) continue;
       if (Math.abs(t.x - camX) > W * 0.54 || Math.abs(t.y - camY) > H * 0.58) continue;
       const size = t.canopyR * (this.cineOn ? 4.65 : 3.0);
       const dPlayer = dist(engine.player.x, engine.player.y, t.x, t.y);
@@ -3734,7 +3758,7 @@ export class GameRenderer {
       const windDx = Math.cos(engine.weather.windAngle);
       const windDy = Math.sin(engine.weather.windAngle);
       const flashBoost = engine.weather.lightningFlash * 0.45;
-      const nightSoften = engine.phase === 'night' ? 0.76 : engine.phase === 'dusk' ? 0.88 : 1.0;
+      const nightSoften = lerp(1.0, 0.76, this.getNightAmount(engine));
 
       // 中景细密倾斜雨丝（layer === 0）：压低远景/暗区 alpha 避免过白突兀
       const midAlpha = flashBoost > 0.1 ? 0.42 : 0.24 * nightSoften;
@@ -3769,16 +3793,28 @@ export class GameRenderer {
       ctx.stroke();
     }
 
-    // 3. Eerie Sound Ripples piercing the pitch dark
+    // 3. 移除可视音波圆圈，改为沉浸式边缘方向性危机微光（只在视野外出现高危动静时，于对应方位屏幕边缘轻闪暗红余烬弧）
+    const viewCx = viewL + W * 0.5;
+    const viewCy = viewT + H * 0.5;
     for (let i = 0; i < engine.ripples.count; i++) {
       const r = engine.ripples.items[i];
-      if (!r.active) continue;
-      ctx.strokeStyle = r.color;
-      ctx.globalAlpha = clamp(r.alpha, 0, 1);
-      ctx.lineWidth = 1.6;
+      if (!r.active || r.alpha < 0.08) continue;
+      // 仅对危险类偏红/暖橘声源在屏幕边缘给方向性危机提示，不再在地面画雷达音波圆环
+      if (!r.color.includes('218') && !r.color.includes('214') && !r.color.includes('208')) continue;
+      const dToCam = dist(r.x, r.y, viewCx, viewCy);
+      if (dToCam < Math.min(W, H) * 0.36) continue;
+      const ang = Math.atan2(r.y - viewCy, r.x - viewCx);
+      const edgeR = Math.min(W, H) * 0.44;
+      const ex = viewCx + Math.cos(ang) * edgeR;
+      const ey = viewCy + Math.sin(ang) * edgeR;
+      const a = clamp(r.alpha * 0.42, 0, 0.38);
+      const grad = ctx.createRadialGradient(ex, ey, 4, ex, ey, 56);
+      grad.addColorStop(0, `rgba(210, 74, 52, ${a.toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(210, 74, 52, 0)');
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.arc(ex, ey, 56, 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.globalAlpha = 1;
 
@@ -4686,7 +4722,8 @@ export class GameRenderer {
     const sx = lw / W;
     const sy = lh / H;
 
-    let alpha = engine.phase === 'night' ? 0.965 : engine.phase === 'dusk' ? 0.78 : 0.56;
+    const nightK = this.getNightAmount(engine);
+    let alpha = lerp(0.56, 0.965, nightK);
     alpha = clamp(alpha - engine.weather.lightningFlash * 0.55, 0.12, 0.97);
 
     lctx.save();
@@ -4715,7 +4752,7 @@ export class GameRenderer {
     };
 
     const p = engine.player;
-    const auraR = engine.phase === 'night' ? 92 : 165;
+    const auraR = lerp(165, 92, this.getNightAmount(engine));
     computeVisibilityPolygon(engine.world, p.x, p.y, auraR, this.auraPolyScratch);
     punch(p.x, p.y, auraR, this.auraPolyScratch, 0.9);
 
@@ -5324,22 +5361,33 @@ export class GameRenderer {
         ctx.fillRect(0.2, 2.4 + k * 9, 2.6, 4);
       }
       if (eqp.muzzleFlash > 0) {
-        const mf = clamp(eqp.muzzleFlash / 0.05, 0, 1);
+        const mf = clamp(eqp.muzzleFlash / 0.085, 0, 1);
         ctx.globalAlpha = 1;
         ctx.globalCompositeOperation = 'lighter';
-        ctx.fillStyle = `rgba(255, 214, 140, ${(0.9 * mf).toFixed(3)})`;
+        // 枪口爆燃暖橙外晕
+        const glow = ctx.createRadialGradient(16, 0, 1, 16, 0, 18 + mf * 16);
+        glow.addColorStop(0, `rgba(255, 244, 200, ${(0.95 * mf).toFixed(3)})`);
+        glow.addColorStop(0.45, `rgba(255, 164, 62, ${(0.65 * mf).toFixed(3)})`);
+        glow.addColorStop(1, 'rgba(255, 110, 28, 0)');
+        ctx.fillStyle = glow;
         ctx.beginPath();
-        ctx.moveTo(11.5, -1);
-        ctx.lineTo(24 + mf * 6, 0);
-        ctx.lineTo(11.5, 1);
-        ctx.lineTo(15, 5.5);
-        ctx.lineTo(13.5, 0);
-        ctx.lineTo(15, -5.5);
+        ctx.arc(16, 0, 18 + mf * 16, 0, Math.PI * 2);
+        ctx.fill();
+        // 枪口多瓣炽热星芒烈焰
+        ctx.fillStyle = `rgba(255, 212, 128, ${(0.96 * mf).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(11.2, -1.6);
+        ctx.lineTo(31 + mf * 12, 0);
+        ctx.lineTo(11.2, 1.6);
+        ctx.lineTo(18.5, 8.8 * mf + 2);
+        ctx.lineTo(14.5, 1.2);
+        ctx.lineTo(18.5, -8.8 * mf - 2);
         ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = `rgba(255, 250, 225, ${mf.toFixed(3)})`;
+        // 炽白焰心
+        ctx.fillStyle = `rgba(255, 253, 236, ${mf.toFixed(3)})`;
         ctx.beginPath();
-        ctx.arc(13.5, 0, 2.6, 0, Math.PI * 2);
+        ctx.ellipse(15.5, 0, 5.2 * mf + 1.5, 2.6 * mf + 0.8, 0, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.restore();
@@ -6514,7 +6562,7 @@ export class GameRenderer {
     const t = engine.simTime;
     const cold = Variants.val.palette !== 'a';
     // 火把：低彩度暖琥珀/松脂火焰光（多频自然跳动 + 光心微摇曳，驱动真实墙影晃动，防纯艳橙色偏）
-    const dayK = engine.phase === 'night' ? 1.02 : engine.phase === 'dusk' ? 0.82 : 0.58;
+    const dayK = lerp(0.58, 1.02, this.getNightAmount(engine));
 
     if (eq.muzzleFlash > 0 && this.gpuLights.length < maxLights) {
       const mf = clamp(eq.muzzleFlash / 0.05, 0, 1);
@@ -6748,7 +6796,8 @@ export class GameRenderer {
       if (drawX < viewL - 56 || drawX > viewR + 56 || drawY < viewT - 56 || drawY > viewB + 56) continue;
       probe.x = c.x;
       probe.y = c.y;
-      if (!this.isEnemyVisible(engine, probe, coneHalfRad)) continue;
+      const nearPerched = c.state === 'perched' && dist(c.x, c.y, engine.player.x, engine.player.y) < 380;
+      if (!nearPerched && !this.isEnemyVisible(engine, probe, coneHalfRad)) continue;
       drawn++;
 
       const z = c.z;
@@ -6775,58 +6824,80 @@ export class GameRenderer {
         const hopLift = perched ? 0 : Math.sin(c.hop * Math.PI) * 0.14;
         const peckK = Math.sin(c.peck * Math.PI);
         const preenK = perched ? Math.sin(c.preen * Math.PI) : 0;
-        const alertShake = perched && c.alert > 0.05 ? Math.sin(engine.simTime * 28 + c.seed * 10) * 0.09 * c.alert : 0;
+        const idleBob = perched ? Math.sin(engine.simTime * 3.8 + c.seed * 17) * 0.08 : 0;
+        const alertShake = perched && c.alert > 0.05 ? Math.sin(engine.simTime * 28 + c.seed * 10) * 0.11 * c.alert : 0;
         ctx.scale(1 + hopLift, 1 + hopLift);
-        if (alertShake !== 0) ctx.rotate(alertShake);
-        // 树枝乌鸦抖羽/微张翅膀动作
-        if (preenK > 0.05 || (perched && c.alert > 0.35)) {
-          const flutter = Math.max(preenK * 0.9, c.alert * 0.65);
-          const wOut = 3.2 + flutter * 3.8 * (0.65 + 0.35 * Math.sin(engine.simTime * 34 + c.seed * 12));
+        ctx.rotate(alertShake + idleBob);
+        // 树枝乌鸦明显扑棱抖羽/半展双翅动作（让玩家一眼分辨出树上的活体乌鸦）
+        if (preenK > 0.04 || (perched && (c.alert > 0.25 || c.caw > 0.1))) {
+          const flutter = Math.max(preenK * 1.15, c.alert * 0.78, c.caw * 0.9);
+          const wOut = 4.2 + flutter * 5.2 * (0.62 + 0.38 * Math.sin(engine.simTime * 32 + c.seed * 12));
           ctx.fillStyle = '#07080a';
           ctx.beginPath();
           for (let side = -1; side <= 1; side += 2) {
-            ctx.moveTo(1.2, side * 1.4);
-            ctx.lineTo(-1.2, side * wOut);
-            ctx.lineTo(-3.4, side * (wOut * 0.65));
+            ctx.moveTo(1.4, side * 1.4);
+            ctx.lineTo(-1.0, side * wOut);
+            ctx.lineTo(-3.8, side * (wOut * 0.68));
             ctx.lineTo(-2.6, side * 1.4);
             ctx.closePath();
           }
           ctx.fill();
         }
-        // 尾羽（小扇形）
+        // 尾羽（树上轻幅翘摆）
+        const tailWag = perched ? Math.sin(engine.simTime * 5.2 + c.seed * 11) * 1.2 : 0;
         ctx.fillStyle = '#07080a';
         ctx.beginPath();
         ctx.moveTo(-3.6, 0);
-        ctx.lineTo(-8.2, -2.1);
-        ctx.quadraticCurveTo(-9, 0, -8.2, 2.1);
+        ctx.lineTo(-8.4, -2.2 + tailWag);
+        ctx.quadraticCurveTo(-9.3, tailWag * 0.5, -8.4, 2.2 + tailWag);
         ctx.closePath();
         ctx.fill();
         // 身体
         ctx.beginPath();
-        ctx.ellipse(0, 0, 4.6, 2.7, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, 4.7, 2.8, 0, 0, Math.PI * 2);
         ctx.fill();
-        // 树上乌鸦极克制的冷蓝灰羽背微光（让乌鸦在深黑树枝上依然一眼可辨）
+        // 树上乌鸦冷蓝灰羽背轮廓光（在深黑树冠上清晰可辨）
         if (perched) {
-          ctx.strokeStyle = c.alert > 0.1 ? 'rgba(158, 174, 186, 0.62)' : 'rgba(116, 130, 142, 0.40)';
-          ctx.lineWidth = 0.9;
+          ctx.strokeStyle = c.alert > 0.15 ? 'rgba(176, 192, 206, 0.72)' : 'rgba(130, 146, 158, 0.48)';
+          ctx.lineWidth = 1.0;
           ctx.beginPath();
-          ctx.arc(0.4, 0, 3.3, -1.1, 1.1);
+          ctx.arc(0.4, 0, 3.4, -1.15, 1.15);
           ctx.stroke();
         }
-        // 头与喙：啄食前探，鸣叫张喙
-        const hx = 4.2 + peckK * 1.8;
+        // 头与喙：啄食前探，鸣叫大幅张喙
+        const hx = 4.3 + peckK * 1.8;
         ctx.fillStyle = '#07080a';
         ctx.beginPath();
-        ctx.arc(hx, 0, 1.9, 0, Math.PI * 2);
+        ctx.arc(hx, 0, 2.0, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        const gape = c.caw * 1.05;
-        ctx.moveTo(hx + 1.4, -0.6 - gape);
-        ctx.lineTo(hx + 4.4, -gape * 0.65);
+        const gape = c.caw * 1.35;
+        ctx.moveTo(hx + 1.4, -0.65 - gape);
+        ctx.lineTo(hx + 4.7, -gape * 0.72);
         ctx.lineTo(hx + 1.6, 0);
-        ctx.lineTo(hx + 4.4, gape * 0.65);
-        ctx.lineTo(hx + 1.4, 0.6 + gape);
+        ctx.lineTo(hx + 4.7, gape * 0.72);
+        ctx.lineTo(hx + 1.4, 0.65 + gape);
         ctx.closePath();
+        ctx.fill();
+        // 鸣叫时喙前淡淡声波弧线（视觉上直观传达树梢啼叫动作）
+        if (c.caw > 0.18) {
+          ctx.strokeStyle = `rgba(235, 92, 74, ${(c.caw * 0.72).toFixed(3)})`;
+          ctx.lineWidth = 0.85;
+          ctx.beginPath();
+          ctx.arc(hx + 4.6, 0, 2.2 + (1 - c.caw) * 4.5, -0.7, 0.7);
+          ctx.stroke();
+        }
+        // 醒目猩红双瞳（自带微弱红光晕，警戒或危险前兆时更亮）
+        const eyeGlow = 0.65 + 0.35 * Math.max(c.alert, c.caw);
+        ctx.fillStyle = `rgba(255, 42, 34, ${(0.38 * eyeGlow).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(hx + 0.65, -0.95, 1.45, 0, Math.PI * 2);
+        ctx.arc(hx + 0.65, 0.95, 1.45, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ff362e';
+        ctx.beginPath();
+        ctx.arc(hx + 0.75, -0.92, 0.62, 0, Math.PI * 2);
+        ctx.arc(hx + 0.75, 0.92, 0.62, 0, Math.PI * 2);
         ctx.fill();
       } else {
         // 起飞(takeoff) / 爬升飞行(fly) / 降落(landing)：清晰生动的扑腾翅膀动画
@@ -6881,6 +6952,17 @@ export class GameRenderer {
         ctx.moveTo(6.2, -0.65);
         ctx.lineTo(8.5, 0);
         ctx.lineTo(6.2, 0.65);
+        ctx.fill();
+        // 飞行乌鸦猩红双眼
+        ctx.fillStyle = 'rgba(255, 42, 34, 0.36)';
+        ctx.beginPath();
+        ctx.arc(5.3, -0.82, 1.25, 0, Math.PI * 2);
+        ctx.arc(5.3, 0.82, 1.25, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ff362e';
+        ctx.beginPath();
+        ctx.arc(5.4, -0.8, 0.55, 0, Math.PI * 2);
+        ctx.arc(5.4, 0.8, 0.55, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.restore();
@@ -7440,6 +7522,182 @@ export class GameRenderer {
     ctx.restore();
   }
 
+  /** 绘制每棵树独一无二的蜿蜒盘错地面树根（按 treeId 确定性生成，大树与被砍倒的树墩完全共享同一套根系） */
+  private drawUniqueTreeRoots(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    r: number,
+    treeId: number,
+    phase: number
+  ) {
+    const rng = createRng((treeId * 7919 + 31337) >>> 0);
+    const rootCount = Math.max(5, Math.min(11, Math.round(5 + r * 0.28 + rng() * 2)));
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(phase * 0.35);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (let i = 0; i < rootCount; i++) {
+      const baseA = (i / rootCount) * Math.PI * 2 + (rng() - 0.5) * 0.52;
+      const totalLen = r * (1.55 + rng() * 1.95);
+      const w0 = Math.max(2.1, r * (0.2 + rng() * 0.14));
+      let cx = Math.cos(baseA) * (r * 0.58);
+      let cy = Math.sin(baseA) * (r * 0.58);
+      let a = baseA;
+      const segs = 4;
+
+      for (let s = 0; s < segs; s++) {
+        const t = s / segs;
+        const segLen = (totalLen / segs) * (0.76 + rng() * 0.52);
+        a += (rng() - 0.5) * (0.72 + t * 0.25);
+        const midA = a + (rng() - 0.5) * 0.45;
+        const mx = cx + Math.cos(midA) * segLen * 0.52;
+        const my = cy + Math.sin(midA) * segLen * 0.52;
+        const nx = cx + Math.cos(a) * segLen;
+        const ny = cy + Math.sin(a) * segLen;
+        const w = Math.max(0.75, w0 * Math.pow(1 - t * 0.72, 1.15));
+
+        // 贴地暗影
+        ctx.strokeStyle = 'rgba(5, 6, 5, 0.78)';
+        ctx.lineWidth = w + 1.8;
+        ctx.beginPath();
+        ctx.moveTo(cx + 1.2, cy + 1.6);
+        ctx.quadraticCurveTo(mx + 1.2, my + 1.6, nx + 1.0, ny + 1.4);
+        ctx.stroke();
+
+        // 树根主干本体
+        ctx.strokeStyle = s === 0 ? '#1d1914' : '#26211b';
+        ctx.lineWidth = w;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.quadraticCurveTo(mx, my, nx, ny);
+        ctx.stroke();
+
+        // 根脊微弱受光纹理
+        if (w > 1.8) {
+          ctx.strokeStyle = 'rgba(84, 74, 58, 0.34)';
+          ctx.lineWidth = Math.max(0.6, w * 0.28);
+          ctx.beginPath();
+          ctx.moveTo(cx - 0.5, cy - 0.5);
+          ctx.quadraticCurveTo(mx - 0.5, my - 0.5, nx - 0.4, ny - 0.4);
+          ctx.stroke();
+        }
+
+        // 蜿蜒分叉的二级细根须
+        if (s >= 1 && s <= 2 && rng() < 0.68) {
+          const fa = a + (rng() > 0.5 ? 1 : -1) * (0.42 + rng() * 0.55);
+          const fl = segLen * (0.75 + rng() * 0.65);
+          const fmx = nx + Math.cos(fa + (rng() - 0.5) * 0.5) * fl * 0.52;
+          const fmy = ny + Math.sin(fa + (rng() - 0.5) * 0.5) * fl * 0.52;
+          const fnx = nx + Math.cos(fa) * fl;
+          const fny = ny + Math.sin(fa) * fl;
+          ctx.strokeStyle = 'rgba(10, 10, 9, 0.8)';
+          ctx.lineWidth = Math.max(0.7, w * 0.56);
+          ctx.beginPath();
+          ctx.moveTo(nx, ny);
+          ctx.quadraticCurveTo(fmx, fmy, fnx, fny);
+          ctx.stroke();
+        }
+
+        cx = nx;
+        cy = ny;
+      }
+    }
+    ctx.restore();
+  }
+
+  /** 绘制被砍倒后留在原地的斧劈树墩（浅色新鲜锯口 + 斧劈碎茬 + 树皮外圈） */
+  private drawChoppedStump(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, phase: number) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(phase);
+    // 贴地暗底影
+    const g = ctx.createRadialGradient(2, 3, r * 0.3, 2, 3, r * 1.9);
+    g.addColorStop(0, 'rgba(6, 7, 6, 0.65)');
+    g.addColorStop(1, 'rgba(6, 7, 6, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(2, 3, r * 1.9, 0, Math.PI * 2);
+    ctx.fill();
+    // 深色厚树皮
+    ctx.fillStyle = '#1a1612';
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.96, 0, Math.PI * 2);
+    ctx.fill();
+    // 新鲜斧劈浅褐木断面
+    const cutG = ctx.createRadialGradient(-r * 0.15, -r * 0.15, r * 0.1, 0, 0, r * 0.8);
+    cutG.addColorStop(0, '#9a8462');
+    cutG.addColorStop(0.65, '#735f43');
+    cutG.addColorStop(1, '#443726');
+    ctx.fillStyle = cutG;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.78, 0, Math.PI * 2);
+    ctx.fill();
+    // 年轮与斧口裂纹
+    ctx.strokeStyle = 'rgba(34, 26, 18, 0.52)';
+    ctx.lineWidth = 0.85;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.45, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.65, 0);
+    ctx.lineTo(r * 0.65, r * 0.18);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** 绘制树木物理倒下动画（重力加速沿 fallAngle 倾倒、枝冠扫地并落地消散） */
+  private drawFallingTree(ctx: CanvasRenderingContext2D, t: { id: number; x: number; y: number; trunkR: number; canopyR: number; phase: number; fallAngle?: number }, ft: number) {
+    // 重力加速曲线（起初缓慢倾斜，后半段急速砸向地面）
+    const ease = Math.min(1, ft * ft * (2.2 - 1.2 * ft));
+    const fadeOut = ft > 0.72 ? clamp(1 - (ft - 0.72) / 0.28, 0, 1) : 1;
+    const fa = t.fallAngle ?? 0;
+    const fallLen = (t.canopyR * 1.18 + t.trunkR * 2.2) * ease;
+    const tipX = t.x + Math.cos(fa) * fallLen;
+    const tipY = t.y + Math.sin(fa) * fallLen;
+    const sprite = this.atlas.canopySprites[t.id % this.atlas.canopySprites.length];
+
+    ctx.save();
+    ctx.globalAlpha = fadeOut;
+    // 倒下过程中的地面长影
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(fa);
+    ctx.fillStyle = 'rgba(4, 5, 5, 0.45)';
+    ctx.beginPath();
+    ctx.ellipse(fallLen * 0.55, 6, Math.max(8, fallLen * 0.58), t.trunkR * 1.25, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 倒下的粗壮树干本体
+    const trG = ctx.createLinearGradient(0, -t.trunkR, 0, t.trunkR);
+    trG.addColorStop(0, '#14120f');
+    trG.addColorStop(0.5, '#3b3227');
+    trG.addColorStop(1, '#0e0c0a');
+    ctx.fillStyle = trG;
+    ctx.beginPath();
+    ctx.moveTo(0, -t.trunkR * 0.78);
+    ctx.lineTo(fallLen, -t.trunkR * 0.42);
+    ctx.lineTo(fallLen, t.trunkR * 0.42);
+    ctx.lineTo(0, t.trunkR * 0.78);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // 随树梢一同砸落的树冠（透视压扁）
+    const cSize = t.canopyR * (this.cineOn ? 3.5 : 2.5);
+    ctx.save();
+    ctx.translate(tipX, tipY);
+    ctx.rotate(fa);
+    ctx.scale(1 + ease * 0.22, Math.max(0.58, 1 - ease * 0.36));
+    ctx.rotate(t.phase - fa + ease * 0.25);
+    ctx.globalAlpha = fadeOut * 0.88;
+    ctx.drawImage(sprite, -cSize * 0.5, -cSize * 0.5, cSize, cSize);
+    ctx.restore();
+    ctx.restore();
+  }
+
+  /** 所见即所得的物理交互徽章：用专属图形符号 + 环形进度 + 极简按键角标替代大段文字条 */
   private drawDiegeticPrompt(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -7447,32 +7705,122 @@ export class GameRenderer {
     labelKey: string,
     progress: number
   ) {
-    const text = I18n.t(labelKey);
     ctx.save();
-    ctx.font = '500 12px "DM Sans", system-ui, sans-serif';
-    const tw = ctx.measureText(text).width;
-    const padX = 10;
-    const boxW = tw + padX * 2;
-    const boxH = 26;
+    const cy = y - 16;
+    const r = 18;
 
-    ctx.fillStyle = 'rgba(18, 16, 13, 0.90)';
-    ctx.strokeStyle = 'rgba(206, 174, 120, 0.54)';
-    ctx.lineWidth = 1;
+    // 柔和外晕 + 蚀刻暗铜圆徽章
+    ctx.fillStyle = 'rgba(10, 9, 8, 0.84)';
+    ctx.strokeStyle = progress > 0.01 ? '#e8bc68' : 'rgba(216, 186, 130, 0.78)';
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.roundRect(x - boxW * 0.5, y - boxH, boxW, boxH, 3);
+    ctx.arc(x, cy, r, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = '#efe6d5';
+    // 按交互语义绘制高辨识度物理图标（避免依赖大段文字）
+    ctx.strokeStyle = '#efe5d0';
+    ctx.fillStyle = '#efe5d0';
+    ctx.lineWidth = 1.7;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.save();
+    ctx.translate(x, cy);
+
+    if (labelKey.includes('钉') || labelKey.includes('加固') || labelKey.includes('门窗')) {
+      // 锤子 / 木板加固图标
+      ctx.beginPath();
+      ctx.moveTo(-6, 6);
+      ctx.lineTo(4, -4);
+      ctx.moveTo(1, -7);
+      ctx.lineTo(7, -1);
+      ctx.lineTo(5, 1);
+      ctx.lineTo(-1, -5);
+      ctx.closePath();
+      ctx.stroke();
+    } else if (labelKey.includes('工作台') || labelKey.includes('制作')) {
+      // 扳手/工作台图标
+      ctx.beginPath();
+      ctx.moveTo(-6, 6);
+      ctx.lineTo(3, -3);
+      ctx.arc(5, -5, 3.2, 0.7, Math.PI * 1.8);
+      ctx.stroke();
+    } else if (labelKey.includes('加油') || labelKey.includes('发电机') || labelKey.includes('中继')) {
+      // 火苗 / 燃料滴图标
+      ctx.fillStyle = '#e5a454';
+      ctx.beginPath();
+      ctx.moveTo(0, -8);
+      ctx.quadraticCurveTo(6, -1, 5, 4);
+      ctx.arc(0, 4, 5, 0, Math.PI);
+      ctx.quadraticCurveTo(-6, -1, 0, -8);
+      ctx.fill();
+    } else if (labelKey.includes('灯') || labelKey.includes('开关')) {
+      // 灯泡图标
+      ctx.beginPath();
+      ctx.arc(0, -2, 5, 0, Math.PI * 2);
+      ctx.moveTo(-2.5, 5);
+      ctx.lineTo(2.5, 5);
+      ctx.stroke();
+    } else if (labelKey.includes('拖') || labelKey.includes('松开') || labelKey.includes('门')) {
+      // 双向推拉箭头图标
+      ctx.beginPath();
+      ctx.moveTo(-7, 0);
+      ctx.lineTo(7, 0);
+      ctx.moveTo(-4, -3.5);
+      ctx.lineTo(-7, 0);
+      ctx.lineTo(-4, 3.5);
+      ctx.moveTo(4, -3.5);
+      ctx.lineTo(7, 0);
+      ctx.lineTo(4, 3.5);
+      ctx.stroke();
+    } else if (labelKey.includes('蘑菇') || labelKey.includes('采')) {
+      // 幽光菇图标
+      ctx.strokeStyle = '#7ad8c5';
+      ctx.beginPath();
+      ctx.arc(0, 0, 6, Math.PI, 0);
+      ctx.closePath();
+      ctx.moveTo(-2, 0);
+      ctx.lineTo(-2, 6);
+      ctx.moveTo(2, 0);
+      ctx.lineTo(2, 6);
+      ctx.stroke();
+    } else if (labelKey.includes('火把')) {
+      // 捡火把图标
+      ctx.strokeStyle = '#e69b4f';
+      ctx.beginPath();
+      ctx.moveTo(-5, 6);
+      ctx.lineTo(3, -2);
+      ctx.moveTo(3, -7);
+      ctx.lineTo(6, -3);
+      ctx.lineTo(2, -1);
+      ctx.stroke();
+    } else {
+      // 搜刮放大镜图标
+      ctx.beginPath();
+      ctx.arc(-1.5, -1.5, 5.2, 0, Math.PI * 2);
+      ctx.moveTo(2.5, 2.5);
+      ctx.lineTo(7, 7);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // 右下角极简 E 键徽标
+    ctx.fillStyle = '#d8b463';
+    ctx.beginPath();
+    ctx.arc(x + r * 0.72, cy + r * 0.72, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#12100d';
+    ctx.font = '700 9px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, x, y - boxH * 0.5);
+    ctx.fillText('E', x + r * 0.72, cy + r * 0.74);
 
+    // 外圈金色环形进度条
     if (progress > 0.01) {
-      ctx.strokeStyle = '#e5b968';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#e8bc68';
+      ctx.lineWidth = 3.2;
       ctx.beginPath();
-      ctx.arc(x, y + 24, 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
+      ctx.arc(x, cy, r + 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
       ctx.stroke();
     }
 

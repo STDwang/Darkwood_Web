@@ -1413,16 +1413,16 @@ function bakeCanopyCine(variantIndex: number, coldDecay: boolean, top: boolean):
   const cy = S * 0.5;
   const rng = createRng((top ? 9203 : 4421) + variantIndex * 1597);
 
-  // 强非对称有机包络（进一步拉长单棵树主枝伸展半径，还原原作横跨半屏的巨型长枝）
+  // 强非对称有机包络（极度拉长单棵树主枝伸展半径，诡异长枝横跨视野）
   const phA = rng() * Math.PI * 2;
   const phB = rng() * Math.PI * 2;
   const phC = rng() * Math.PI * 2;
   const maxReachAt = (angle: number) =>
     S *
     clamp(
-      0.38 + 0.095 * Math.sin(angle * 2 + phA) + 0.06 * Math.cos(angle * 3 + phB) + 0.025 * Math.sin(angle * 5 + phC),
-      0.24,
-      0.495
+      0.43 + 0.085 * Math.sin(angle * 2 + phA) + 0.055 * Math.cos(angle * 3 + phB) + 0.03 * Math.sin(angle * 5 + phC),
+      0.32,
+      0.498
     );
 
   // 绘制真实锯齿/簇状树叶剪影团（阔叶丛 / 腐朽枝叶簇，对标原作图 5 左下角与图 6 下方）
@@ -1468,18 +1468,18 @@ function bakeCanopyCine(variantIndex: number, coldDecay: boolean, top: boolean):
     let x = x0;
     let y = y0;
     let a = ang;
-    const steps = depth >= 3 ? 6 : 4;
+    const steps = depth >= 3 ? 7 : 5;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
     for (let s = 0; s < steps; s++) {
       const t = s / steps;
-      const seg = (len / steps) * (0.76 + rng() * 0.48);
-      // 诡异蛇形扭曲弯折
-      a += (rng() - 0.5) * (0.54 + (4 - depth) * 0.18);
-      const midA = a + (rng() - 0.5) * 0.42;
-      const mx = x + Math.cos(midA) * seg * 0.52;
-      const my = y + Math.sin(midA) * seg * 0.52;
+      const seg = (len / steps) * (0.82 + rng() * 0.46);
+      // 诡异蛇形扭曲弯折 + 末梢钩爪状锐折
+      a += (rng() - 0.5) * (0.68 + (4 - depth) * 0.24);
+      const midA = a + (rng() - 0.5) * 0.52;
+      const mx = x + Math.cos(midA) * seg * 0.54;
+      const my = y + Math.sin(midA) * seg * 0.54;
       const nx = x + Math.cos(a) * seg;
       const ny = y + Math.sin(a) * seg;
 
@@ -1487,7 +1487,7 @@ function bakeCanopyCine(variantIndex: number, coldDecay: boolean, top: boolean):
       const outA = Math.atan2(ny - cy, nx - cx);
       if (outR > maxReachAt(outA)) break;
 
-      const w = Math.max(0.65, w0 * Math.pow(1 - t * 0.68, 1.2));
+      const w = Math.max(0.65, w0 * Math.pow(1 - t * 0.65, 1.15));
       ctx.strokeStyle = col;
       ctx.lineWidth = w;
       ctx.beginPath();
@@ -1507,23 +1507,23 @@ function bakeCanopyCine(variantIndex: number, coldDecay: boolean, top: boolean):
 
       // 在次级与末梢枝条挂载真实树叶剪影簇
       if (leafSpec && depth <= 2 && s >= 1 && rng() < leafSpec.prob) {
-        const lRad = (10 + rng() * 14) * leafSpec.scale;
-        const lCnt = Math.round((7 + rng() * 9) * leafSpec.scale);
+        const lRad = (11 + rng() * 15) * leafSpec.scale;
+        const lCnt = Math.round((8 + rng() * 10) * leafSpec.scale);
         paintFoliageCluster(nx, ny, a, lRad, lCnt, leafSpec.colMain, leafSpec.colEdge, leafSpec.isNeedle);
       }
 
-      // 不对称血管状分叉
+      // 更加茂密的不对称血管状分叉（末梢如蛛腿般密布伸展）
       if (depth > 0 && s >= 1) {
-        const forks = depth >= 3 ? (rng() < 0.78 ? 2 : 1) : rng() < 0.58 ? 1 : 0;
+        const forks = depth >= 3 ? (rng() < 0.88 ? 2 : 1) : depth === 2 ? (rng() < 0.72 ? 2 : 1) : rng() < 0.65 ? 1 : 0;
         for (let f = 0; f < forks; f++) {
           const side = f === 0 ? (rng() > 0.5 ? 1 : -1) : -1;
-          const spread = side * (0.36 + rng() * 0.62);
+          const spread = side * (0.34 + rng() * 0.72);
           drawGnarledLimb(
             nx,
             ny,
             a + spread,
-            len * (0.48 + rng() * 0.28),
-            Math.max(0.7, w * 0.62),
+            len * (0.54 + rng() * 0.28),
+            Math.max(0.65, w * 0.64),
             depth - 1,
             col,
             ridgeCol,
@@ -1565,30 +1565,30 @@ function bakeCanopyCine(variantIndex: number, coldDecay: boolean, top: boolean):
     const subCol = coldDecay ? 'rgba(26, 31, 28, 0.54)' : 'rgba(22, 32, 22, 0.54)';
     const subLeafMain = coldDecay ? 'rgba(22, 28, 24, 0.52)' : 'rgba(19, 31, 20, 0.54)';
     const subLeafEdge = coldDecay ? 'rgba(44, 50, 42, 0.36)' : 'rgba(38, 52, 34, 0.38)';
-    const subBoughs = 5 + (variantIndex % 2);
+    const subBoughs = 7 + (variantIndex % 2);
     for (let i = 0; i < subBoughs; i++) {
-      const a = (i / subBoughs) * Math.PI * 2 + (rng() - 0.5) * 0.58;
-      const len = 168 + rng() * 84;
-      // 仅约 40% 的主枝带叶，其余枝条保持光秃
+      const a = (i / subBoughs) * Math.PI * 2 + (rng() - 0.5) * 0.52;
+      const len = 195 + rng() * 75;
+      // 仅约 42% 的主枝带叶，其余枝条保持光秃诡异
       const branchLeaf = hasAnyLeaves && rng() < 0.42
-        ? { prob: leafDensity * 0.85, colMain: subLeafMain, colEdge: subLeafEdge, isNeedle, scale: 0.92 }
+        ? { prob: leafDensity * 0.9, colMain: subLeafMain, colEdge: subLeafEdge, isNeedle, scale: 0.96 }
         : null;
-      drawGnarledLimb(cx, cy, a, len, 6.4 + rng() * 2.4, 3, subCol, null, branchLeaf);
+      drawGnarledLimb(cx, cy, a, len, 6.8 + rng() * 2.6, 3, subCol, null, branchLeaf);
     }
 
     // 3. 中层粗壮扭曲主枝与局部深暗树叶团（带微弱暗褐灰受光背脊）
-    const mainCol = 'rgba(11, 13, 12, 0.84)';
+    const mainCol = 'rgba(10, 12, 11, 0.88)';
     const ridgeCol = coldDecay ? 'rgba(58, 60, 52, 0.28)' : 'rgba(54, 62, 46, 0.28)';
-    const mainLeafMain = coldDecay ? 'rgba(13, 17, 15, 0.76)' : 'rgba(12, 21, 14, 0.76)';
-    const mainLeafEdge = coldDecay ? 'rgba(32, 38, 33, 0.46)' : 'rgba(28, 42, 28, 0.46)';
-    const mainBoughs = 6 + (variantIndex % 2);
+    const mainLeafMain = coldDecay ? 'rgba(13, 17, 15, 0.80)' : 'rgba(12, 21, 14, 0.80)';
+    const mainLeafEdge = coldDecay ? 'rgba(32, 38, 33, 0.48)' : 'rgba(28, 42, 28, 0.48)';
+    const mainBoughs = 8 + (variantIndex % 2);
     for (let i = 0; i < mainBoughs; i++) {
-      const a = (i / mainBoughs) * Math.PI * 2 + (rng() - 0.5) * 0.5;
-      const len = 185 + rng() * 88;
-      const branchLeaf = hasAnyLeaves && rng() < 0.48
-        ? { prob: leafDensity, colMain: mainLeafMain, colEdge: mainLeafEdge, isNeedle, scale: 0.88 }
+      const a = (i / mainBoughs) * Math.PI * 2 + (rng() - 0.5) * 0.46;
+      const len = 212 + rng() * 78;
+      const branchLeaf = hasAnyLeaves && rng() < 0.5
+        ? { prob: leafDensity, colMain: mainLeafMain, colEdge: mainLeafEdge, isNeedle, scale: 0.92 }
         : null;
-      drawGnarledLimb(cx, cy, a, len, 9.5 + rng() * 3.8, 3, mainCol, ridgeCol, branchLeaf);
+      drawGnarledLimb(cx, cy, a, len, 10.0 + rng() * 3.8, 3, mainCol, ridgeCol, branchLeaf);
     }
   } else {
     // ===== 最高空树梢与失焦暗冠层：离地面光源最远、最靠近镜头，深邃漆黑、诡异且压迫感极强 =====
@@ -1612,21 +1612,21 @@ function bakeCanopyCine(variantIndex: number, coldDecay: boolean, top: boolean):
     // 2. 顶层高空粗细极具张力的漆黑扭曲长枝 + 极克制的局部顶层叶簇
     const topLeafMain = 'rgba(4, 5, 5, 0.88)';
     const topLeafEdge = coldDecay ? 'rgba(14, 17, 16, 0.62)' : 'rgba(12, 18, 13, 0.62)';
-    const topBoughs = 5 + (variantIndex % 2);
+    const topBoughs = 7 + (variantIndex % 2);
     for (let i = 0; i < topBoughs; i++) {
-      const a = (i / topBoughs) * Math.PI * 2 + (rng() - 0.5) * 0.55;
-      const len = 182 + rng() * 92;
-      const branchLeaf = hasAnyLeaves && rng() < 0.36
-        ? { prob: leafDensity * 0.75, colMain: topLeafMain, colEdge: topLeafEdge, isNeedle, scale: 0.82 }
+      const a = (i / topBoughs) * Math.PI * 2 + (rng() - 0.5) * 0.5;
+      const len = 208 + rng() * 82;
+      const branchLeaf = hasAnyLeaves && rng() < 0.38
+        ? { prob: leafDensity * 0.8, colMain: topLeafMain, colEdge: topLeafEdge, isNeedle, scale: 0.86 }
         : null;
-      drawGnarledLimb(cx, cy, a, len, 8.0 + rng() * 3.4, 3, 'rgba(4, 5, 5, 0.94)', null, branchLeaf);
+      drawGnarledLimb(cx, cy, a, len, 8.6 + rng() * 3.4, 3, 'rgba(4, 5, 5, 0.95)', null, branchLeaf);
     }
 
-    // 3. 3~5 根不对称探出的极长诡异主枯枝（对标原作图 2、图 3 横跨视野的巨型蛇形长枝）
-    const reachCount = variantIndex <= 1 ? 5 : 3;
+    // 3. 6~8 根不对称探出的极长诡异主枯枝（横跨视野的巨型蛇形长枝，带蛛网状末梢）
+    const reachCount = variantIndex <= 1 ? 8 : 6;
     for (let i = 0; i < reachCount; i++) {
-      const a = phA + (i / reachCount) * Math.PI * 2 + (rng() - 0.5) * 0.55;
-      drawGnarledLimb(cx, cy, a, 220 + rng() * 48, 7.2 + rng() * 2.6, 2, 'rgba(3, 4, 4, 0.95)', null, null);
+      const a = phA + (i / reachCount) * Math.PI * 2 + (rng() - 0.5) * 0.48;
+      drawGnarledLimb(cx, cy, a, 238 + rng() * 44, 7.6 + rng() * 2.8, 3, 'rgba(3, 4, 4, 0.96)', null, null);
     }
   }
 

@@ -59,6 +59,32 @@ body,
   touch-action: none;
 }
 
+/* 手机端强制横屏容器（当小红书小工具/手机 WebView 处于竖屏时，顺时针旋转 90° 呈现完整横屏游玩体验） */
+html.force-landscape #app {
+  inset: auto;
+  top: 0;
+  left: 100vw;
+  width: 100vh;
+  height: 100vw;
+  transform: rotate(90deg);
+  transform-origin: top left;
+  /* 物理竖屏顶部(状态栏/小红书原生胶囊)旋转后变为横屏右侧，留足安全区；物理底部变为横屏左侧 */
+  --gl: max(22px, var(--sb));
+  --gr: max(56px, var(--st));
+  --gt: 12px;
+  --gb: 12px;
+}
+
+/* 手机触控双摇杆与动作集群定位（自动避让左右安全区与底部快捷键栏） */
+.touch-stick--move {
+  left: calc(var(--gl) + 4px);
+  bottom: calc(var(--gb) + 72px);
+}
+.touch-cluster {
+  right: calc(var(--gr) + 4px);
+  bottom: calc(var(--gb) + 72px);
+}
+
 .font-display {
   font-family: var(--f-display);
 }
@@ -679,13 +705,26 @@ button.paper-hud:hover {
 }
 .hud2-minimap {
   position: relative;
-  width: 126px;
-  height: 126px;
+  width: 138px;
+  height: 138px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1.5px solid rgba(206, 178, 128, 0.45);
+  background: transparent;
   flex-shrink: 0;
   border-radius: 50%;
-  pointer-events: none;
-  opacity: 0.72;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.65);
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0.88;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.72);
+  transition: transform 180ms ease, border-color 180ms ease, opacity 180ms ease;
+}
+.hud2-minimap:hover,
+.hud2-minimap:active {
+  opacity: 1;
+  border-color: rgba(232, 194, 118, 0.85);
+  transform: scale(1.03);
 }
 
 /* 无框墨线图标按钮：44px 命中区，悬停出现细小衬线标签 */
@@ -803,25 +842,134 @@ button.paper-hud:hover {
   width: min(86vw, 420px);
 }
 
-/* ---------- 底部：左下体征 / 右下资源 + 快捷栏 ---------- */
+/* ---------- 底部：左下体征 / 中央统一快捷键栏 / 右下美术资源计数 ---------- */
 .hud2-bottom {
   display: grid;
-  grid-template-columns: auto 1fr auto;
-  grid-template-areas:
-    "vit . res"
-    "vit . qb";
+  grid-template-columns: 1fr auto 1fr;
+  grid-template-areas: "vit qb res";
   align-items: end;
   row-gap: 6px;
-  column-gap: 10px;
+  column-gap: 12px;
 }
 .hud2-vitals {
   grid-area: vit;
   align-self: end;
+  justify-self: start;
   position: relative;
   isolation: isolate;
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.hud2-bar__ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95));
+}
+.hud2-gen__meter {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 5px;
+  background: rgba(14, 12, 10, 0.78);
+  border: 1px solid rgba(206, 178, 128, 0.32);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.hud2-gen__fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: linear-gradient(90deg, #b8682f, #e4b663);
+  transition: transform 200ms linear;
+}
+.hud2-gen.is-out .hud2-gen__fill {
+  background: #a83c32;
+}
+.hud2-obj-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(12, 14, 13, 0.56);
+  border: 1px solid rgba(122, 216, 197, 0.24);
+  width: fit-content;
+}
+.hud2-obj-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.hud2-obj-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid rgba(122, 216, 197, 0.55);
+  background: rgba(10, 14, 13, 0.8);
+}
+.hud2-obj-dot.is-carried {
+  background: #e0a958;
+  border-color: #f4d694;
+}
+.hud2-obj-dot.is-installed {
+  background: #6ad3bd;
+  border-color: #bff5ea;
+  box-shadow: 0 0 6px rgba(106, 211, 189, 0.65);
+}
+
+/* 顶部中央：资源获取滚动播报带（专属彩色美术图标 + +N） */
+.hud2-ticker {
+  position: fixed;
+  top: calc(var(--gt) + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 22;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: min(62vw, 440px);
+}
+.hud2-ticker__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px 4px 7px;
+  border-radius: 999px;
+  background: rgba(18, 15, 11, 0.86);
+  border: 1px solid rgba(214, 182, 122, 0.52);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.65);
+  animation: hud2-ticker-roll 2.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.hud2-ticker__qty {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f0dfba;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+@keyframes hud2-ticker-roll {
+  0% {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.9);
+  }
+  12% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  78% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-18px) scale(0.95);
+  }
 }
 .hud2-bars {
   display: flex;
@@ -838,14 +986,14 @@ button.paper-hud:hover {
 .hud2-bar {
   position: relative;
   flex-shrink: 0;
-  width: 200px;
+  width: 224px;
   filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.9));
 }
 .hud2-bar--hp {
-  height: 10px;
+  height: 14px;
 }
 .hud2-bar--st {
-  height: 6px;
+  height: 9px;
 }
 .hud2-bar__clip {
   position: absolute;
@@ -930,26 +1078,28 @@ button.paper-hud:hover {
   animation: hud2-splat 900ms cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
 }
 
-/* 数字弱化：默认隐藏，数值变化时短暂显现 */
+/* 体征数字常驻清晰可读（手机端一眼看清血量/体力） */
 .hud2-num {
-  width: 24px;
+  width: 30px;
   flex-shrink: 0;
   font-family: var(--f-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 10px;
+  font-size: 12.5px;
+  font-weight: 700;
   line-height: 1.2;
-  color: rgba(217, 209, 191, 0.82);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
-  opacity: 0;
-  transition: opacity 600ms ease;
+  color: rgba(235, 224, 200, 0.92);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 1);
+  opacity: 0.88;
+  transition: opacity 300ms ease, color 180ms ease;
 }
 .hud2-num.is-on {
-  opacity: 0.88;
+  opacity: 1;
+  color: #f4d692;
   transition-duration: 120ms;
 }
 .hud2-barrow--st .hud2-num {
-  font-size: 9px;
-  color: rgba(217, 209, 191, 0.66);
+  font-size: 11px;
+  color: rgba(217, 209, 191, 0.82);
 }
 
 /* 电量：小号电池刻度格（整体兼手电开关按钮） */
@@ -1055,18 +1205,78 @@ button.paper-hud:hover {
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.9));
 }
 
-/* 快捷栏：4 个做旧方格（暗木纹 + 铁框 + 对角铆钉），键位左上、数量右下、空槽暗纹 */
-.hud2-quickbar {
+/* 快捷栏外层容器：上方展示常驻精简键位提示条，下方居中展示 6 格快捷键 */
+.hud2-qb-wrap {
   grid-area: qb;
-  justify-self: end;
+  justify-self: center;
   display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 5px;
+}
+.hud2-keyhints {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(12, 10, 8, 0.62);
+  border: 1px solid rgba(206, 178, 128, 0.2);
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: rgba(217, 209, 191, 0.8);
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+.hud2-keyhints > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.hud2-keyhints kbd {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: rgba(214, 182, 122, 0.16);
+  border: 1px solid rgba(214, 182, 122, 0.42);
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #ebd298;
+}
+/* 快捷栏：底部居中统一显示所有快捷键（F / Q / 1~4），大尺寸易点按 */
+.hud2-quickbar {
+  display: flex;
+  gap: 6px;
+}
+.hud2-slot__mini-bars {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: 5px;
+  display: flex;
+  gap: 2px;
+  pointer-events: none;
+}
+.hud2-slot__mbar {
+  flex: 1;
+  height: 3px;
+  background: rgba(217, 209, 191, 0.16);
+  border-radius: 1px;
+}
+.hud2-slot__mbar.is-full {
+  background: #e2be6e;
+}
+.hud2-slot.is-low .hud2-slot__mbar.is-full {
+  background: #d25648;
 }
 .hud2-slot {
   position: relative;
   flex-shrink: 0;
-  width: 52px;
-  height: 52px;
+  width: 56px;
+  height: 56px;
   min-width: 44px;
   min-height: 44px;
   padding: 0;
@@ -1210,7 +1420,53 @@ button.paper-hud:hover {
   }
 }
 
-/* 竖屏手机：按钮在顶、地图在其下；提示条下移避开地图；底部改为 体征+资源 / 快捷栏 两行 */
+/* 强制横屏（竖屏容器旋转 90° 后逻辑高度即原竖屏宽度 390px）直接套用与横屏手机一致的紧凑横屏 HUD */
+html.force-landscape .hud2-bottom {
+  grid-template-columns: 1fr auto 1fr;
+  grid-template-areas: "vit qb res";
+}
+html.force-landscape .hud2-tr {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 0;
+}
+html.force-landscape .hud2-minimap {
+  width: 96px;
+  height: 96px;
+}
+html.force-landscape .hud2-keyhints {
+  display: none;
+}
+html.force-landscape .hud2-bar {
+  width: 138px;
+}
+html.force-landscape .hud2-bar--hp {
+  height: 14px;
+}
+html.force-landscape .hud2-bar--st {
+  height: 8px;
+}
+html.force-landscape .hud2-slot {
+  width: 50px;
+  height: 50px;
+}
+html.force-landscape .hud2-slot__svg {
+  width: 25px;
+  height: 25px;
+}
+html.force-landscape .hud2-res {
+  column-gap: 7px;
+  max-width: 205px;
+}
+html.force-landscape .hud2-res__item {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+html.force-landscape .hud2-toasts {
+  bottom: calc(var(--gb) + 66px);
+  width: min(52vw, 380px);
+}
 @media (max-width: 639px) {
   .hud2-tr {
     flex-direction: column;
@@ -1218,11 +1474,11 @@ button.paper-hud:hover {
     gap: 6px;
   }
   .hud2-minimap {
-    width: 112px;
-    height: 112px;
+    width: 108px;
+    height: 108px;
   }
   .hud2-toasts {
-    top: calc(var(--gt) + 176px);
+    bottom: calc(var(--gb) + 124px);
   }
   .hud2-bottom {
     grid-template-columns: auto 1fr;
@@ -1234,39 +1490,314 @@ button.paper-hud:hover {
   }
   .hud2-res {
     align-self: center;
-    max-width: 118px;
+    max-width: 150px;
   }
   .hud2-bar {
-    width: 104px;
+    width: 112px;
+    height: 11px;
+  }
+  .hud2-bar--st {
+    height: 7px;
   }
   .hud2-slot {
     width: 46px;
     height: 46px;
   }
+  .hud2-quickbar {
+    gap: 4px;
+  }
+  .hud2-keyhints {
+    display: none;
+  }
 }
 
-/* 横屏手机（矮屏）：按钮在左、地图在右并排；地图缩小；提示条收窄 */
+/* 横屏手机（矮屏核心适配）：全面放大可读性与触控靶点 */
 @media (max-height: 500px) {
+  .hud2-keyhints {
+    gap: 5px;
+    padding: 1px 7px;
+    font-size: 9.5px;
+  }
+  .hud2-keyhints > span:nth-child(n + 5) {
+    display: none;
+  }
   .hud2-tr {
     flex-direction: row;
     align-items: flex-start;
     gap: 6px;
   }
   .hud2-minimap {
-    width: 100px;
-    height: 100px;
+    width: 108px;
+    height: 108px;
   }
   .hud2-toasts {
-    top: calc(var(--gt) + 100px);
-    width: min(56vw, 400px);
+    bottom: calc(var(--gb) + 70px);
+    width: min(52vw, 380px);
   }
   .hud2-bar {
-    width: 150px;
+    width: 146px;
+  }
+  .hud2-bar--hp {
+    height: 15px;
+  }
+  .hud2-bar--st {
+    height: 9px;
   }
   .hud2-slot {
-    width: 46px;
-    height: 46px;
+    width: 52px;
+    height: 52px;
   }
+  .hud2-slot__svg {
+    width: 26px;
+    height: 26px;
+  }
+  .hud2-res {
+    column-gap: 8px;
+    max-width: 220px;
+  }
+  .hud2-res__item {
+    font-size: 13px;
+    font-weight: 600;
+  }
+}
+
+/* ================================================================
+ * 东欧旧木工台美术样式（物理材料盘 + 铁框蓝图锻造卡片）
+ * ================================================================ */
+.workbench-tray {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px;
+  border-radius: 4px;
+  background:
+    repeating-linear-gradient(92deg, rgba(255, 226, 184, 0.03) 0 1px, transparent 1px 6px),
+    linear-gradient(180deg, #211810, #140f0a);
+  border: 1px solid rgba(196, 162, 110, 0.28);
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.7);
+}
+.workbench-mat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 2px;
+  border-radius: 3px;
+  background: rgba(10, 8, 6, 0.55);
+  border: 1px solid rgba(164, 146, 118, 0.16);
+}
+.workbench-mat.is-zero {
+  opacity: 0.42;
+}
+.workbench-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 76px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  text-align: left;
+  background:
+    radial-gradient(circle, rgba(164, 154, 136, 0.65) 0 1px, transparent 1.8px) right 5px top 5px / 6px 6px no-repeat,
+    radial-gradient(circle, rgba(164, 154, 136, 0.65) 0 1px, transparent 1.8px) left 5px bottom 5px / 6px 6px no-repeat,
+    linear-gradient(180deg, #261d14, #17110b);
+  border: 1.5px solid rgba(124, 110, 92, 0.45);
+  box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.7), 0 4px 12px rgba(0, 0, 0, 0.5);
+  transition: transform 140ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+.workbench-card.is-ready {
+  border-color: rgba(218, 166, 92, 0.8);
+  cursor: pointer;
+}
+.workbench-card.is-ready:hover,
+.workbench-card.is-ready:active {
+  transform: translateY(-1px);
+  border-color: #f0c97e;
+  box-shadow: inset 0 0 14px rgba(218, 166, 92, 0.18), 0 6px 16px rgba(0, 0, 0, 0.65);
+}
+.workbench-card.is-locked {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+.workbench-card.is-owned {
+  border-color: rgba(112, 184, 152, 0.6);
+  opacity: 0.8;
+  cursor: default;
+}
+.workbench-card__icon {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: rgba(10, 8, 6, 0.72);
+  border: 1px solid rgba(186, 156, 112, 0.28);
+}
+.workbench-card__badge {
+  position: absolute;
+  right: -4px;
+  top: -5px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #b87b3b;
+  color: #120e09;
+  font-size: 10px;
+  font-weight: 800;
+}
+.workbench-card__body {
+  flex: 1;
+  min-width: 0;
+}
+.workbench-card__costs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.workbench-cost {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.workbench-cost.is-ok {
+  color: #b8dfb8;
+}
+.workbench-cost.is-lack {
+  color: #e06a5c;
+}
+.workbench-card__forge {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(184, 123, 59, 0.22);
+  border: 1px solid rgba(218, 166, 92, 0.5);
+  color: #ebd096;
+}
+.workbench-card.is-locked .workbench-card__forge {
+  background: rgba(40, 38, 34, 0.5);
+  border-color: rgba(110, 104, 96, 0.3);
+  color: #6f695f;
+}
+
+/* ================================================================
+ * 全窗口实物载体美术系统（旧纸页 / 牛皮卷轴 / 旧木工台+麻布袋 / 线装日记本 / 牛皮档案袋）
+ * ================================================================ */
+.carrier-sheet {
+  position: relative;
+  border-radius: 3px;
+  box-shadow:
+    0 22px 54px rgba(0, 0, 0, 0.85),
+    0 0 0 1px rgba(10, 8, 6, 0.95),
+    inset 0 0 38px rgba(0, 0, 0, 0.52);
+}
+.carrier-header {
+  border-bottom: 1px dashed rgba(196, 168, 120, 0.3);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.28), transparent);
+}
+.carrier-footer {
+  border-top: 1px dashed rgba(196, 168, 120, 0.24);
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.28), transparent);
+}
+/* 火漆蜡封角徽 */
+.carrier-seal {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: radial-gradient(circle at 35% 35%, #b84234, #6e1c15 70%, #3d0d09 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(255, 196, 174, 0.35),
+    0 2px 5px rgba(0, 0, 0, 0.75);
+}
+
+/* 1. 泛黄做旧手抄纸页（暂停 / 结算） */
+.carrier-parchment {
+  background:
+    radial-gradient(ellipse at 14% 12%, rgba(186, 146, 92, 0.14), transparent 55%),
+    radial-gradient(ellipse at 88% 88%, rgba(92, 62, 34, 0.22), transparent 55%),
+    repeating-linear-gradient(0deg, rgba(255, 236, 200, 0.018) 0 1px, transparent 1px 26px),
+    linear-gradient(168deg, #2b2319 0%, #201911 52%, #18130d 100%);
+  border: 1.5px solid rgba(194, 164, 114, 0.38);
+}
+.carrier-parchment--gold {
+  border-color: rgba(226, 186, 108, 0.58);
+  box-shadow:
+    0 22px 56px rgba(0, 0, 0, 0.88),
+    inset 0 0 42px rgba(198, 142, 62, 0.16);
+}
+.carrier-parchment--blood {
+  border-color: rgba(168, 56, 46, 0.56);
+  background:
+    radial-gradient(ellipse at 84% 14%, rgba(132, 24, 18, 0.28), transparent 52%),
+    radial-gradient(ellipse at 12% 90%, rgba(112, 18, 14, 0.22), transparent 54%),
+    linear-gradient(168deg, #271b16 0%, #1d1410 56%, #150e0b 100%);
+}
+
+/* 2. 古旧牛皮卷轴（探索地图） */
+.carrier-scroll {
+  background:
+    radial-gradient(ellipse at 50% 50%, rgba(178, 146, 96, 0.14), rgba(20, 15, 10, 0.75) 88%),
+    linear-gradient(90deg, #1b150e 0%, #2c2317 12%, #2a2116 88%, #19130c 100%);
+  border-left: 2px solid rgba(186, 152, 98, 0.42);
+  border-right: 2px solid rgba(186, 152, 98, 0.42);
+}
+.carrier-scroll__rod {
+  height: 14px;
+  width: 100%;
+  flex-shrink: 0;
+  background:
+    linear-gradient(180deg, #5e4429 0%, #3b2917 45%, #1f150b 100%);
+  border-top: 1px solid rgba(214, 178, 120, 0.4);
+  border-bottom: 1px solid rgba(8, 6, 4, 0.95);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.7);
+}
+
+/* 3. 东欧粗犷旧木工台 + 缝线麻布材料袋（工作台） */
+.carrier-workbench {
+  background:
+    radial-gradient(circle, rgba(164, 154, 136, 0.75) 0 1.4px, transparent 2.2px) left 8px top 8px / 8px 8px no-repeat,
+    radial-gradient(circle, rgba(164, 154, 136, 0.75) 0 1.4px, transparent 2.2px) right 8px top 8px / 8px 8px no-repeat,
+    repeating-linear-gradient(90deg, rgba(255, 226, 184, 0.025) 0 2px, transparent 2px 18px, rgba(0, 0, 0, 0.14) 18px 20px),
+    linear-gradient(180deg, #2a1e13 0%, #1d140c 55%, #150e08 100%);
+  border: 2px solid rgba(146, 110, 68, 0.55);
+}
+.carrier-pouch {
+  position: relative;
+  background:
+    repeating-linear-gradient(45deg, rgba(196, 172, 132, 0.05) 0 2px, transparent 2px 6px),
+    repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.16) 0 2px, transparent 2px 6px),
+    linear-gradient(180deg, #33291d 0%, #221a12 100%);
+  border: 1.5px dashed rgba(208, 184, 140, 0.45);
+  box-shadow: inset 0 4px 14px rgba(0, 0, 0, 0.65);
+}
+
+/* 4. 左脊线装旧日记本（生存日志） */
+.carrier-notebook {
+  background:
+    linear-gradient(90deg, #1b120b 0 16px, rgba(12, 8, 5, 0.9) 16px 19px, transparent 19px),
+    repeating-linear-gradient(0deg, transparent 0 26px, rgba(196, 172, 130, 0.08) 26px 27px),
+    linear-gradient(175deg, #2a2218 0%, #1e1811 100%);
+  border: 1.5px solid rgba(176, 146, 102, 0.42);
+  padding-left: 14px;
+}
+
+/* 5. 牛皮纸档案卷宗（设置 / 操作说明 / 开发者面板） */
+.carrier-dossier {
+  background:
+    radial-gradient(circle, rgba(206, 168, 98, 0.72) 0 3px, rgba(44, 30, 14, 0.95) 3.8px, transparent 5px) right 52px top 22px / 12px 12px no-repeat,
+    linear-gradient(170deg, #2c2419 0%, #211a12 60%, #18130d 100%);
+  border: 1.5px solid rgba(186, 152, 100, 0.45);
 }
 
 @media (prefers-reduced-motion: reduce) {

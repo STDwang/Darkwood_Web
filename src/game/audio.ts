@@ -397,6 +397,7 @@ class SoundEngine {
   private branchTimer = 21;
   private dripTimer = 2;
   private narrativeTimer = 14;
+  private humMusicTimer = 9;
   private stepSide = 1;
   private buildMs = 0;
 
@@ -2661,12 +2662,25 @@ class SoundEngine {
           else if (r < 0.54) this.playDistantDrag(pan);
           else if (r < 0.78) this.playWhisper(pan);
           else this.playBowedMetalScrape(pan, 0.72);
-        } else if (r < 0.65) {
+        } else if (r < 0.55) {
           this.playCrowCall(pan);
+        } else if (r < 0.8) {
+          this.playEerieHum(pan, night);
         } else {
           this.playBranchSnap(pan, rnd(0.7, 1), 0.7);
         }
       }
+    }
+
+    // 4b. 诡异惊悚哼唱 & 暗林恐怖背景乐句（独立氛围层：白天偶发远林低吟，黄昏/黑夜/紧张时更加幽深阴森）
+    this.humMusicTimer -= dt * (0.75 + night * 0.65 + danger * 0.45);
+    if (this.humMusicTimer <= 0) {
+      this.humMusicTimer = night > 0.5 ? rnd(14, 24) : rnd(22, 36);
+      const pan = randomPan(0.82);
+      if (Math.random() < 0.62) {
+        this.playEerieHum(pan, night);
+      }
+      this.playDarkAmbientChord(night, danger);
     }
 
     const rain = this.rainNow;
@@ -4294,8 +4308,8 @@ class SoundEngine {
   }
 
   /**
-   * 乌鸦"嘎"声核心：锯齿声门 + 方波粗糙调幅（60–120Hz）+ 带通噪声嘶哑 → 三共振峰（F1/F2/F3）；
-   * 每声独立的音高拱形（先升后坠）、时长与力度，末声常略低；受惊（urgent）时更高、更短、更急、更糙。返回结束时刻
+   * 乌鸦"嘎"声核心：锯齿声门 + 方波粗糙调幅（68–132Hz）+ 明亮高频带通嘶哑 → 三共振峰（F1/F2/F3）+ 穿透性高频泛音；
+   * 每声独立的音高拱形（先升后坠）、时长与力度；受惊/危险前兆（urgent）时更明亮、清脆、高亢、急促。返回结束时刻
    */
   private crowCawCore(
     ctx: AudioContext,
@@ -4306,31 +4320,35 @@ class SoundEngine {
     urgent: boolean,
     caws: number
   ): number {
-    const base = urgent ? rnd(640, 820) : rnd(470, 640);
+    const base = urgent ? rnd(740, 960) : rnd(540, 720);
     const n = Math.max(1, Math.floor(caws));
     const plan: Array<{ t: number; d: number; f: number; a: number }> = [];
     let t = t0;
     for (let i = 0; i < n; i++) {
-      const d = urgent ? rnd(0.09, 0.16) : rnd(0.17, 0.3);
+      const d = urgent ? rnd(0.11, 0.19) : rnd(0.19, 0.32);
       const last = i === n - 1 && n > 1 && !urgent;
-      plan.push({ t, d, f: base * rnd(0.92, 1.08) * (last ? rnd(0.86, 0.96) : 1), a: i === 0 ? 1 : rnd(0.7, 1) });
-      t += d + (urgent ? rnd(0.05, 0.12) : rnd(0.16, 0.34));
+      plan.push({ t, d, f: base * rnd(0.94, 1.08) * (last ? rnd(0.88, 0.96) : 1), a: i === 0 ? 1 : rnd(0.78, 1) });
+      t += d + (urgent ? rnd(0.045, 0.1) : rnd(0.13, 0.28));
     }
-    const end = t + 0.05;
+    const end = t + 0.06;
 
     const osc = this.oscSource(ctx, shot, 'sawtooth', base, t0, end);
-    const am = this.oscSource(ctx, shot, 'square', urgent ? rnd(85, 120) : rnd(60, 92), t0, end);
-    const amDepth = this.amp(ctx, shot, urgent ? 0.55 : 0.42, t0);
-    const amG = this.amp(ctx, shot, 0.55, t0);
+    const brightOsc = this.oscSource(ctx, shot, 'triangle', base * 2, t0, end);
+    const am = this.oscSource(ctx, shot, 'square', urgent ? rnd(92, 132) : rnd(68, 100), t0, end);
+    const amDepth = this.amp(ctx, shot, urgent ? 0.58 : 0.45, t0);
+    const amG = this.amp(ctx, shot, 0.62, t0);
     am.connect(amDepth);
     amDepth.connect(amG.gain);
     osc.connect(amG);
-    const exc = this.amp(ctx, shot, 1, t0);
+    const brightG = this.amp(ctx, shot, urgent ? 0.48 : 0.32, t0);
+    brightOsc.connect(brightG);
+    brightG.connect(amG);
+    const exc = this.amp(ctx, shot, 1.15, t0);
     amG.connect(exc);
     if (this.whiteBuf) {
       const nz = this.noiseSource(ctx, shot, this.whiteBuf, t0, end - t0);
-      const nbp = this.filt(ctx, shot, 'bandpass', rnd(1500, 2200), 1.2, t0);
-      const ng = this.amp(ctx, shot, urgent ? 0.5 : 0.35, t0);
+      const nbp = this.filt(ctx, shot, 'bandpass', rnd(1900, 3000), 1.35, t0);
+      const ng = this.amp(ctx, shot, urgent ? 0.62 : 0.42, t0);
       nz.connect(nbp);
       nbp.connect(ng);
       ng.connect(exc);
@@ -4339,18 +4357,21 @@ class SoundEngine {
     const env = this.amp(ctx, shot, 0.0001, t0);
     for (let i = 0; i < plan.length; i++) {
       const c = plan[i];
-      osc.frequency.setValueAtTime(c.f * 0.9, c.t);
-      osc.frequency.linearRampToValueAtTime(c.f * 1.1, c.t + c.d * 0.3);
-      osc.frequency.exponentialRampToValueAtTime(c.f * 0.78, c.t + c.d);
+      osc.frequency.setValueAtTime(c.f * 0.92, c.t);
+      osc.frequency.linearRampToValueAtTime(c.f * 1.14, c.t + c.d * 0.28);
+      osc.frequency.exponentialRampToValueAtTime(c.f * 0.8, c.t + c.d);
+      brightOsc.frequency.setValueAtTime(c.f * 1.88, c.t);
+      brightOsc.frequency.linearRampToValueAtTime(c.f * 2.28, c.t + c.d * 0.28);
+      brightOsc.frequency.exponentialRampToValueAtTime(c.f * 1.62, c.t + c.d);
       env.gain.setValueAtTime(0.0001, c.t);
-      env.gain.linearRampToValueAtTime(Math.max(0.0002, vol * c.a), c.t + 0.018);
-      env.gain.linearRampToValueAtTime(Math.max(0.0002, vol * c.a * 0.75), c.t + c.d * 0.7);
+      env.gain.linearRampToValueAtTime(Math.max(0.0002, vol * c.a), c.t + 0.015);
+      env.gain.linearRampToValueAtTime(Math.max(0.0002, vol * c.a * 0.82), c.t + c.d * 0.72);
       env.gain.exponentialRampToValueAtTime(0.0001, c.t + c.d);
     }
     const formants: Array<{ f: number; q: number; g: number }> = [
-      { f: rnd(1050, 1350), q: 3, g: 1 },
-      { f: rnd(1900, 2400), q: 4, g: 0.7 },
-      { f: rnd(3000, 3500), q: 5, g: 0.35 },
+      { f: rnd(1180, 1460), q: 2.8, g: 1.1 },
+      { f: rnd(2150, 2720), q: 3.4, g: 0.96 },
+      { f: rnd(3350, 4150), q: 4.2, g: 0.68 },
     ];
     for (let i = 0; i < formants.length; i++) {
       const fm = formants[i];
@@ -4364,20 +4385,142 @@ class SoundEngine {
     return end;
   }
 
-  /** 白天远处鸦鸣（环境叙事用）：同一嘎声核心，经远处出口（重度空气吸收 + 森林混响） */
+  /**
+   * 诡异惊悚哼唱声：模拟雾林深处幽灵女声/童声轻哼东欧小调摇篮曲
+   * - 锯齿+三角声带混合源 + 自然气息颤音 LFO(5.2Hz) + 轻气声噪声 → 三段人声元音共振峰(Mm/Oo) → 森林深邃混响
+   * - 音阶采用诡异小调与增二度/半音微滑（A4 → Bb4 → G4 → F4 → E4），令人脊背发凉
+   */
+  playEerieHum(pan = 0, nightAmt = 0.5): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const shot = new OneShot();
+    const out = this.distantOut(ctx, shot, pan, 2600, 0.78).input;
+
+    // 东欧暗林诡异小调哼唱旋律（Hz，两套随机切换）
+    const motifs = [
+      [440, 466.16, 392, 349.23, 329.63],
+      [392, 415.3, 349.23, 329.63, 293.66],
+    ];
+    const notes = motifs[Math.floor(Math.random() * motifs.length)];
+    const baseVol = (0.095 + nightAmt * 0.045) * rnd(0.88, 1.12);
+
+    let t = now + 0.08;
+    const totalDur = notes.length * 1.15 + 0.8;
+    const end = t + totalDur;
+
+    const osc1 = this.oscSource(ctx, shot, 'triangle', notes[0], t, end);
+    const osc2 = this.oscSource(ctx, shot, 'sawtooth', notes[0] * 1.003, t, end);
+    const vib = this.oscSource(ctx, shot, 'sine', rnd(4.8, 5.6), t, end);
+    const vibDepth = this.amp(ctx, shot, 4.2, t);
+    vib.connect(vibDepth);
+    vibDepth.connect(osc1.frequency);
+    vibDepth.connect(osc2.frequency);
+
+    const g1 = this.amp(ctx, shot, 0.72, t);
+    const g2 = this.amp(ctx, shot, 0.24, t);
+    const srcMix = this.amp(ctx, shot, 1, t);
+    osc1.connect(g1);
+    osc2.connect(g2);
+    g1.connect(srcMix);
+    g2.connect(srcMix);
+
+    // 细腻气声层（增添真人呼吸感）
+    if (this.pinkBuf) {
+      const breath = this.noiseSource(ctx, shot, this.pinkBuf, t, totalDur);
+      const bbp = this.filt(ctx, shot, 'bandpass', 1400, 2.2, t);
+      const bg = this.amp(ctx, shot, 0.08, t);
+      breath.connect(bbp);
+      bbp.connect(bg);
+      bg.connect(srcMix);
+    }
+
+    // 三段闭合唇哼唱共振峰（Mm / Oo）
+    const env = this.amp(ctx, shot, 0.0001, t);
+    const formants = [
+      { f: 340, q: 4.5, g: 1.0 },
+      { f: 960, q: 5.5, g: 0.65 },
+      { f: 2550, q: 6.5, g: 0.28 },
+    ];
+    for (const fm of formants) {
+      const bp = this.filt(ctx, shot, 'bandpass', fm.f, fm.q, t);
+      const fg = this.amp(ctx, shot, fm.g, t);
+      srcMix.connect(bp);
+      bp.connect(fg);
+      fg.connect(env);
+    }
+    env.connect(out);
+
+    for (let i = 0; i < notes.length; i++) {
+      const f = notes[i];
+      const dur = i === notes.length - 1 ? 1.55 : rnd(0.82, 1.12);
+      osc1.frequency.setValueAtTime(i === 0 ? f * 0.985 : notes[i - 1], t);
+      osc1.frequency.exponentialRampToValueAtTime(f, t + 0.16);
+      osc2.frequency.setValueAtTime((i === 0 ? f * 0.985 : notes[i - 1]) * 1.003, t);
+      osc2.frequency.exponentialRampToValueAtTime(f * 1.003, t + 0.16);
+
+      env.gain.setValueAtTime(0.0001, t);
+      env.gain.linearRampToValueAtTime(baseVol * (i === notes.length - 1 ? 0.85 : 1), t + 0.24);
+      env.gain.linearRampToValueAtTime(baseVol * 0.65, t + dur * 0.78);
+      env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      t += dur + rnd(0.04, 0.14);
+    }
+    shot.seal();
+  }
+
+  /**
+   * 暗林恐怖氛围背景音乐乐句：低沉拉弦大提琴 + 失谐风琴暗流（D2 + A2 + Eb3/F3 微弱拍频）
+   */
+  private playDarkAmbientChord(nightAmt: number, danger: number): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const shot = new OneShot();
+    const out = this.distantOut(ctx, shot, randomPan(0.35), 1150, 0.85).input;
+
+    const dur = rnd(7.5, 11.0);
+    const end = now + dur + 0.5;
+    const root = nightAmt > 0.5 ? 73.42 : 82.41; // D2 或 E2
+    const chord = [root, root * 1.498, root * (danger > 0.35 ? 2.12 : 2.378)]; // 五度 + 诡异小二度/小三度
+    const vol = (0.042 + nightAmt * 0.028 + danger * 0.025) / chord.length;
+
+    const env = this.amp(ctx, shot, 0.0001, now);
+    env.gain.linearRampToValueAtTime(vol, now + dur * 0.35);
+    env.gain.linearRampToValueAtTime(vol * 0.75, now + dur * 0.72);
+    env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    const lp = this.filt(ctx, shot, 'lowpass', 420 + danger * 280, 1.4, now);
+    lp.connect(env);
+    env.connect(out);
+
+    for (let i = 0; i < chord.length; i++) {
+      const f = chord[i];
+      const oA = this.oscSource(ctx, shot, 'sawtooth', f, now, end);
+      const oB = this.oscSource(ctx, shot, 'triangle', f * 1.006, now, end);
+      const gA = this.amp(ctx, shot, 0.45, now);
+      const gB = this.amp(ctx, shot, 0.55, now);
+      oA.connect(gA);
+      oB.connect(gB);
+      gA.connect(lp);
+      gB.connect(lp);
+    }
+    shot.seal();
+  }
+
+  /** 白天远处鸦鸣（环境叙事用）：清亮穿透林间风声 */
   private playCrowCall(pan: number) {
     const ctx = this.ctx;
     if (!ctx || this.muted || this.pageHidden) return;
     const now = ctx.currentTime;
     const shot = new OneShot();
-    const o = this.distantOut(ctx, shot, pan, rnd(2200, 3500), 0.55);
-    this.crowCawCore(ctx, shot, o.input, now + 0.05, rnd(0.035, 0.055), false, 2 + Math.floor(Math.random() * 3));
+    const o = this.distantOut(ctx, shot, pan, rnd(3400, 4800), 0.45);
+    this.crowCawCore(ctx, shot, o.input, now + 0.04, rnd(0.14, 0.2), false, 2 + Math.floor(Math.random() * 3));
     shot.seal();
   }
 
   /**
-   * 单只乌鸦 2–4 声嘶哑"嘎"（每次随机）；urgent = true 为受惊急叫。
-   * 传入 spatial 走空间路由；省略时随机方位、中远距离
+   * 单只乌鸦 2–4 声明亮嘶哑"嘎"（每次随机）；urgent = true 为受惊/警示急叫。
+   * 传入 spatial 走空间路由；省略时随机方位、中近距离
    */
   playCrowCaw(spatial?: SpatialAudioOpts, urgent = false): void {
     const ctx = this.ctx;
@@ -4390,13 +4533,45 @@ class SoundEngine {
       const route = this.createSpatialRoute(spatial);
       shot.addAll(route.nodes);
       out = route.input;
-      vol = 0.115 * clamp(route.gainScale, 0.1, 1) * (urgent ? 1.28 : 1);
+      vol = 0.34 * clamp(route.gainScale, 0.28, 1) * (urgent ? 1.32 : 1.05);
     } else {
-      out = this.distantOut(ctx, shot, randomPan(0.9), rnd(2600, 4200), 0.45).input;
-      vol = (urgent ? 0.088 : 0.068) * rnd(0.85, 1.15);
+      out = this.distantOut(ctx, shot, randomPan(0.85), rnd(3800, 5600), 0.35).input;
+      vol = (urgent ? 0.32 : 0.24) * rnd(0.9, 1.12);
     }
-    this.crowCawCore(ctx, shot, out, now + 0.02, vol, urgent, 2 + Math.floor(Math.random() * 3));
+    this.crowCawCore(ctx, shot, out, now + 0.015, vol, urgent, 2 + Math.floor(Math.random() * 3));
     shot.seal();
+  }
+
+  /**
+   * 危险前兆鸦群急啼：每次出现危险前触发，2–3 只乌鸦交错发出高亢明亮的“嘎—嘎—嘎”穿透警示音 + 扑棱振翅
+   */
+  playCrowDangerOmen(spatial?: SpatialAudioOpts): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const shot = new OneShot();
+    const hasPan = typeof ctx.createStereoPanner === 'function';
+    let basePan = randomPan(0.65);
+    if (spatial) {
+      basePan = clamp((spatial.worldX - spatial.listenerX) / 420, -0.85, 0.85);
+    }
+    // 领头鸦：直通明亮高亢三连啼，绝不被风声雨声淹没
+    const leadOut = this.distantOut(ctx, shot, basePan, 6200, 0.22).input;
+    this.crowCawCore(ctx, shot, leadOut, now + 0.01, 0.42, true, 3);
+    // 伴随两只乌鸦错峰呼应
+    for (let i = 0; i < 2; i++) {
+      let co: AudioNode = this.masterGain;
+      if (hasPan) {
+        const p = shot.add(ctx.createStereoPanner());
+        p.pan.setValueAtTime(clamp(basePan + (i === 0 ? -0.35 : 0.35), -0.92, 0.92), now);
+        p.connect(this.masterGain);
+        co = p;
+      }
+      this.crowCawCore(ctx, shot, co, now + 0.16 + i * 0.22 + rnd(0, 0.08), 0.3, true, 2 + i);
+    }
+    shot.seal();
+    // 同步附加惊飞振翅声
+    this.playCrowTakeoff(4, spatial);
   }
 
   /**
@@ -4470,7 +4645,7 @@ class SoundEngine {
       fg.connect(tail);
     }
 
-    const callers = Math.min(n, 1 + Math.floor(Math.random() * Math.ceil(n * 0.6)));
+    const callers = Math.min(n, 2 + Math.floor(Math.random() * Math.ceil(n * 0.6)));
     for (let i = 0; i < callers; i++) {
       let co: AudioNode = out;
       if (hasPan) {
@@ -4479,12 +4654,12 @@ class SoundEngine {
         p.connect(out);
         co = p;
       }
-      this.crowCawCore(ctx, shot, co, now + rnd(0.05, 0.9), 0.065 * scale * rnd(0.7, 1), true, 1 + Math.floor(Math.random() * 3));
+      this.crowCawCore(ctx, shot, co, now + rnd(0.03, 0.55), 0.24 * Math.max(0.45, scale) * rnd(0.85, 1.1), true, 2 + Math.floor(Math.random() * 2));
     }
     shot.seal();
   }
 
-  /** 白天远处鸦群：2–4 只在相近方位此起彼伏，各 1–3 声，极远、重混响 */
+  /** 白天远处鸦群：2–4 只在相近方位此起彼伏，清亮可辨 */
   private playCrowFlock(level: number) {
     const ctx = this.ctx;
     if (!ctx || this.muted || this.pageHidden) return;
@@ -4494,9 +4669,9 @@ class SoundEngine {
     const center = randomPan(0.85);
     let t = now + 0.05;
     for (let b = 0; b < birds; b++) {
-      const o = this.distantOut(ctx, shot, clamp(center + rnd(-0.3, 0.3), -0.95, 0.95), rnd(1600, 2600), 0.7);
-      this.crowCawCore(ctx, shot, o.input, t, rnd(0.02, 0.034) * clamp(level, 0.2, 1), false, 1 + Math.floor(Math.random() * 3));
-      t += rnd(0.3, 1.1);
+      const o = this.distantOut(ctx, shot, clamp(center + rnd(-0.3, 0.3), -0.95, 0.95), rnd(2800, 4200), 0.5);
+      this.crowCawCore(ctx, shot, o.input, t, rnd(0.11, 0.16) * clamp(level, 0.35, 1), false, 2 + Math.floor(Math.random() * 2));
+      t += rnd(0.24, 0.75);
     }
     shot.seal();
   }
@@ -5234,27 +5409,43 @@ class SoundEngine {
     const scale = clamp(route.gainScale, 0.1, 1);
     const out: AudioNode = own ? this.nearOut(ctx, shot, 0.05) : route.input;
     const srcIndoor = spatial && spatial.muffled ? !this.listenerIndoor : this.listenerIndoor;
-    const v = scale * rnd(0.92, 1.05);
-    const mix = this.amp(ctx, shot, 1, now);
-    mix.connect(out);
-
-    // 1) 爆裂瞬态 + 中频爆燃体
-    this.nburst(ctx, shot, mix, white, now, 0.0003, 0.0035, 'highpass', 1200, 0.5, 0.7 * v);
-    const bf = this.nburst(ctx, shot, mix, pink, now, 0.0008, 0.075, 'lowpass', 3200, 0.7, 0.55 * v);
-    bf.frequency.exponentialRampToValueAtTime(700, now + 0.08);
-    // 2) 低频冲击
-    this.tone(ctx, shot, mix, 'sine', now, 140, 42, 0.002, 0.12, 0.5 * v);
-    this.nburst(ctx, shot, mix, brown, now, 0.002, 0.14, 'lowpass', 180, 0.8, 0.6 * v);
-    // 3) 击锤/套筒后坐复进（距离越远越被淹没）
-    if (d01 < 0.6) {
-      const mk = (1 - d01) * v;
-      this.mechClick(ctx, shot, mix, now + 0.004, 0.12 * mk, 2900, 0.018);
-      this.mechClick(ctx, shot, mix, now + rnd(0.028, 0.04), 0.09 * mk, 2300, 0.03);
+    const v = scale * rnd(0.96, 1.1);
+    // 枪声响度翻倍 + 柔和压缩限幅（确保响亮震耳而不削波失真）
+    const mix = this.amp(ctx, shot, own ? 3.1 : 2.5, now);
+    if (typeof ctx.createDynamicsCompressor === 'function') {
+      const comp = shot.add(ctx.createDynamicsCompressor());
+      comp.threshold.setValueAtTime(-10, now);
+      comp.knee.setValueAtTime(12, now);
+      comp.ratio.setValueAtTime(6, now);
+      comp.attack.setValueAtTime(0.001, now);
+      comp.release.setValueAtTime(0.12, now);
+      mix.connect(comp);
+      comp.connect(out);
+    } else {
+      mix.connect(out);
     }
-    // 4) 送入声源所在空间混响（大量）
+
+    // 1) 超强穿透爆裂瞬态 + 高频火药裂响 + 中频爆燃体（让手枪枪声干脆震耳、极具威慑力）
+    this.nburst(ctx, shot, mix, white, now, 0.0002, 0.006, 'highpass', 1400, 0.55, 1.15 * v);
+    this.nburst(ctx, shot, mix, white, now + 0.001, 0.0005, 0.045, 'bandpass', 2400, 0.9, 0.92 * v);
+    const bf = this.nburst(ctx, shot, mix, pink, now, 0.0006, 0.11, 'lowpass', 4200, 0.65, 0.88 * v);
+    bf.frequency.exponentialRampToValueAtTime(620, now + 0.12);
+    // 2) 重低频胸腔冲击（双重下潜正弦 + 褐噪轰鸣）
+    this.tone(ctx, shot, mix, 'sine', now, 185, 38, 0.001, 0.16, 0.85 * v);
+    this.tone(ctx, shot, mix, 'triangle', now, 340, 88, 0.0008, 0.075, 0.45 * v);
+    this.nburst(ctx, shot, mix, brown, now, 0.0015, 0.18, 'lowpass', 240, 0.85, 0.92 * v);
+    // 3) 击锤/套筒金属后坐复进（清晰清脆的金属回响）
+    if (d01 < 0.75) {
+      const mk = (1 - d01) * v;
+      this.mechClick(ctx, shot, mix, now + 0.003, 0.28 * mk, 3200, 0.022);
+      this.mechClick(ctx, shot, mix, now + rnd(0.026, 0.038), 0.22 * mk, 2500, 0.036);
+    }
+    // 4) 远林枪声尾韵回响（延迟 90ms 再补一层冷冽林间反射）
+    this.nburst(ctx, shot, mix, pink, now + 0.085, 0.015, 0.32, 'bandpass', 1100, 0.8, 0.34 * v);
+    // 5) 送入声源所在空间混响（大量）
     const reverbIn = srcIndoor ? this.hutIn : this.forestIn;
     if (reverbIn) {
-      const send = this.amp(ctx, shot, (srcIndoor ? 0.5 : 0.55) * v, now);
+      const send = this.amp(ctx, shot, (srcIndoor ? 0.68 : 0.72) * v, now);
       mix.connect(send);
       send.connect(reverbIn);
     }
@@ -5327,40 +5518,40 @@ class SoundEngine {
     const shot = new OneShot();
     const out = this.nearOut(ctx, shot, 0.12);
     const t0 = now + 0.005;
-    // ① 退弹匣
-    this.mechClick(ctx, shot, out, t0, 0.07, 3400, 0.012);
-    const f1 = this.nburst(ctx, shot, out, white, t0 + 0.02, 0.01, 0.11, 'bandpass', 2600, 2.2, 0.06);
+    // ① 退弹匣（增强清脆金属机械声）
+    this.mechClick(ctx, shot, out, t0, 0.18, 3400, 0.014);
+    const f1 = this.nburst(ctx, shot, out, white, t0 + 0.02, 0.01, 0.11, 'bandpass', 2600, 2.2, 0.14);
     f1.frequency.exponentialRampToValueAtTime(1500, t0 + 0.14);
-    this.nburst(ctx, shot, out, pink, t0 + rnd(0.15, 0.19), 0.003, 0.05, 'lowpass', 600, 0.8, 0.12);
+    this.nburst(ctx, shot, out, pink, t0 + rnd(0.15, 0.19), 0.003, 0.05, 'lowpass', 600, 0.8, 0.24);
     // ② 插入
     const t1 = t0 + rnd(0.42, 0.52);
-    const f2 = this.nburst(ctx, shot, out, white, t1, 0.02, 0.07, 'bandpass', 1400, 2.4, 0.05);
+    const f2 = this.nburst(ctx, shot, out, white, t1, 0.02, 0.07, 'bandpass', 1400, 2.4, 0.12);
     f2.frequency.exponentialRampToValueAtTime(2400, t1 + 0.09);
-    this.mechClick(ctx, shot, out, t1 + 0.1, 0.16, 1700, 0.035);
-    this.tone(ctx, shot, out, 'triangle', t1 + 0.1, 260, 180, 0.001, 0.05, 0.1);
+    this.mechClick(ctx, shot, out, t1 + 0.1, 0.34, 1700, 0.038);
+    this.tone(ctx, shot, out, 'triangle', t1 + 0.1, 260, 180, 0.001, 0.05, 0.22);
     // ③ 拉套筒
     const t2 = t1 + rnd(0.32, 0.4);
-    const f3 = this.nburst(ctx, shot, out, white, t2, 0.03, 0.08, 'bandpass', 1800, 3, 0.045);
+    const f3 = this.nburst(ctx, shot, out, white, t2, 0.03, 0.08, 'bandpass', 1800, 3, 0.11);
     f3.frequency.exponentialRampToValueAtTime(3200, t2 + 0.11);
-    this.mechClick(ctx, shot, out, t2 + 0.12, 0.13, 2500, 0.02);
+    this.mechClick(ctx, shot, out, t2 + 0.12, 0.28, 2500, 0.022);
     const t3 = t2 + 0.12 + rnd(0.07, 0.11);
-    this.mechClick(ctx, shot, out, t3, 0.2, 1900, 0.045);
-    this.tone(ctx, shot, out, 'sine', t3, 180, 120, 0.001, 0.06, 0.12);
-    this.nburst(ctx, shot, out, pink, t3, 0.001, 0.04, 'bandpass', 900, 1.5, 0.1);
+    this.mechClick(ctx, shot, out, t3, 0.42, 1900, 0.048);
+    this.tone(ctx, shot, out, 'sine', t3, 180, 120, 0.001, 0.06, 0.26);
+    this.nburst(ctx, shot, out, pink, t3, 0.001, 0.04, 'bandpass', 900, 1.5, 0.22);
     shot.seal();
   }
 
-  /** 空仓击发：扳机行程轻"嗒" + 击锤空击清脆"咔"（干声、无回响） */
+  /** 空仓击发：扳机行程轻"嗒" + 击锤空击清脆"咔"（增强辨识度） */
   playDryFire(): void {
     const ctx = this.ctx;
     if (!ctx || !this.masterGain || !this.whiteBuf || this.muted || this.pageHidden) return;
     const now = ctx.currentTime;
     const shot = new OneShot();
     const out = this.nearOut(ctx, shot, 0.06);
-    this.mechClick(ctx, shot, out, now + 0.003, 0.035, 4200, 0.006);
+    this.mechClick(ctx, shot, out, now + 0.003, 0.12, 4200, 0.008);
     const t = now + rnd(0.05, 0.08);
-    this.mechClick(ctx, shot, out, t, 0.16, 3100 * rnd(0.95, 1.05), 0.022);
-    this.tone(ctx, shot, out, 'triangle', t, 520, 380, 0.001, 0.03, 0.05);
+    this.mechClick(ctx, shot, out, t, 0.34, 3100 * rnd(0.95, 1.05), 0.025);
+    this.tone(ctx, shot, out, 'triangle', t, 520, 380, 0.001, 0.03, 0.14);
     shot.seal();
   }
 

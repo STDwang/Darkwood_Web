@@ -10,9 +10,9 @@ import { createRng } from '../util';
 import { BRAMBLE_VARIANTS } from '../world';
 
 /** 离屏枝形画布边长（像素） */
-const SPRITE_PX = 128;
-/** scale=1 时一丛枯枝在世界中的覆盖直径（世界 px） */
-const WORLD_SPAN = 96;
+const SPRITE_PX = 160;
+/** scale=1 时一丛枯枝在世界中的覆盖直径（世界 px，扩大以增强修长茂密的诡异枝条感） */
+const WORLD_SPAN = 136;
 const BRANCH_COLORS = ['#070707', '#0a0908', '#0d0c0b', '#090807'];
 
 let sprites: HTMLCanvasElement[] | null = null;
@@ -35,9 +35,9 @@ function branch(
   depth: number,
   k: number
 ) {
-  const bend = (rng() - 0.5) * 0.7;
-  const mx = x + Math.cos(ang + bend * 0.5) * len * 0.5;
-  const my = y + Math.sin(ang + bend * 0.5) * len * 0.5;
+  const bend = (rng() - 0.5) * 1.05;
+  const mx = x + Math.cos(ang + bend * 0.55) * len * 0.52;
+  const my = y + Math.sin(ang + bend * 0.55) * len * 0.52;
   const ex = x + Math.cos(ang + bend) * len;
   const ey = y + Math.sin(ang + bend) * len;
   g.lineWidth = Math.max(0.5 * k, width);
@@ -46,14 +46,14 @@ function branch(
   g.quadraticCurveTo(mx, my, ex, ey);
   g.stroke();
   if (depth <= 0) return;
-  const n = 2 + (rng() < 0.35 ? 1 : 0);
+  const n = 2 + (rng() < 0.55 ? 1 : 0);
   for (let i = 0; i < n; i++) {
-    // 分叉点沿枝条 55%–100% 处，末端越分越细
-    const f = 0.55 + rng() * 0.45;
-    const bx = x + (ex - x) * f + (mx - (x + ex) * 0.5) * (1 - Math.abs(f * 2 - 1)) * 0.8;
-    const by = y + (ey - y) * f + (my - (y + ey) * 0.5) * (1 - Math.abs(f * 2 - 1)) * 0.8;
-    const spread = (rng() - 0.5) * 1.4 + (i - (n - 1) * 0.5) * 0.45;
-    branch(g, rng, bx, by, ang + bend + spread, len * (0.55 + rng() * 0.2), width * 0.62, depth - 1, k);
+    // 分叉点沿枝条 48%–100% 处，末端越分越细且诡异扭折
+    const f = 0.48 + rng() * 0.52;
+    const bx = x + (ex - x) * f + (mx - (x + ex) * 0.5) * (1 - Math.abs(f * 2 - 1)) * 0.85;
+    const by = y + (ey - y) * f + (my - (y + ey) * 0.5) * (1 - Math.abs(f * 2 - 1)) * 0.85;
+    const spread = (rng() - 0.5) * 1.6 + (i - (n - 1) * 0.5) * 0.55;
+    branch(g, rng, bx, by, ang + bend + spread, len * (0.62 + rng() * 0.22), width * 0.64, depth - 1, k);
   }
 }
 
@@ -72,12 +72,12 @@ function bakeSprites(): HTMLCanvasElement[] {
     g.lineJoin = 'round';
     g.strokeStyle = BRANCH_COLORS[v % BRANCH_COLORS.length];
     g.translate(SPRITE_PX * 0.5, SPRITE_PX * 0.5);
-    const stems = 2 + Math.floor(rng() * 3);
+    const stems = 4 + Math.floor(rng() * 3);
     const base = rng() * Math.PI * 2;
     for (let s = 0; s < stems; s++) {
-      const ang = base + (s / stems) * Math.PI * 2 * (0.55 + rng() * 0.3) + (rng() - 0.5) * 0.5;
-      const depth = 2 + Math.floor(rng() * 3); // 共 3–5 级
-      branch(g, rng, 0, 0, ang, (11 + rng() * 6) * k, (1.5 + rng() * 1.0) * k, depth, k);
+      const ang = base + (s / stems) * Math.PI * 2 * (0.65 + rng() * 0.3) + (rng() - 0.5) * 0.55;
+      const depth = 3 + Math.floor(rng() * 2); // 共 4–5 级茂密长枝
+      branch(g, rng, 0, 0, ang, (14 + rng() * 8) * k, (1.8 + rng() * 1.1) * k, depth, k);
     }
     // 根部小结节
     g.fillStyle = BRANCH_COLORS[0];

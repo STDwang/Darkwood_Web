@@ -79,9 +79,9 @@ export class GameRuntime {
   }
 
   private handleResize = () => {
-    const rect = this.canvas.getBoundingClientRect();
-    const w = rect.width || window.innerWidth;
-    const h = rect.height || window.innerHeight;
+    // 优先使用 clientWidth/clientHeight（在 CSS rotate(90deg) 强制横屏时仍返回精确的逻辑横屏尺寸，而非旋转后外包框）
+    const w = this.canvas.clientWidth || this.canvas.getBoundingClientRect().width || window.innerWidth;
+    const h = this.canvas.clientHeight || this.canvas.getBoundingClientRect().height || window.innerHeight;
     this.renderer.resize(w, h);
     if (this.engine.mode === 'hold' || this.engine.mode === 'title') {
       this.renderer.render(this.engine);

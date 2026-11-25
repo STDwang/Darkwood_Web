@@ -18,14 +18,20 @@ import {
   X,
 } from 'lucide-react';
 import {
+  AxeInkIcon,
   BandageInkIcon,
+  DodgeInkIcon,
+  FlameInkIcon,
   FlareInkIcon,
+  InteractHandIcon,
+  PistolInkIcon,
+  ReloadInkIcon,
   ResourceInkIcon,
   TrapInkIcon,
   WeatherInkIcon,
 } from './components/InkIcons';
 import GameHud from './components/GameHud';
-import { MinimapExploreState } from './components/Minimap';
+import { MinimapExploreState, WorldMapView } from './components/Minimap';
 import { AudioFX } from './game/audio';
 import { I18n, Lang } from './game/i18n';
 import { Quality, QualityTier } from './game/quality';
@@ -33,9 +39,9 @@ import { GameRuntime } from './game/runtime';
 import { HudSnapshot, ResourceKey, TimePhase, WeatherKind } from './game/types';
 import { Variants } from './game/variants';
 import { CRAFT_RECIPES } from './game/world';
-import { applyXhsWindowMetrics, setXhsKeepScreenOn } from './game/xhsBridge';
+import { applyXhsWindowMetrics, isMiniToolEnv, setXhsKeepScreenOn } from './game/xhsBridge';
 
-type LayerId = 'pause' | 'craft' | 'journal' | 'settings' | 'controls' | 'dev';
+type LayerId = 'pause' | 'craft' | 'journal' | 'settings' | 'controls' | 'dev' | 'map';
 
 const RESOURCE_META: Array<{ key: ResourceKey; label: string; color: string }> = [
   { key: 'wood', label: '木材', color: '#cca16f' },
@@ -65,6 +71,7 @@ export default function App() {
   const [muted, setMuted] = useState<boolean>(AudioFX.isMuted);
   const [variantTick, setVariantTick] = useState(0);
   const [isTouch, setIsTouch] = useState(false);
+  const forceLandscapeRef = useRef(false);
   const isDev = Variants.isDevMode();
 
   const moveStickRef = useRef<{ id: number | null; ox: number; oy: number }>({
@@ -93,22 +100,43 @@ export default function App() {
     const u2 = Quality.subscribe(() => setQualityTier(Quality.tier));
     const u3 = AudioFX.subscribe(() => setMuted(AudioFX.isMuted));
     const u4 = Variants.subscribe(() => setVariantTick((n) => n + 1));
-    const coarse = window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window;
-    setIsTouch(Boolean(coarse));
+
+    // 同步检测竖屏手机/小红书小工具容器，自动启用强制横屏（rotate 90deg）与触控双摇杆层
+    const syncViewportMode = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const shouldForceLandscape = vh > vw && vw <= 768;
+      forceLandscapeRef.current = shouldForceLandscape;
+      document.documentElement.classList.toggle('force-landscape', shouldForceLandscape);
+      const coarse = window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window;
+      const mobileLike = Boolean(coarse || shouldForceLandscape || Math.min(vw, vh) <= 520 || isMiniToolEnv());
+      setIsTouch(mobileLike);
+      applyXhsWindowMetrics();
+    };
+
+    syncViewportMode();
+    // 若浏览器支持原生屏幕方向锁定，优先请求横屏
+    try {
+      (screen.orientation as unknown as { lock?: (o: string) => Promise<void> })?.lock?.('landscape')?.catch?.(() => {});
+    } catch {
+      // 忽略不支持横屏锁定的环境，交由 CSS force-landscape 兜底
+    }
 
     // 小红书小工具容器适配：异步水合偏好存储 + 窗口安全区与右上角胶囊避让测算
     I18n.hydrateFromContainer();
     Quality.hydrateFromContainer();
     AudioFX.hydrateFromContainer();
-    applyXhsWindowMetrics();
-    window.addEventListener('resize', applyXhsWindowMetrics);
+    window.addEventListener('resize', syncViewportMode);
+    window.addEventListener('orientationchange', syncViewportMode);
 
     return () => {
       u1();
       u2();
       u3();
       u4();
-      window.removeEventListener('resize', applyXhsWindowMetrics);
+      window.removeEventListener('resize', syncViewportMode);
+      window.removeEventListener('orientationchange', syncViewportMode);
+      document.documentElement.classList.remove('force-landscape');
     };
   }, []);
 
@@ -208,7 +236,7 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (
         e.repeat &&
-        ['KeyF', 'KeyC', 'KeyJ', 'KeyQ', 'KeyR', 'Tab', 'Escape', 'Digit1', 'Digit2', 'Digit3', 'Digit4'].includes(
+        ['KeyF', 'KeyC', 'KeyJ', 'KeyM', 'KeyQ', 'KeyR', 'Tab', 'Escape', 'Digit1', 'Digit2', 'Digit3', 'Digit4'].includes(
           e.code
         )
       ) {
@@ -236,6 +264,12 @@ export default function App() {
           e.preventDefault();
           if (layersRef.current[layersRef.current.length - 1] === 'journal') popLayer();
           else pushLayer('journal');
+          return;
+        }
+        if (e.code === 'KeyM') {
+          e.preventDefault();
+          if (layersRef.current[layersRef.current.length - 1] === 'map') popLayer();
+          else pushLayer('map');
           return;
         }
       }
@@ -274,9 +308,15 @@ export default function App() {
     };
 
     const onMouseMove = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      rt.engine.mouseScreenX = e.clientX - rect.left;
-      rt.engine.mouseScreenY = e.clientY - rect.top;
+      if (forceLandscapeRef.current) {
+        // 顺时针旋转 90° 强制横屏坐标逆映射：物理(clientX, clientY) -> 逻辑横屏(clientY, innerWidth - clientX)
+        rt.engine.mouseScreenX = e.clientY;
+        rt.engine.mouseScreenY = window.innerWidth - e.clientX;
+      } else {
+        const rect = canvas.getBoundingClientRect();
+        rt.engine.mouseScreenX = e.clientX - rect.left;
+        rt.engine.mouseScreenY = e.clientY - rect.top;
+      }
     };
 
     const onMouseDown = (e: MouseEvent) => {
@@ -334,90 +374,89 @@ export default function App() {
     };
   }, [clearLayers, popLayer, pushLayer, startSurvival]);
 
-  // Touch Virtual Sticks
-  const onMoveTouchStart = (e: React.TouchEvent) => {
+  // 统一 Pointer Events 虚拟双摇杆（同时兼容手机真机多指触控与电脑端手机模拟器，并自动处理 90° 强制横屏方向映射）
+  const onMovePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (moveStickRef.current.id !== null) return;
+    e.stopPropagation();
     AudioFX.unlock();
-    const touch = e.changedTouches[0];
-    moveStickRef.current = { id: touch.identifier, ox: touch.clientX, oy: touch.clientY };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // 忽略不支持指针捕获的环境
+    }
+    moveStickRef.current = { id: e.pointerId, ox: e.clientX, oy: e.clientY };
   };
 
-  const onMoveTouchMove = (e: React.TouchEvent) => {
+  const onMovePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const st = moveStickRef.current;
-    if (st.id === null) return;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const touch = e.changedTouches[i];
-      if (touch.identifier !== st.id) continue;
-      const dx = touch.clientX - st.ox;
-      const dy = touch.clientY - st.oy;
-      const maxR = 44;
-      const mag = Math.hypot(dx, dy);
-      const scale = mag > maxR ? maxR / mag : 1;
-      const nx = (dx * scale) / maxR;
-      const ny = (dy * scale) / maxR;
-      setMoveKnob({ x: nx * 30, y: ny * 30 });
-      if (runtimeRef.current) {
-        runtimeRef.current.engine.touchMoveX = nx;
-        runtimeRef.current.engine.touchMoveY = ny;
-        runtimeRef.current.engine.touchSprint = mag > maxR * 0.92;
-      }
+    if (st.id !== e.pointerId) return;
+    const rawDx = e.clientX - st.ox;
+    const rawDy = e.clientY - st.oy;
+    // 顺时针旋转 90° 后，物理向下(+rawDy)为横屏向右(+dx)，物理向右(+rawDx)为横屏向上(-dy)
+    const dx = forceLandscapeRef.current ? rawDy : rawDx;
+    const dy = forceLandscapeRef.current ? -rawDx : rawDy;
+    const maxR = 46;
+    const mag = Math.hypot(dx, dy);
+    const scale = mag > maxR ? maxR / mag : 1;
+    const nx = (dx * scale) / maxR;
+    const ny = (dy * scale) / maxR;
+    setMoveKnob({ x: nx * 32, y: ny * 32 });
+    if (runtimeRef.current) {
+      runtimeRef.current.engine.touchMoveX = nx;
+      runtimeRef.current.engine.touchMoveY = ny;
+      runtimeRef.current.engine.touchSprint = mag > maxR * 0.88;
     }
   };
 
-  const onMoveTouchEnd = (e: React.TouchEvent) => {
-    const st = moveStickRef.current;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === st.id) {
-        moveStickRef.current.id = null;
-        setMoveKnob({ x: 0, y: 0 });
-        if (runtimeRef.current) {
-          runtimeRef.current.engine.touchMoveX = 0;
-          runtimeRef.current.engine.touchMoveY = 0;
-          runtimeRef.current.engine.touchSprint = false;
-        }
-      }
+  const onMovePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (moveStickRef.current.id !== e.pointerId) return;
+    moveStickRef.current.id = null;
+    setMoveKnob({ x: 0, y: 0 });
+    if (runtimeRef.current) {
+      runtimeRef.current.engine.touchMoveX = 0;
+      runtimeRef.current.engine.touchMoveY = 0;
+      runtimeRef.current.engine.touchSprint = false;
     }
   };
 
-  const onAimTouchStart = (e: React.TouchEvent) => {
+  const onAimPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (aimStickRef.current.id !== null) return;
+    e.stopPropagation();
     AudioFX.unlock();
-    const touch = e.changedTouches[0];
-    aimStickRef.current = { id: touch.identifier, ox: touch.clientX, oy: touch.clientY };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // 忽略
+    }
+    aimStickRef.current = { id: e.pointerId, ox: e.clientX, oy: e.clientY };
     if (runtimeRef.current) runtimeRef.current.engine.touchAimActive = true;
   };
 
-  const onAimTouchMove = (e: React.TouchEvent) => {
+  const onAimPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const st = aimStickRef.current;
-    if (st.id === null) return;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const touch = e.changedTouches[i];
-      if (touch.identifier !== st.id) continue;
-      const dx = touch.clientX - st.ox;
-      const dy = touch.clientY - st.oy;
-      const maxR = 44;
-      const mag = Math.hypot(dx, dy);
-      const scale = mag > maxR ? maxR / mag : 1;
-      const nx = (dx * scale) / maxR;
-      const ny = (dy * scale) / maxR;
-      setAimKnob({ x: nx * 30, y: ny * 30 });
-      if (runtimeRef.current) {
-        runtimeRef.current.engine.touchAimX = nx;
-        runtimeRef.current.engine.touchAimY = ny;
-      }
+    if (st.id !== e.pointerId) return;
+    const rawDx = e.clientX - st.ox;
+    const rawDy = e.clientY - st.oy;
+    const dx = forceLandscapeRef.current ? rawDy : rawDx;
+    const dy = forceLandscapeRef.current ? -rawDx : rawDy;
+    const maxR = 46;
+    const mag = Math.hypot(dx, dy);
+    const scale = mag > maxR ? maxR / mag : 1;
+    const nx = (dx * scale) / maxR;
+    const ny = (dy * scale) / maxR;
+    setAimKnob({ x: nx * 32, y: ny * 32 });
+    if (runtimeRef.current) {
+      runtimeRef.current.engine.touchAimX = nx;
+      runtimeRef.current.engine.touchAimY = ny;
     }
   };
 
-  const onAimTouchEnd = (e: React.TouchEvent) => {
-    const st = aimStickRef.current;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === st.id) {
-        aimStickRef.current.id = null;
-        setAimKnob({ x: 0, y: 0 });
-        if (runtimeRef.current) {
-          runtimeRef.current.engine.touchAimActive = false;
-        }
-      }
+  const onAimPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (aimStickRef.current.id !== e.pointerId) return;
+    aimStickRef.current.id = null;
+    setAimKnob({ x: 0, y: 0 });
+    if (runtimeRef.current) {
+      runtimeRef.current.engine.touchAimActive = false;
     }
   };
 
@@ -451,10 +490,6 @@ export default function App() {
 
   const hpStatus =
     !hud || hud.hp > 60 ? t('状态正常') : hud.hp > 28 ? t('受伤') : t('濒危');
-
-  // Map player world coord (-1300..1300) onto the hand-drawn journal sketch (260 x 190)
-  const sketchPx = hud ? 130 + (hud.playerX / 1300) * 105 : 130;
-  const sketchPy = hud ? 95 + (hud.playerY / 1300) * 76 : 95;
 
   return (
     <div id="app" className="bg-[#070807] text-[#e7e2d8]">
@@ -929,95 +964,143 @@ export default function App() {
         </div>
       )}
 
-      {/* TOUCH CONTROLS */}
+      {/* TOUCH CONTROLS（手机横屏大尺寸人体工学纯美术图标物理交互，Pointer Events 同时兼容真机多指与模拟器） */}
       {isTouch && hud?.mode === 'play' && topLayer === null && (
         <div className="pointer-events-none fixed inset-0 z-25">
+          {/* 左侧大尺寸移动虚拟摇杆（拉满边缘自动疾跑） */}
           <div
-            onTouchStart={onMoveTouchStart}
-            onTouchMove={onMoveTouchMove}
-            onTouchEnd={onMoveTouchEnd}
-            onTouchCancel={onMoveTouchEnd}
-            className="pointer-events-auto fixed left-4 bottom-36 sm:bottom-24 md:left-6 md:bottom-28 w-24 h-24 sm:w-28 sm:h-28 rounded-full border border-[#b8ae9c]/25 bg-black/25 flex items-center justify-center"
+            onPointerDown={onMovePointerDown}
+            onPointerMove={onMovePointerMove}
+            onPointerUp={onMovePointerUp}
+            onPointerCancel={onMovePointerUp}
+            className="touch-stick touch-stick--move pointer-events-auto fixed w-28 h-28 rounded-full border-2 border-[#c9b796]/42 bg-black/38 flex items-center justify-center shadow-[0_6px_22px_rgba(0,0,0,0.68)]"
           >
             <div
-              className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-[#b8ae9c]/35 border border-[#e7e2d8]/45"
+              className="w-12 h-12 rounded-full bg-[#c9b796]/48 border border-[#f2e8d2]/60 pointer-events-none"
               style={{ transform: `translate(${moveKnob.x}px, ${moveKnob.y}px)` }}
             />
           </div>
 
-          <div className="pointer-events-auto fixed right-4 bottom-36 sm:bottom-24 md:right-6 md:bottom-28 flex items-end gap-2.5">
-            <div className="flex flex-col gap-2 items-end">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onTouchStart={() => runtimeRef.current?.engine.triggerDodge()}
-                  className="min-w-[48px] min-h-[48px] rounded-full bg-[#1b2220]/90 border border-[#84b8a6]/55 text-xs font-medium text-[#dceee8] whitespace-nowrap"
-                >
-                  {t('闪避')}
-                </button>
-                <button
-                  type="button"
-                  onTouchStart={() => {
-                    if (!runtimeRef.current) return;
-                    runtimeRef.current.engine.touchInteract = true;
-                    runtimeRef.current.engine.triggerInstantInteract();
-                  }}
-                  onTouchEnd={() => {
-                    if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
-                  }}
-                  className="min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/88 border border-[#d8b463]/55 text-xs font-medium text-[#efe8da] whitespace-nowrap"
-                >
-                  {hud.draggingFurniture ? t('松开') : t('搜刮')}
-                </button>
-              </div>
-              {/* R3：触控切换火把/手枪（≥44px）；手枪模式下额外显示换弹 */}
-              <div className="flex items-center gap-2">
-                {hud.equip?.mode === 'pistol' && (
+          {/* 右侧物理化纯图标动作集群 + 瞄准摇杆 */}
+          <div className="touch-cluster pointer-events-auto fixed flex items-end gap-3">
+            <div className="flex flex-col gap-2.5 items-end">
+              <div className="flex items-center gap-2.5">
+                {(hud.equip?.mode === 'pistol' || (hud.equip && !hud.equip.torchLit)) && (
                   <button
                     type="button"
                     aria-label={t('换弹')}
-                    onTouchStart={() => runtimeRef.current?.engine.reloadWeapon()}
-                    className="min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/88 border border-[#b8ae9c]/45 text-xs font-medium text-[#efe8da] whitespace-nowrap"
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      AudioFX.unlock();
+                      runtimeRef.current?.engine.reloadWeapon();
+                    }}
+                    className="w-12 h-12 min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/92 border border-[#d6c8ad]/55 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
                   >
-                    {t('换弹')}
+                    <ReloadInkIcon className="w-6 h-6" />
                   </button>
                 )}
                 <button
                   type="button"
-                  aria-label={t('切换武器')}
-                  onTouchStart={() => runtimeRef.current?.engine.toggleWeapon()}
-                  className="min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/88 border border-[#c9824f]/55 text-xs font-medium text-[#efe8da] whitespace-nowrap"
+                  aria-label={t('闪避')}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    AudioFX.unlock();
+                    runtimeRef.current?.engine.triggerDodge();
+                  }}
+                  className="w-[52px] h-[52px] min-w-[52px] min-h-[52px] rounded-full bg-[#152420]/92 border border-[#7bc2ac]/65 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
                 >
-                  {hud.equip?.mode === 'pistol' ? t('火把') : t('手枪')}
+                  <DodgeInkIcon className="w-6 h-6" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={hud.draggingFurniture ? t('松开') : t('搜刮')}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    AudioFX.unlock();
+                    if (!runtimeRef.current) return;
+                    runtimeRef.current.engine.touchInteract = true;
+                    runtimeRef.current.engine.triggerInstantInteract();
+                  }}
+                  onPointerUp={() => {
+                    if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
+                  }}
+                  onPointerCancel={() => {
+                    if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
+                  }}
+                  className={`w-[54px] h-[54px] min-w-[54px] min-h-[54px] rounded-full border-2 flex items-center justify-center shadow-lg active:scale-95 transition-transform ${
+                    hud.prompt
+                      ? 'bg-[#2e2414]/95 border-[#e8be6c] shadow-[0_0_18px_rgba(232,190,108,0.55)]'
+                      : 'bg-[#1a1814]/90 border-[#d8b463]/55'
+                  }`}
+                >
+                  <InteractHandIcon className="w-7 h-7" />
                 </button>
               </div>
-              <button
-                type="button"
-                onTouchStart={() => {
-                  if (!runtimeRef.current) return;
-                  runtimeRef.current.engine.mouseDownLeft = true;
-                  runtimeRef.current.engine.beginAttackCharge();
-                }}
-                onTouchEnd={() => {
-                  if (!runtimeRef.current) return;
-                  runtimeRef.current.engine.mouseDownLeft = false;
-                  runtimeRef.current.engine.releaseAttackCharge();
-                }}
-                className="min-w-[52px] min-h-[52px] rounded-full bg-[#6d241f]/88 border border-[#d67a70]/60 text-xs font-medium text-[#f5e1de] whitespace-nowrap"
-              >
-                {hud.equip?.mode === 'pistol' ? t('射击') : t('攻击')}
-              </button>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  aria-label={t('切换武器')}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    AudioFX.unlock();
+                    runtimeRef.current?.engine.toggleWeapon();
+                  }}
+                  className="w-12 h-12 min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/92 border border-[#c9824f]/65 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
+                >
+                  {hud.equip?.mode === 'pistol' ? (
+                    <FlameInkIcon className="w-6 h-6 text-[#e8a354]" />
+                  ) : (
+                    <PistolInkIcon className="w-6 h-6" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  aria-label={hud.equip?.mode === 'pistol' ? t('射击') : t('攻击')}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    AudioFX.unlock();
+                    if (!runtimeRef.current) return;
+                    runtimeRef.current.engine.mouseDownLeft = true;
+                    runtimeRef.current.engine.beginAttackCharge();
+                  }}
+                  onPointerUp={() => {
+                    if (!runtimeRef.current) return;
+                    runtimeRef.current.engine.mouseDownLeft = false;
+                    runtimeRef.current.engine.releaseAttackCharge();
+                  }}
+                  onPointerCancel={() => {
+                    if (!runtimeRef.current) return;
+                    runtimeRef.current.engine.mouseDownLeft = false;
+                    runtimeRef.current.engine.releaseAttackCharge();
+                  }}
+                  className="relative w-16 h-16 min-w-[64px] min-h-[64px] rounded-full bg-[#6d221c]/94 border-2 border-[#e08276]/80 flex items-center justify-center shadow-[0_6px_22px_rgba(0,0,0,0.75)] active:scale-95 transition-transform"
+                >
+                  {hud.chargeRatio > 0.05 && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute -inset-1 rounded-full border-2 border-[#f2c46d]"
+                      style={{ opacity: hud.chargeRatio }}
+                    />
+                  )}
+                  {hud.equip?.mode === 'pistol' ? (
+                    <PistolInkIcon className="w-8 h-8" />
+                  ) : (
+                    <AxeInkIcon className="w-8 h-8" />
+                  )}
+                </button>
+              </div>
             </div>
 
+            {/* 右侧瞄准与照明摇杆 */}
             <div
-              onTouchStart={onAimTouchStart}
-              onTouchMove={onAimTouchMove}
-              onTouchEnd={onAimTouchEnd}
-              onTouchCancel={onAimTouchEnd}
-              className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border border-[#b8ae9c]/25 bg-black/25 flex items-center justify-center"
+              onPointerDown={onAimPointerDown}
+              onPointerMove={onAimPointerMove}
+              onPointerUp={onAimPointerUp}
+              onPointerCancel={onAimPointerUp}
+              className="w-28 h-28 rounded-full border-2 border-[#d8b463]/42 bg-black/38 flex items-center justify-center shadow-[0_6px_22px_rgba(0,0,0,0.68)]"
             >
               <div
-                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-[#d8b463]/35 border border-[#e5b968]/55"
+                className="w-12 h-12 rounded-full bg-[#d8b463]/48 border border-[#f2cf84]/65 pointer-events-none"
                 style={{ transform: `translate(${aimKnob.x}px, ${aimKnob.y}px)` }}
               />
             </div>
@@ -1025,31 +1108,48 @@ export default function App() {
         </div>
       )}
 
-      {/* UNIFIED LAYER STACK MODALS (Esc / Scrim / Back / Popstate) */}
+      {/* UNIFIED LAYER STACK MODALS（全窗口实物载体美术：旧纸页 / 牛皮卷轴 / 旧木工台+麻布袋 / 线装日记本 / 牛皮档案袋） */}
       {topLayer && (
         <div
-          className="fixed inset-0 z-30 flex items-center justify-center bg-black/58 backdrop-blur-[2px] p-5"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-black/68 backdrop-blur-[2px] p-4 sm:p-5"
           onClick={() => popLayer()}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className={`w-full max-w-lg max-h-[85vh] rounded-md flex flex-col overflow-hidden ${panelCls}`}
+            className={`w-full ${topLayer === 'map' || topLayer === 'craft' ? 'max-w-xl' : 'max-w-lg'} max-h-[86vh] flex flex-col overflow-hidden carrier-sheet ${
+              topLayer === 'map'
+                ? 'carrier-scroll'
+                : topLayer === 'craft'
+                ? 'carrier-workbench'
+                : topLayer === 'journal'
+                ? 'carrier-notebook'
+                : topLayer === 'pause'
+                ? 'carrier-parchment'
+                : 'carrier-dossier'
+            }`}
           >
+            {/* 卷轴顶部木杆装饰（仅地图卷轴显示） */}
+            {topLayer === 'map' && <div className="carrier-scroll__rod" aria-hidden="true" />}
+
             {/* Fixed Modal Header (zero position: sticky) */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-[#b8ae9c]/18 shrink-0">
-              <h2 className="font-display text-lg font-semibold tracking-wide text-[#f0e6d2]">
-                {topLayer === 'pause' && t('暂停')}
-                {topLayer === 'craft' && t('工作台制作')}
-                {topLayer === 'journal' && t('羊皮生存日志')}
-                {topLayer === 'settings' && t('设置')}
-                {topLayer === 'controls' && t('操作说明')}
-                {topLayer === 'dev' && t('开发者 Variants 面板')}
-              </h2>
+            <div className="carrier-header flex items-center justify-between px-5 py-3.5 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <span className="carrier-seal" aria-hidden="true" />
+                <h2 className="font-display text-lg font-semibold tracking-wider text-[#f0e6d2]">
+                  {topLayer === 'pause' && t('暂停')}
+                  {topLayer === 'craft' && t('工作台')}
+                  {topLayer === 'journal' && t('生存日志')}
+                  {topLayer === 'map' && t('探索地图')}
+                  {topLayer === 'settings' && t('设置')}
+                  {topLayer === 'controls' && t('操作说明')}
+                  {topLayer === 'dev' && t('开发者 Variants 面板')}
+                </h2>
+              </div>
               <button
                 type="button"
                 onClick={() => popLayer()}
                 aria-label={t('关闭')}
-                className="min-w-[44px] min-h-[44px] -mr-2 flex items-center justify-center text-[#a8a091] hover:text-white transition-colors"
+                className="min-w-[44px] min-h-[44px] -mr-2 flex items-center justify-center text-[#c7b99c] hover:text-white transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1127,146 +1227,60 @@ export default function App() {
                 </div>
               )}
 
-              {/* PARCHMENT FIELD JOURNAL: Hand-Drawn Sector Compass Sketch + Survival Log */}
+              {/* 真实探索大地图（M 键 / 手机端点击右上角小地图直接展开，展示走过的范围与实时位置） */}
+              {topLayer === 'map' && hud && (
+                <div className="space-y-2.5">
+                  <WorldMapView runtimeRef={runtimeRef} exploreRef={exploreRef} />
+                </div>
+              )}
+
+              {/* 生存纪事（已去除手绘草图，地图请直接按 M 或点击小地图查看真实探索范围） */}
               {topLayer === 'journal' && hud && (
-                <div className="space-y-4">
-                  <div className={`p-3.5 rounded ${cardCls}`}>
-                    <div className="flex items-center justify-between text-xs text-[#b8ae9c] mb-2">
-                      <span>{t('手绘林区方位草图')}</span>
-                      <span className="font-mono-num">
-                        {hud.discoveredZones.length}/5
-                      </span>
-                    </div>
-
-                    {/* Hand-drawn ink sector sketch SVG */}
-                    <svg
-                      viewBox="0 0 260 190"
-                      className="w-full h-44 rounded border border-[#b8ae9c]/18 bg-[#12100d]"
-                    >
-                      {/* Rough compass grid & dashed trails */}
-                      <g stroke="rgba(180,156,118,0.22)" strokeWidth="1" strokeDasharray="3 4" fill="none">
-                        <path d="M130 95 L46 42" />
-                        <path d="M130 95 L214 46" />
-                        <path d="M130 95 L48 148" />
-                        <path d="M130 95 L212 146" />
-                        <circle cx="130" cy="95" r="56" strokeOpacity="0.14" />
-                      </g>
-
-                      {/* Compass rose N/S/W/E */}
-                      <g fill="rgba(184,168,140,0.45)" fontSize="9" fontFamily="monospace" textAnchor="middle">
-                        <text x="130" y="14">N</text>
-                        <text x="130" y="183">S</text>
-                        <text x="12" y="98">W</text>
-                        <text x="248" y="98">E</text>
-                      </g>
-
-                      {/* Central Hideout cabin mark */}
-                      <g transform="translate(130, 95)">
-                        <rect x="-7" y="-5" width="14" height="10" fill="#2e2418" stroke="#dfb763" strokeWidth="1.4" />
-                        <text y="19" fill="#e5d4b3" fontSize="9" textAnchor="middle">
-                          {t('庇护所')}
-                        </text>
-                      </g>
-
-                      {/* 4 Outer Landmarks + 3 信号中继零件地标收集状态 */}
-                      {LANDMARK_MAP_NODES.map((node) => {
-                        const found = hud.discoveredZones.includes(node.name);
-                        const hasRelay =
-                          node.name === '坠毁货车' ||
-                          node.name === '废弃锯木厂' ||
-                          node.name === '枯林祭坛';
-                        const relayCollected = hud.relayCollectedZones.includes(node.name);
-                        return (
-                          <g key={node.name} transform={`translate(${node.x}, ${node.y})`}>
-                            {hasRelay && !relayCollected && (
-                              <circle
-                                r="9.5"
-                                fill="none"
-                                stroke="#cf5d47"
-                                strokeWidth="1.2"
-                                strokeDasharray="3 2"
-                                className="animate-pulse"
-                              />
-                            )}
-                            <circle
-                              r="4.5"
-                              fill={
-                                relayCollected ? '#4c947d' : found ? '#b87b3b' : 'transparent'
-                              }
-                              stroke={
-                                relayCollected
-                                  ? '#a5ebd4'
-                                  : found
-                                  ? '#f0d8a8'
-                                  : hasRelay
-                                  ? '#d89b5a'
-                                  : 'rgba(168,154,132,0.45)'
-                              }
-                              strokeWidth="1.3"
-                              strokeDasharray={found || relayCollected ? undefined : '2 2'}
-                            />
-                            {relayCollected && (
-                              <path
-                                d="M-2.2 0.2 L-0.4 2.1 L2.8 -2.1"
-                                fill="none"
-                                stroke="#f4fff9"
-                                strokeWidth="1.4"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                            )}
-                            <text
-                              y="16"
-                              fill={found || relayCollected ? '#e8dbc2' : 'rgba(168,154,132,0.62)'}
-                              fontSize="8.5"
-                              textAnchor="middle"
-                            >
-                              {found || relayCollected ? t(node.name) : hasRelay ? `${t(node.name)}*` : '?'}
-                            </text>
-                          </g>
-                        );
-                      })}
-
-                      {/* Current survivor ink cross */}
-                      <g transform={`translate(${sketchPx.toFixed(1)}, ${sketchPy.toFixed(1)})`}>
-                        <circle r="3.5" fill="#d95a45" stroke="#f7e8d8" strokeWidth="1.2" />
-                      </g>
-                    </svg>
-                  </div>
-
-                  {/* Survival Chronicles */}
-                  <div>
-                    <div className="text-xs text-[#a8a091] mb-2">{t('生存纪事')}</div>
-                    <div className="space-y-2.5">
-                      {hud.journal.map((entry) => (
-                        <div key={entry.id} className={`p-3 rounded ${cardCls}`}>
-                          <div className="flex items-center justify-between gap-2 text-xs text-[#b89f74]">
-                            <span className="font-medium text-[#efe4cf]">{entry.title}</span>
-                            <span className="font-mono-num shrink-0">
-                              {t('第 {n} 天', { n: entry.day })} ·{' '}
-                              {entry.phase === 'night'
-                                ? t('黑夜')
-                                : entry.phase === 'dusk'
-                                ? t('黄昏')
-                                : t('白昼')}
-                            </span>
-                          </div>
-                          <p className="text-xs text-[#bdb3a1] mt-1.5 leading-relaxed">
-                            {entry.body}
-                          </p>
+                <div className="space-y-3">
+                  <div className="space-y-2.5">
+                    {hud.journal.map((entry) => (
+                      <div key={entry.id} className={`p-3 rounded ${cardCls}`}>
+                        <div className="flex items-center justify-between gap-2 text-xs text-[#b89f74]">
+                          <span className="font-medium text-[#efe4cf]">{entry.title}</span>
+                          <span className="font-mono-num shrink-0">
+                            D{entry.day} ·{' '}
+                            {entry.phase === 'night'
+                              ? t('黑夜')
+                              : entry.phase === 'dusk'
+                              ? t('黄昏')
+                              : t('白昼')}
+                          </span>
                         </div>
-                      ))}
-                    </div>
+                        <p className="text-xs text-[#bdb3a1] mt-1.5 leading-relaxed">
+                          {entry.body}
+                        </p>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
 
+              {/* 东欧旧木工台：缝线麻布材料袋 + 蓝图锻造卡片（少文字、所见即所得） */}
               {topLayer === 'craft' && hud && (
-                <div className="space-y-3">
-                  <p className="text-xs text-[#a8a091]">
-                    {t('消耗资源合成求生道具，随时可在暗处应急。')}
-                  </p>
-                  <div className="space-y-2.5">
+                <div className="workbench-surface space-y-3.5">
+                  {/* 顶部缝线麻布工具袋（实体素材包） */}
+                  <div className="carrier-pouch workbench-tray">
+                    {RESOURCE_META.map((item) => (
+                      <div
+                        key={item.key}
+                        className={`workbench-mat ${hud.inv[item.key] <= 0 ? 'is-zero' : ''}`}
+                        title={t(item.label)}
+                      >
+                        <ResourceInkIcon kind={item.key} className="w-6 h-6" />
+                        <span className="font-mono-num text-sm font-bold text-[#efe4cc]">
+                          {hud.inv[item.key]}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* 物理锻造蓝图卡片网格 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {CRAFT_RECIPES.map((r) => {
                       const ownedAxe = r.id === 'axe' && hud.inv.weaponTier >= 2;
                       const canAfford =
@@ -1274,55 +1288,57 @@ export default function App() {
                         (Object.entries(r.cost) as [ResourceKey, number][]).every(
                           ([k, qty]) => hud.inv[k] >= qty
                         );
+                      const outputIcon =
+                        r.id === 'bandage' ? (
+                          <BandageInkIcon className="w-11 h-11" />
+                        ) : r.id === 'flare' ? (
+                          <FlareInkIcon className="w-11 h-11" />
+                        ) : r.id === 'trap' ? (
+                          <TrapInkIcon className="w-11 h-11" />
+                        ) : r.id === 'cell' ? (
+                          <ResourceInkIcon kind="battery" className="w-11 h-11" />
+                        ) : (
+                          <AxeInkIcon className="w-11 h-11" />
+                        );
                       return (
-                        <div
+                        <button
                           key={r.id}
-                          className={`flex items-center justify-between gap-4 p-3 rounded ${cardCls}`}
+                          type="button"
+                          disabled={!canAfford}
+                          onClick={() => runtimeRef.current?.engine.craft(r.id)}
+                          aria-label={t(r.name)}
+                          className={`workbench-card ${
+                            ownedAxe ? 'is-owned' : canAfford ? 'is-ready' : 'is-locked'
+                          }`}
                         >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 text-sm font-medium text-[#f0e6d2]">
-                              <span>{t(r.name)}</span>
-                              <span className="text-xs font-mono-num text-[#d8be8a]">
-                                {r.outputText}
-                              </span>
-                            </div>
-                            <p className="text-xs text-[#a39a8a] mt-0.5">{t(r.desc)}</p>
-                            <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs font-mono-num">
+                          <div className="workbench-card__icon">
+                            {outputIcon}
+                            <span className="workbench-card__badge font-mono-num">
+                              {ownedAxe ? '✓' : r.outputText}
+                            </span>
+                          </div>
+                          <div className="workbench-card__body">
+                            <div className="workbench-card__costs">
                               {(Object.entries(r.cost) as [ResourceKey, number][]).map(([k, qty]) => {
-                                const meta = RESOURCE_META.find((m) => m.key === k);
                                 const enough = hud.inv[k] >= qty;
                                 return (
                                   <span
                                     key={k}
-                                    className={`inline-flex items-center gap-1 ${
-                                      enough ? 'text-[#cec5b4]' : 'text-[#cf584c]'
-                                    }`}
+                                    className={`workbench-cost ${enough ? 'is-ok' : 'is-lack'}`}
                                   >
-                                    <ResourceInkIcon kind={k} className="w-3 h-3" />
-                                    <span>
-                                      {t(meta?.label ?? k)} {hud.inv[k]}/{qty}
+                                    <ResourceInkIcon kind={k} className="w-5 h-5" />
+                                    <span className="font-mono-num">
+                                      {hud.inv[k]}/{qty}
                                     </span>
                                   </span>
                                 );
                               })}
                             </div>
                           </div>
-
-                          <button
-                            type="button"
-                            disabled={!canAfford}
-                            onClick={() => runtimeRef.current?.engine.craft(r.id)}
-                            className={`min-h-[44px] px-4 rounded text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                              ownedAxe
-                                ? 'bg-[#22241f] text-[#8a8274] cursor-default'
-                                : canAfford
-                                ? 'bg-[#b87b3b] hover:bg-[#cc8b46] text-[#110e0a]'
-                                : 'bg-[#1c1d19] text-[#6d675d] cursor-not-allowed'
-                            }`}
-                          >
-                            {ownedAxe ? t('已装备') : t('合成')}
-                          </button>
-                        </div>
+                          <span className="workbench-card__forge" aria-hidden="true">
+                            <Hammer className="w-5 h-5" />
+                          </span>
+                        </button>
                       );
                     })}
                   </div>
@@ -1502,23 +1518,25 @@ export default function App() {
               )}
             </div>
 
-            <div className="px-5 py-3 border-t border-[#b8ae9c]/15 flex justify-end shrink-0">
+            <div className="carrier-footer px-5 py-3 flex justify-end shrink-0">
               <button
                 type="button"
                 onClick={() => popLayer()}
-                className="min-h-[44px] px-5 text-sm text-[#c7bfb0] hover:text-white border border-[#b8ae9c]/24 rounded transition-colors whitespace-nowrap"
+                className="min-h-[44px] px-5 text-sm text-[#ddd0b8] hover:text-white border border-[#c9b38a]/35 bg-black/25 rounded-xs transition-colors whitespace-nowrap"
               >
                 {t('返回')}
               </button>
             </div>
+            {/* 卷轴底部木杆装饰 */}
+            {topLayer === 'map' && <div className="carrier-scroll__rod" aria-hidden="true" />}
           </div>
         </div>
       )}
 
-      {/* VICTORY SUMMARY: 破雾撤离通关结算 */}
+      {/* VICTORY SUMMARY: 破雾撤离通关结算（金色火漆封缄手抄信笺） */}
       {hud?.mode === 'victory' && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs p-5">
-          <div className={`w-full max-w-md rounded-md p-6 text-center space-y-5 ${panelCls}`}>
+          <div className="w-full max-w-md p-6 text-center space-y-5 carrier-sheet carrier-parchment carrier-parchment--gold">
             <div className="flex justify-center">
               <Sun className="w-9 h-9 text-[#dfb763]" />
             </div>
@@ -1585,10 +1603,10 @@ export default function App() {
         </div>
       )}
 
-      {/* GAME OVER SUMMARY */}
+      {/* GAME OVER SUMMARY（血染遗书手稿纸页） */}
       {hud?.mode === 'dead' && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs p-5">
-          <div className={`w-full max-w-md rounded-md p-6 text-center space-y-5 ${panelCls}`}>
+          <div className="w-full max-w-md p-6 text-center space-y-5 carrier-sheet carrier-parchment carrier-parchment--blood">
             <div className="flex justify-center">
               <ShieldAlert className="w-9 h-9 text-[#c95347]" />
             </div>

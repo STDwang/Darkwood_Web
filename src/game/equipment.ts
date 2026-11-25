@@ -270,8 +270,8 @@ export const TORCH_LIGHT = {
   intensity: 1.16,
   groundRadius: 154,
   groundIntensity: 0.98,
-  muzzleRadius: 265,
-  muzzleIntensity: 2.65,
+  muzzleRadius: 340,
+  muzzleIntensity: 3.4,
   /** 被视为"照亮敌人"的半径 */
   revealRadius: 175,
 };
@@ -1069,13 +1069,42 @@ export function equipFire(engine: GameEngine, host: EquipHost): boolean {
     engine.pushDecal({ kind: 'scorch', x: hx, y: hy, angle: ang, scale: 0.22, seed: eq.rng() * 100 });
   }
 
-  // 枪口火光的火星与硝烟
-  for (let k = 0; k < 3; k++) {
-    const a2 = ang + (eq.rng() - 0.5) * 0.7;
-    const s2 = 120 + eq.rng() * 160;
-    spawnParticle(engine, eq.muzzleX, eq.muzzleY, Math.cos(a2) * s2, Math.sin(a2) * s2, 1 + eq.rng(), 0.12 + eq.rng() * 0.1, '#ffe2a0', 'spark');
+  // 枪口烈焰火星束 + 浓郁枪管火药硝烟（前冲爆燃烟团 + 枪口袅袅余烟）
+  eq.muzzleFlash = Math.max(eq.muzzleFlash, 0.085);
+  for (let k = 0; k < 12; k++) {
+    const a2 = ang + (eq.rng() - 0.5) * 0.95;
+    const s2 = 135 + eq.rng() * 210;
+    const col = k % 3 === 0 ? '#fff5cf' : k % 3 === 1 ? '#ffcc6e' : '#ff8c3a';
+    spawnParticle(
+      engine,
+      eq.muzzleX + dx * (2 + eq.rng() * 4),
+      eq.muzzleY + dy * (2 + eq.rng() * 4),
+      Math.cos(a2) * s2,
+      Math.sin(a2) * s2,
+      1.2 + eq.rng() * 1.6,
+      0.12 + eq.rng() * 0.14,
+      col,
+      'spark'
+    );
   }
-  spawnParticle(engine, eq.muzzleX + dx * 4, eq.muzzleY + dy * 4, dx * 26, dy * 26 - 10, 4.5, 0.9, 'rgba(150, 146, 136, 0.38)', 'smoke');
+  for (let s = 0; s < 7; s++) {
+    const sa2 = ang + (eq.rng() - 0.5) * 0.55;
+    const spd = 28 + s * 14 + eq.rng() * 34;
+    const sz = 4.2 + s * 1.1 + eq.rng() * 2.5;
+    const life = 0.75 + eq.rng() * 0.85;
+    const alpha = (0.48 - s * 0.035).toFixed(2);
+    spawnParticle(
+      engine,
+      eq.muzzleX + dx * (3 + s * 2.5),
+      eq.muzzleY + dy * (3 + s * 2.5),
+      Math.cos(sa2) * spd,
+      Math.sin(sa2) * spd - 6 - eq.rng() * 10,
+      sz,
+      life,
+      `rgba(178, 174, 164, ${alpha})`,
+      'smoke'
+    );
+  }
 
   // 弹壳：从右侧抛壳窗弹出
   const sh = eq.shells[eq.shellCursor];
