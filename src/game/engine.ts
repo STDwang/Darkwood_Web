@@ -3358,7 +3358,7 @@ export class GameEngine {
         const c = this.crows[i];
         if (c.active) continue;
         c.active = true;
-        c.flock = 0;
+        c.flock = -1;
         c.state = 'passby';
         const distOut = 580 + spawned * 34;
         c.x = this.camX + Math.cos(fromAng) * distOut + (r() - 0.5) * 90;
@@ -3444,6 +3444,8 @@ export class GameEngine {
           if (!isPointInHideout(sx, sy) && !isPointIndoors(sx, sy)) {
             const ambKind: EnemyKind = this.rng() < 0.65 ? 'chomper' : 'hound';
             this.spawnEnemyAt(sx, sy, ambKind, 1.2);
+            // 机关触发的伏击怪立即进入战斗追击状态
+            if (this.enemies.length > 0) this.enemies[this.enemies.length - 1].state = 'chase';
             AudioFX.playMonsterSnarl(0.85, this.makeSpatial(pr.x, pr.y, 520), ambKind);
             this.emitRipple(pr.x, pr.y, 130, 'rgba(196, 76, 62, 0.42)');
             this.pushToast('蠕动的腐肉惊动了林中异物……', 'warn');
@@ -3608,11 +3610,14 @@ export class GameEngine {
       const proximityDanger = clamp(1 - dToPlayer / 430, 0, 1);
       if (proximityDanger > maxDanger) maxDanger = proximityDanger;
 
-      const sightRange = this.phase === 'night' ? 760 : p.flashlightOn ? 340 : 215;
+      // 白天怪物默认隐藏蛰伏（不招惹不主动攻击，适合白天搜集资源）；
+      // 仅当玩家招惹攻击、极近距离撞见（如探索房间发现）或机关触发进入 chase 时才战斗；黄昏/夜晚恢复主动猎杀！
+      const provoked = e.hp < e.maxHp || e.hitFlash > 0 || e.state === 'chase';
+      const sightRange = this.phase === 'night' ? 760 : this.phase === 'dusk' ? 280 : provoked ? 340 : 86;
 
       let targetX = e.patrolX;
       let targetY = e.patrolY;
-      let desiredSpeed = e.speed * 0.48;
+      let desiredSpeed = this.phase === 'day' && !provoked ? e.speed * 0.16 : e.speed * 0.48;
 
       if (e.state === 'flee_dawn') {
         const away = Math.atan2(e.y - p.y, e.x - p.x);
@@ -3623,7 +3628,7 @@ export class GameEngine {
           this.enemies.splice(i, 1);
           continue;
         }
-      } else if (dToPlayer < sightRange || this.phase === 'night') {
+      } else if (dToPlayer < sightRange || this.phase === 'night' || (provoked && dToPlayer < 420)) {
         e.state = 'chase';
         desiredSpeed = e.speed * (this.phase === 'night' ? 1.06 : 0.94);
 

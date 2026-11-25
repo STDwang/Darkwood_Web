@@ -1002,12 +1002,14 @@ export function createWorld(seed = 19847): WorldData {
     // 进一步拉大树干间距（146px），让林地疏朗、树高冠大，破败景观成为视觉主角
     if (tooClose(trees, x, y, 146)) continue;
 
+    // 生态正相关树型分级（0.52 纤细幼树 ~ 1.62 参天古树）：树干粗细、树根茂密程度、树冠大小与浓密度严格联动！
+    const sizeScale = 0.52 + Math.pow(rng(), 1.15) * 1.1;
     trees.push({
       id: treeId++,
       x,
       y,
-      trunkR: 15 + rng() * 9,
-      canopyR: 80 + rng() * 38,
+      trunkR: 8 + sizeScale * 13,
+      canopyR: 38 + sizeScale * 62,
       hueShift: (rng() - 0.5) * 14,
       phase: rng() * Math.PI * 2,
     });
@@ -1913,67 +1915,7 @@ export function collectOccluderSegments(
   pushSeg(out, ox + maxDist, oy + maxDist, ox - maxDist, oy + maxDist);
   pushSeg(out, ox - maxDist, oy + maxDist, ox - maxDist, oy - maxDist);
 
-  const cx0 = cellOf(g, ox - pad);
-  const cx1 = cellOf(g, ox + pad);
-  const cy0 = cellOf(g, oy - pad);
-  const cy1 = cellOf(g, oy + pad);
-
-  g.stamp = (g.stamp + 1) >>> 0;
-  if (g.stamp === 0) {
-    g.wallStamp.fill(0);
-    g.stamp = 1;
-  }
-  const stamp = g.stamp;
-  for (let cy = cy0; cy <= cy1; cy++) {
-    for (let cx = cx0; cx <= cx1; cx++) {
-      const ci = cy * cols + cx;
-      const end = g.wallStart[ci + 1];
-      for (let k = g.wallStart[ci]; k < end; k++) {
-        const wi = g.wallItems[k];
-        if (g.wallStamp[wi] === stamp) continue;
-        g.wallStamp[wi] = stamp;
-        const w = world.walls[wi];
-        if (!w.blocksLight) continue;
-        // 祭坛小石柱/低矮残柱不再切出通天立影柱，只保留完整建筑墙体与长断墙阻挡光线
-        if (w.kind === 'ruin_wall' && w.w <= 48 && w.h <= 48) continue;
-        if (w.x + w.w < ox - pad || w.x > ox + pad || w.y + w.h < oy - pad || w.y > oy + pad) continue;
-        pushSeg(out, w.x, w.y, w.x + w.w, w.y);
-        pushSeg(out, w.x + w.w, w.y, w.x + w.w, w.y + w.h);
-        pushSeg(out, w.x + w.w, w.y + w.h, w.x, w.y + w.h);
-        pushSeg(out, w.x, w.y + w.h, w.x, w.y);
-      }
-    }
-  }
-
-  // Intact barricades also block sight/light (Darkwood claustrophobia!)
-  for (let i = 0; i < world.barricades.length; i++) {
-    const b = world.barricades[i];
-    if (b.hp <= 0) continue;
-    if (b.x + b.w < ox - pad || b.x > ox + pad || b.y + b.h < oy - pad || b.y > oy + pad) continue;
-    if (b.orientation === 'h') {
-      const my = b.y + b.h * 0.5;
-      pushSeg(out, b.x, my, b.x + b.w, my);
-    } else {
-      const mx = b.x + b.w * 0.5;
-      pushSeg(out, mx, b.y, mx, b.y + b.h);
-    }
-  }
-
-  // 关闭的室内门：门扇中线遮光（门缝不透光，开门后光线才泄入走廊）
-  const doors = world.interiorDoors;
-  for (let i = 0; i < doors.length; i++) {
-    const d = doors[i];
-    if (d.open) continue;
-    if (d.x + d.w < ox - pad || d.x > ox + pad || d.y + d.h < oy - pad || d.y > oy + pad) continue;
-    if (d.orientation === 'h') {
-      const my = d.y + d.h * 0.5;
-      pushSeg(out, d.x, my, d.x + d.w, my);
-    } else {
-      const mx = d.x + d.w * 0.5;
-      pushSeg(out, mx, d.y, mx, d.y + d.h);
-    }
-  }
-
-  // 家具、树木与巨石均为低矮或自带贴地投影的物体，不再写入 2D 硬遮光多边形（彻底消除户外“立起来的影子”长影柱）
+  // 建筑物墙体不再作为通天立影柱切碎视野光锥（墙体改由渲染层在地面绘制优雅的折角贴地阴影，俯视下室内外摆设一览无余）
+  // 仅保留最外围光照范围边界框，确保 computeVisibilityPolygon 视野扇区平滑完整
   return out;
 }

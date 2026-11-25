@@ -1211,8 +1211,9 @@ export class GameRenderer {
       }
 
       const sprite = this.atlas.trunkSprites[t.id % this.atlas.trunkSprites.length];
-      // 紧凑贴地的树根与树干基部，让树根四周地面保持干净
-      const size = t.trunkR * 4.5;
+      // 树根茂密范围与树干粗细严格正相关：幼树根系克制紧凑，参天古树板根粗壮繁茂
+      const rootScale = 3.5 + clamp((t.trunkR - 14) / 15, 0, 1) * 2.0;
+      const size = t.trunkR * rootScale;
       ctx.save();
       ctx.translate(t.x, t.y);
       ctx.rotate(t.phase);
@@ -2187,11 +2188,33 @@ export class GameRenderer {
     ctx.restore();
   }
 
-  // --- Architectural Brushwork: Darkwood Pitch-Black Cutaway Timber Walls（对标原版截图 3, 4, 5） ---
+  // --- Architectural Brushwork: Darkwood Pitch-Black Cutaway Timber Walls（带清晰的贴地斜折角阴影，无立影柱） ---
   private drawCabinTimberWall(ctx: CanvasRenderingContext2D, w: RectObstacle) {
-    // 墙根深沉接触投影（压出建筑体量感）
-    ctx.fillStyle = 'rgba(3, 4, 4, 0.62)';
-    ctx.fillRect(w.x - 3, w.y - 2, w.w + 7, w.h + 7);
+    // 墙体贴地斜 45° 折角地面阴影（两层柔渐淡，既显建筑体量又绝不拉出切碎画面的立影柱）
+    const sh = 14;
+    ctx.fillStyle = 'rgba(4, 5, 5, 0.34)';
+    ctx.beginPath();
+    ctx.moveTo(w.x, w.y + w.h);
+    ctx.lineTo(w.x + w.w, w.y + w.h);
+    ctx.lineTo(w.x + w.w, w.y);
+    ctx.lineTo(w.x + w.w + sh, w.y + sh);
+    ctx.lineTo(w.x + w.w + sh, w.y + w.h + sh);
+    ctx.lineTo(w.x + sh, w.y + w.h + sh);
+    ctx.closePath();
+    ctx.fill();
+
+    // 紧贴墙根的深接触暗边
+    const sh2 = 6;
+    ctx.fillStyle = 'rgba(3, 4, 4, 0.56)';
+    ctx.beginPath();
+    ctx.moveTo(w.x, w.y + w.h);
+    ctx.lineTo(w.x + w.w, w.y + w.h);
+    ctx.lineTo(w.x + w.w, w.y);
+    ctx.lineTo(w.x + w.w + sh2, w.y + sh2);
+    ctx.lineTo(w.x + w.w + sh2, w.y + w.h + sh2);
+    ctx.lineTo(w.x + sh2, w.y + w.h + sh2);
+    ctx.closePath();
+    ctx.fill();
 
     // Darkwood 标志性近纯黑建筑剖面顶面，极度干净利落
     ctx.fillStyle = '#060707';
@@ -3438,50 +3461,32 @@ export class GameRenderer {
       if (!inCone && !inTorch) continue;
 
       const awayAng = Math.atan2(dyP, dxP);
-      // 树影长度随树干粗细与距光源远近自然拉伸（近光源长、远光源短），由近及远平滑淡出
-      const shadowLen = clamp(125 + t.trunkR * 4.2 + (inCone ? (1 - dP / 580) * 95 : 25), 130, 260);
-      const nearW = t.trunkR * 0.96;
-      const farW = t.trunkR * 1.62;
-      const strength = clamp((inCone ? 0.72 * (1 - dP / 640) : 0) + (inTorch ? 0.56 * (1 - dP / 260) : 0), 0.18, 0.76);
+      // 彻底弃用直角梯形：改用 360° 柔和羽化的拉伸径向椭圆渐变绘制贴地树影，零方框硬边、自然由近及远变淡
+      const shadowLen = clamp(95 + t.trunkR * 4.4 + (inCone ? (1 - dP / 580) * 75 : 20), 100, 230);
+      const shadowW = t.trunkR * 1.45;
+      const strength = clamp((inCone ? 0.68 * (1 - dP / 640) : 0) + (inTorch ? 0.52 * (1 - dP / 260) : 0), 0.16, 0.72);
 
       ctx.save();
       ctx.translate(t.x, t.y);
       ctx.rotate(awayAng);
-      // 1) 外层宽柔半影（模拟高空枝叶散射的柔和边缘）
-      const gOuter = ctx.createLinearGradient(0, 0, shadowLen, 0);
-      gOuter.addColorStop(0, `rgba(4, 5, 5, ${(strength * 0.46).toFixed(3)})`);
-      gOuter.addColorStop(0.42, `rgba(4, 5, 5, ${(strength * 0.24).toFixed(3)})`);
-      gOuter.addColorStop(0.8, `rgba(4, 5, 5, ${(strength * 0.06).toFixed(3)})`);
-      gOuter.addColorStop(1, 'rgba(4, 5, 5, 0)');
-      ctx.fillStyle = gOuter;
+      // 拉伸为单位圆径向渐变：中心位于树干后方 0.42*shadowLen，四周边缘完全羽化为 0，绝无直边！
+      ctx.save();
+      ctx.translate(shadowLen * 0.42, 0);
+      ctx.scale(shadowLen * 0.58, shadowW);
+      const gEll = ctx.createRadialGradient(0, 0, 0.08, 0, 0, 1);
+      gEll.addColorStop(0, `rgba(3, 4, 4, ${(strength * 0.84).toFixed(3)})`);
+      gEll.addColorStop(0.45, `rgba(4, 5, 5, ${(strength * 0.44).toFixed(3)})`);
+      gEll.addColorStop(0.78, `rgba(4, 5, 5, ${(strength * 0.14).toFixed(3)})`);
+      gEll.addColorStop(1, 'rgba(4, 5, 5, 0)');
+      ctx.fillStyle = gEll;
       ctx.beginPath();
-      ctx.moveTo(0, -nearW * 1.35);
-      ctx.lineTo(shadowLen, -farW * 1.48);
-      ctx.lineTo(shadowLen, farW * 1.48);
-      ctx.lineTo(0, nearW * 1.35);
-      ctx.closePath();
+      ctx.arc(0, 0, 1, 0, Math.PI * 2);
       ctx.fill();
-
-      // 2) 内层贴地深影（树干根部背光处最深，向远处平滑衰减，无硬边黑柱感）
-      const gInner = ctx.createLinearGradient(0, 0, shadowLen * 0.85, 0);
-      gInner.addColorStop(0, `rgba(3, 4, 4, ${(strength * 0.88).toFixed(3)})`);
-      gInner.addColorStop(0.32, `rgba(4, 5, 5, ${(strength * 0.52).toFixed(3)})`);
-      gInner.addColorStop(0.68, `rgba(4, 5, 5, ${(strength * 0.18).toFixed(3)})`);
-      gInner.addColorStop(1, 'rgba(4, 5, 5, 0)');
-      ctx.fillStyle = gInner;
-      ctx.beginPath();
-      ctx.moveTo(0, -nearW * 0.86);
-      ctx.lineTo(shadowLen * 0.85, -farW * 0.92);
-      ctx.lineTo(shadowLen * 0.85, farW * 0.92);
-      ctx.lineTo(0, nearW * 0.86);
-      ctx.closePath();
-      ctx.fill();
+      ctx.restore();
       ctx.restore();
     }
 
-    // 第零b遍（2.5D 垂直向上的黑色柱状树干，位于树根圆环之上、高空树冠之下）：
-    // 沿顶视针孔透视方向 (t - cam) 向上拔起柱状黑树干，直插上方树枝暗影；
-    // 远处被浓密树冠覆盖，角色靠近树冠渐隐后，即可清晰看到“地面树根 → 迎光圆环 → 垂直向上黑色柱状树干 → 上方淡枝影”！
+    // 第零b遍（柔边 2.5D 垂直向上黑色柱状树干：左右柔边过渡 + 纵向融入高空树冠，告别生硬黑直管）
     for (const t of engine.world.trees) {
       const pad = t.trunkR * 3.5 + 70;
       if (t.x < viewL - pad || t.x > viewR + pad || t.y < viewT - pad || t.y > viewB + pad) continue;
@@ -3490,38 +3495,43 @@ export class GameRenderer {
       const topX = t.x + paraX;
       const topY = t.y + paraY;
       const r0 = t.trunkR * 0.88;
-      const r1 = r0 * 1.12;
+      const r1 = r0 * 1.1;
       const segLen = Math.hypot(paraX, paraY);
 
       ctx.save();
       if (segLen > 1.5) {
-        const nx = -paraY / segLen;
-        const ny = paraX / segLen;
-        // 圆柱侧面垂直向上渐变（基部略带暗褐质感，越往上越深黑并融入高空树冠暗影）
-        const colGrad = ctx.createLinearGradient(t.x, t.y, topX, topY);
-        colGrad.addColorStop(0, 'rgba(16, 15, 13, 0.94)');
-        colGrad.addColorStop(0.45, 'rgba(7, 8, 8, 0.96)');
-        colGrad.addColorStop(1, 'rgba(4, 5, 5, 0.88)');
-        ctx.fillStyle = colGrad;
+        const ang = Math.atan2(paraY, paraX);
+        ctx.save();
+        ctx.translate(t.x, t.y);
+        ctx.rotate(ang);
+        // 沿柱体横向做柔边渐变（中间浓黑、两侧自然柔化），告别生硬黑管子切边
+        const cylG = ctx.createLinearGradient(0, -r1, 0, r1);
+        cylG.addColorStop(0, 'rgba(5, 6, 6, 0)');
+        cylG.addColorStop(0.22, 'rgba(6, 7, 7, 0.82)');
+        cylG.addColorStop(0.5, 'rgba(4, 5, 5, 0.94)');
+        cylG.addColorStop(0.78, 'rgba(6, 7, 7, 0.82)');
+        cylG.addColorStop(1, 'rgba(5, 6, 6, 0)');
+        ctx.fillStyle = cylG;
         ctx.beginPath();
-        ctx.moveTo(t.x + nx * r0, t.y + ny * r0);
-        ctx.lineTo(topX + nx * r1, topY + ny * r1);
-        ctx.lineTo(topX - nx * r1, topY - ny * r1);
-        ctx.lineTo(t.x - nx * r0, t.y - ny * r0);
+        ctx.moveTo(0, -r0 * 1.05);
+        ctx.lineTo(segLen, -r1 * 1.12);
+        ctx.lineTo(segLen, r1 * 1.12);
+        ctx.lineTo(0, r0 * 1.05);
         ctx.closePath();
         ctx.fill();
+        ctx.restore();
       }
-      // 树干顶部暗圆（与上方树冠树心自然衔接）
-      const capGrad = ctx.createRadialGradient(topX, topY, r1 * 0.15, topX, topY, r1 * 1.18);
-      capGrad.addColorStop(0, 'rgba(4, 5, 5, 0.92)');
-      capGrad.addColorStop(0.75, 'rgba(5, 6, 6, 0.72)');
+      // 树干顶部柔和暗晕（自然衔接入高空树冠）
+      const capGrad = ctx.createRadialGradient(topX, topY, r1 * 0.12, topX, topY, r1 * 1.38);
+      capGrad.addColorStop(0, 'rgba(4, 5, 5, 0.86)');
+      capGrad.addColorStop(0.65, 'rgba(5, 6, 6, 0.45)');
       capGrad.addColorStop(1, 'rgba(5, 6, 6, 0)');
       ctx.fillStyle = capGrad;
       ctx.beginPath();
-      ctx.arc(topX, topY, r1 * 1.18, 0, Math.PI * 2);
+      ctx.arc(topX, topY, r1 * 1.38, 0, Math.PI * 2);
       ctx.fill();
 
-      // 树干基部精致迎光圆环（在手电光锥或火把光圈内压在树根与柱状黑树干交界处，复刻原作特写！）
+      // 树干基部精致迎光圆环
       const dxP = t.x - pLightX;
       const dyP = t.y - pLightY;
       const dP = Math.hypot(dxP, dyP);
@@ -3530,20 +3540,20 @@ export class GameRenderer {
         const inCone = engine.player.flashlightOn && dot > pLookCos;
         const inTorch = torchOn && dP < 230;
         if (inCone || inTorch) {
-          const rimA = clamp((inCone ? 0.68 * (1 - dP / 560) : 0) + (inTorch ? 0.56 * (1 - dP / 240) : 0), 0, 0.82);
+          const rimA = clamp((inCone ? 0.64 * (1 - dP / 560) : 0) + (inTorch ? 0.52 * (1 - dP / 240) : 0), 0, 0.78);
           const toPlayerAng = Math.atan2(-dyP, -dxP);
           ctx.lineCap = 'round';
           ctx.strokeStyle = inTorch && !inCone ? `rgba(226, 192, 138, ${rimA.toFixed(3)})` : `rgba(204, 200, 174, ${rimA.toFixed(3)})`;
-          ctx.lineWidth = 1.6;
+          ctx.lineWidth = 1.45;
           ctx.beginPath();
-          ctx.arc(t.x, t.y, r0, toPlayerAng - 1.48, toPlayerAng + 1.48);
+          ctx.arc(t.x, t.y, r0, toPlayerAng - 1.42, toPlayerAng + 1.42);
           ctx.stroke();
         }
       }
       ctx.restore();
     }
 
-    // 第一遍：中低层树冠（丰富锯齿叶簇 + 粗壮扭曲主枝；扩大近身渐隐范围，靠近时露出根部与柱状黑树干，上方仍保留淡枝暗影）
+    // 第一遍：中低层树冠（树冠茂密程度与树大小正相关：幼树通透疏朗，参天古树浓密厚重）
     for (const t of engine.world.trees) {
       const size = t.canopyR * (this.cineOn ? 4.35 : 2.85);
       const cPad = size * 0.56 + 68;
@@ -3554,6 +3564,7 @@ export class GameRenderer {
       const uFade = clamp((dPlayer - fadeInner) / Math.max(1, fadeOuter - fadeInner), 0, 1);
       const smoothFade = uFade * uFade * (3 - 2 * uFade);
       const canopyAlpha = lerp(0.18, 1.0, smoothFade);
+      const densityMul = clamp(0.64 + (t.canopyR - 68) / 110, 0.64, 1.0);
       const variantIdx = t.id % this.atlas.canopySprites.length;
 
       const waveBase = swayOn ? Math.sin(engine.simTime * (0.86 * stormWind) + t.phase + t.x * 0.004) : 0;
@@ -3565,7 +3576,7 @@ export class GameRenderer {
 
       const baseSprite = this.atlas.canopySprites[variantIdx];
       ctx.save();
-      ctx.globalAlpha = canopyAlpha * baseOpacity;
+      ctx.globalAlpha = canopyAlpha * baseOpacity * densityMul;
       ctx.translate(t.x + baseSwayX + baseParaX, t.y + baseSwayY + baseParaY);
       ctx.rotate(t.phase + waveBase * 0.015);
       ctx.drawImage(baseSprite, -size * 0.5, -size * 0.5, size, size);
@@ -3573,7 +3584,7 @@ export class GameRenderer {
       draws++;
     }
 
-    // 第二遍：最高空树梢与失焦暗冠层（远处厚重覆盖，角色靠近大范围平滑剥离至淡淡暗影，绝不遮挡角色四周视线）
+    // 第二遍：最高空树梢与失焦暗冠层（茂密程度同样与树型大小正相关）
     for (const t of engine.world.trees) {
       if (Math.abs(t.x - camX) > W * 0.54 || Math.abs(t.y - camY) > H * 0.58) continue;
       const size = t.canopyR * (this.cineOn ? 4.65 : 3.0);
@@ -3582,7 +3593,7 @@ export class GameRenderer {
       const fadeOuter = t.canopyR * 2.65 + 135;
       const uFade = clamp((dPlayer - fadeInner) / Math.max(1, fadeOuter - fadeInner), 0, 1);
       const smoothFade = uFade * uFade * (3 - 2 * uFade);
-      const canopyAlpha = lerp(0.09, 1.0, smoothFade);
+      const canopyAlpha = lerp(0.09, 1.0, smoothFade) * clamp(0.58 + (t.canopyR - 68) / 96, 0.58, 1.0);
       const variantIdx = t.id % this.atlas.canopyTopSprites.length;
 
       const waveBase = swayOn ? Math.sin(engine.simTime * (0.86 * stormWind) + t.phase + t.x * 0.004) : 0;
