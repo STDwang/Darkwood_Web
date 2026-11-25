@@ -179,6 +179,8 @@ export class GameRenderer {
   private persianRugCanvas: HTMLCanvasElement | null = null;
   // 盘错地面树根离屏精灵缓存（8 种独立根系 × 镜像与旋转，消除每帧贝塞尔路径重绘热点）
   private treeRootSprites: HTMLCanvasElement[] | null = null;
+  // 贴地柔和椭圆树影预烘焙离屏精灵（128×64，消除每棵树每帧 createRadialGradient 分配与光栅化热点）
+  private treeShadowSprite: HTMLCanvasElement | null = null;
   // 室内吊灯物理钟摆摇晃状态（受雷暴/震屏/玩家走过激发，带动光斑与阴影同步摇曳）
   private lampSwingX = new Float32Array(2);
   private lampSwingY = new Float32Array(2);
@@ -365,16 +367,17 @@ export class GameRenderer {
   resize(cssWidth: number, cssHeight: number) {
     this.width = Math.max(320, Math.floor(cssWidth));
     this.height = Math.max(240, Math.floor(cssHeight));
-    // 手机横屏小视口将 DPR 上限收敛至 1.5，大幅降低高分屏像素填充开销且保持锐利
-    const mobileCap = Math.min(this.width, this.height) <= 520 ? 1.5 : Quality.preset.maxDpr;
+    const isMobileViewport = Math.min(this.width, this.height) <= 540;
+    // 手机横屏小视口将主画布 DPR 上限收敛至 1.5，保证前景树冠与线条锐利同时压低高分屏填充压力
+    const mobileCap = isMobileViewport ? 1.5 : Quality.preset.maxDpr;
     const maxDpr = Math.min(Quality.preset.maxDpr, mobileCap) * Quality.dynamicScale;
     this.dpr = clamp(window.devicePixelRatio || 1, 1, Math.max(1, maxDpr));
 
     this.canvas.width = Math.floor(this.width * this.dpr);
     this.canvas.height = Math.floor(this.height * this.dpr);
 
-    // 高画质下按 dpr（最高 1.5x）锐利渲染，彻底告别模糊拉伸；中/低画质沿用 lightScale
-    const clarityDpr = Quality.tier >= 2 ? Math.min(this.dpr, 1.5) : 1.0;
+    // 桌面高画质按 1.5x 渲染 G-Buffer；手机端主画布已为 1.5x，G-Buffer 控制在最高 1.12x 即可节省 ~45% WebGL 纹理带宽
+    const clarityDpr = Quality.tier >= 2 ? Math.min(this.dpr, isMobileViewport ? 1.12 : 1.5) : 1.0;
     const scale = Quality.preset.lightScale * Quality.dynamicScale * clarityDpr;
     this.renderW = Math.max(320, Math.floor(this.width * scale));
     this.renderH = Math.max(200, Math.floor(this.height * scale));
@@ -663,7 +666,8 @@ export class GameRenderer {
       const ambient = this.getAmbientRGB(engine);
       const lowHp = clamp((40 - engine.player.hp) / 40, 0, 1);
       const nightOppress = this.getNightAmount(engine) * (engine.nightShadowSurge > 0 ? 0.45 : 0.14);
-      const bloodDread = clamp(lowHp * 0.55 + engine.player.hitFlash * 1.15 + nightOppress, 0, 1);
+      const tideDread = engine.bloodTide.crisisIntensity * 0.25 + engine.bloodTide.intensity * 0.62;
+      const bloodDread = clamp(lowHp * 0.55 + engine.player.hitFlash * 1.15 + nightOppress + tideDread, 0, 1);
 
       this.webgl.compose(this.albedoCanvas, this.normalCanvas, this.shadowCanvas, {
         width: W,
@@ -3534,6 +3538,8 @@ export class GameRenderer {
     const pLookDy = Math.sin(engine.player.angle);
     const torchOn = engine.equip.torchInHand && engine.equip.torchLit && engine.equip.torchLight > 0.1;
 
+    const shadowSp = this.ensureTreeShadowSprite();
+    const prevAlpha = ctx.globalAlpha;
     for (const t of engine.world.trees) {
       if (t.chopped) continue;
       if (t.x < viewL - 220 || t.x > viewR + 220 || t.y < viewT - 220 || t.y > viewB + 220) continue;
@@ -3547,30 +3553,21 @@ export class GameRenderer {
       if (!inCone && !inTorch) continue;
 
       const awayAng = Math.atan2(dyP, dxP);
-      // 彻底弃用直角梯形：改用 360° 柔和羽化的拉伸径向椭圆渐变绘制贴地树影，零方框硬边、自然由近及远变淡
       const shadowLen = clamp(95 + t.trunkR * 4.4 + (inCone ? (1 - dP / 580) * 75 : 20), 100, 230);
       const shadowW = t.trunkR * 1.45;
       const strength = clamp((inCone ? 0.68 * (1 - dP / 640) : 0) + (inTorch ? 0.52 * (1 - dP / 260) : 0), 0.16, 0.72);
 
+      // 使用预烘焙椭圆羽化暗影精灵单次 drawImage，彻底消除每棵树每帧 createRadialGradient 分配
       ctx.save();
       ctx.translate(t.x, t.y);
       ctx.rotate(awayAng);
-      // 拉伸为单位圆径向渐变：中心位于树干后方 0.42*shadowLen，四周边缘完全羽化为 0，绝无直边！
-      ctx.save();
-      ctx.translate(shadowLen * 0.42, 0);
-      ctx.scale(shadowLen * 0.58, shadowW);
-      const gEll = ctx.createRadialGradient(0, 0, 0.08, 0, 0, 1);
-      gEll.addColorStop(0, `rgba(3, 4, 4, ${(strength * 0.84).toFixed(3)})`);
-      gEll.addColorStop(0.45, `rgba(4, 5, 5, ${(strength * 0.44).toFixed(3)})`);
-      gEll.addColorStop(0.78, `rgba(4, 5, 5, ${(strength * 0.14).toFixed(3)})`);
-      gEll.addColorStop(1, 'rgba(4, 5, 5, 0)');
-      ctx.fillStyle = gEll;
-      ctx.beginPath();
-      ctx.arc(0, 0, 1, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+      ctx.globalAlpha = prevAlpha * strength;
+      const rx = shadowLen * 0.58;
+      const cxOff = shadowLen * 0.42;
+      ctx.drawImage(shadowSp, cxOff - rx, -shadowW, rx * 2, shadowW * 2);
       ctx.restore();
     }
+    ctx.globalAlpha = prevAlpha;
 
     // 第零b遍（柔边 2.5D 垂直向上黑色柱状树干 + 正在倒下树木的物理倾倒动画）
     for (const t of engine.world.trees) {
@@ -3906,6 +3903,183 @@ export class GameRenderer {
       }
     }
 
+    // 3c. 血潮袭击（Darkwood 原作风格：地面蠕动血色不明物 + 脚底密密麻麻上下翻动眼球的红眼）
+    const bt = engine.bloodTide;
+    if (bt.intensity > 0.01) {
+      const t = engine.simTime;
+      const tideA = clamp(bt.intensity, 0, 1);
+      const px = engine.player.x;
+      const py = engine.player.y;
+
+      // (1) 脚底向外渗开的脉动暗红血潮底池
+      const poolR = 72 + tideA * 86 + Math.sin(t * 3.6) * 8;
+      const poolG = ctx.createRadialGradient(px, py, 10, px, py, poolR);
+      poolG.addColorStop(0, `rgba(92, 8, 12, ${(0.56 * tideA).toFixed(3)})`);
+      poolG.addColorStop(0.52, `rgba(56, 6, 10, ${(0.42 * tideA).toFixed(3)})`);
+      poolG.addColorStop(1, 'rgba(20, 4, 6, 0)');
+      ctx.fillStyle = poolG;
+      ctx.beginPath();
+      ctx.arc(px, py, poolR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // (2) 地面蠕动的血色不明物（18 块有机变形暗红血肉团块 + 蠕动血丝触须 + 鼓泡反光）
+      for (let i = 0; i < bt.blobs.length; i++) {
+        const b = bt.blobs[i];
+        const g = b.growth * tideA;
+        if (g < 0.03) continue;
+        const baseR = b.r * (0.45 + 0.55 * g);
+        const wT = t * b.wobbleSpeed + b.seed;
+
+        // 外层腐黑暗红黏液伪足轮廓（12 点有机谐波蠕动）
+        ctx.fillStyle = `rgba(42, 5, 8, ${(0.78 * g).toFixed(3)})`;
+        ctx.beginPath();
+        for (let k = 0; k <= 12; k++) {
+          const ang = (k / 12) * Math.PI * 2;
+          const wave =
+            Math.sin(ang * 3 + wT) * 0.22 +
+            Math.cos(ang * 5 - wT * 1.35) * 0.14 +
+            Math.sin(ang * 2 + wT * 0.7) * 0.1;
+          const rr = baseR * (1 + wave);
+          const bx = b.x + Math.cos(ang) * rr;
+          const by = b.y + Math.sin(ang) * rr * 0.88;
+          if (k === 0) ctx.moveTo(bx, by);
+          else ctx.lineTo(bx, by);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        // 内层粘稠搏动血肉内核
+        ctx.fillStyle = `rgba(116, 14, 18, ${(0.72 * g).toFixed(3)})`;
+        ctx.beginPath();
+        for (let k = 0; k <= 10; k++) {
+          const ang = (k / 10) * Math.PI * 2;
+          const wave = Math.sin(ang * 4 - wT * 1.2) * 0.2;
+          const rr = baseR * 0.66 * (1 + wave);
+          const bx = b.x + Math.cos(ang) * rr;
+          const by = b.y + Math.sin(ang) * rr * 0.88;
+          if (k === 0) ctx.moveTo(bx, by);
+          else ctx.lineTo(bx, by);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        // 向外蠕动爬行的细长血色触须/血管丝（每块 3 条）
+        ctx.strokeStyle = `rgba(138, 18, 22, ${(0.62 * g).toFixed(3)})`;
+        ctx.lineWidth = 1.45;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let s = 0; s < 3; s++) {
+          const sa = b.seed + s * 2.094 + Math.sin(wT * 0.45 + s) * 0.45;
+          const slen = baseR * (1.28 + 0.35 * Math.sin(wT * 1.4 + s * 1.7));
+          const mx = b.x + Math.cos(sa + 0.22) * slen * 0.62;
+          const my = b.y + Math.sin(sa + 0.22) * slen * 0.62;
+          ctx.moveTo(b.x + Math.cos(sa) * baseR * 0.55, b.y + Math.sin(sa) * baseR * 0.55);
+          ctx.quadraticCurveTo(mx, my, b.x + Math.cos(sa) * slen, b.y + Math.sin(sa) * slen);
+        }
+        ctx.stroke();
+
+        // 表面鼓起脉动的湿润血泡高光
+        const bubPulse = 0.5 + 0.5 * Math.sin(wT * 2.1 + i);
+        ctx.fillStyle = `rgba(186, 38, 36, ${(0.45 * g * bubPulse).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(
+          b.x + Math.cos(b.seed) * baseR * 0.28,
+          b.y + Math.sin(b.seed) * baseR * 0.24,
+          1.8 + bubPulse * 2.1,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      }
+
+      // (3) 脚底慢慢冒出的密密麻麻红色眼睛（眼球剧烈上下翻动 + 偶发痉挛眨眼）
+      for (let i = 0; i < bt.eyes.length; i++) {
+        const eye = bt.eyes[i];
+        const rawOpen = eye.open * tideA;
+        if (rawOpen < 0.04) continue;
+
+        // 偶发痉挛眨眼（短促闭合再猛然瞪大）
+        const blinkWave = Math.sin(t * 2.9 + eye.seed) * Math.sin(t * 7.3 + eye.seed * 1.7);
+        const blinkMul = blinkWave > 0.82 ? 0.14 : 1.0;
+        const openAmt = clamp(rawOpen * blinkMul, 0, 1);
+        const er = eye.r;
+        const lidH = Math.max(0.6, er * 0.72 * openAmt);
+
+        ctx.save();
+        ctx.translate(eye.x, eye.y);
+        ctx.rotate(eye.angle);
+
+        // 眼眶外缘撕裂暗红肉褶阴影
+        ctx.fillStyle = `rgba(34, 4, 6, ${(0.88 * rawOpen).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(-er * 1.32, 0);
+        ctx.quadraticCurveTo(0, -lidH * 1.45, er * 1.32, 0);
+        ctx.quadraticCurveTo(0, lidH * 1.45, -er * 1.32, 0);
+        ctx.closePath();
+        ctx.fill();
+
+        // 杏仁形眼睑裂口 + 裁剪内部翻动眼球
+        ctx.beginPath();
+        ctx.moveTo(-er * 1.12, 0);
+        ctx.quadraticCurveTo(0, -lidH * 1.15, er * 1.12, 0);
+        ctx.quadraticCurveTo(0, lidH * 1.15, -er * 1.12, 0);
+        ctx.closePath();
+
+        // 充血暗粉/猩红巩膜底色
+        ctx.fillStyle = `rgba(214, 152, 146, ${(0.9 * rawOpen).toFixed(3)})`;
+        ctx.fill();
+
+        ctx.save();
+        ctx.clip();
+
+        // 巩膜边缘充血红晕
+        ctx.strokeStyle = `rgba(176, 22, 24, ${(0.68 * rawOpen).toFixed(3)})`;
+        ctx.lineWidth = 1.15;
+        ctx.stroke();
+
+        // 核心动作：眼球沿垂直轴持续上下翻动（带诡异痉挛加速）
+        const rollWave =
+          Math.sin(eye.rollPhase) * 0.78 + Math.sin(eye.rollPhase * 2.4 + eye.seed) * 0.28;
+        const rollY = clamp(rollWave, -1.15, 1.15) * er * 0.62;
+        const rollX = Math.sin(eye.rollPhase * 0.55 + eye.seed) * er * 0.14;
+
+        // 猩红虹膜
+        const irisR = er * 0.54;
+        ctx.fillStyle = `rgba(218, 24, 24, ${(0.95 * rawOpen).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(rollX, rollY, irisR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 虹膜内圈亮猩红微光（暗处更瘆人）
+        ctx.fillStyle = `rgba(255, 62, 48, ${(0.72 * rawOpen).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(rollX, rollY, irisR * 0.66, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 漆黑针孔状痉挛瞳孔
+        const pupilR = irisR * (0.34 + 0.12 * Math.sin(t * 9.5 + eye.seed));
+        ctx.fillStyle = '#0a0203';
+        ctx.beginPath();
+        ctx.arc(rollX, rollY, pupilR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 潮湿眼球反光点
+        ctx.fillStyle = `rgba(255, 228, 222, ${(0.82 * rawOpen).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(rollX - irisR * 0.28, rollY - irisR * 0.28, Math.max(0.65, er * 0.14), 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+
+        // 锐利血红眼睑描边
+        ctx.strokeStyle = `rgba(128, 12, 16, ${(0.85 * rawOpen).toFixed(3)})`;
+        ctx.lineWidth = 0.85;
+        ctx.stroke();
+
+        ctx.restore();
+      }
+    }
+
     // 4. Dusk/Night Hideout Return Compass Arrow
     if (engine.mode === 'play' && (engine.phase === 'dusk' || engine.phase === 'night')) {
       const dHome = dist(engine.player.x, engine.player.y, 0, 0);
@@ -3931,8 +4105,8 @@ export class GameRenderer {
     // 4b. 世界空间动作 UI：限时交互墨线弧环 / 蓄力余烬细弧（暗部之上）
     this.drawActionUI(ctx, engine);
 
-    // 5. Diegetic Interact Prompt（限时动作进行中进度由角色旁弧环表现，提示框不再重复画环）
-    const snapPrompt = engine.getHudSnapshot().prompt;
+    // 5. Diegetic Interact Prompt（限时动作进行中进度由角色旁弧环表现，提示框不再重复画环；直接读零分配 activePrompt）
+    const snapPrompt = engine.activePrompt;
     if (engine.mode === 'play' && snapPrompt) {
       this.drawDiegeticPrompt(
         ctx,
@@ -4021,9 +4195,10 @@ export class GameRenderer {
       this.rainLtIn[n] = isPointInHideout(lx, ly) ? 1 : 0;
     }
 
-    // 1) 按景深层生成：数量随 Quality.rainScale 与画面面积缩放，池满即停
+    // 1) 按景深层生成：数量随 Quality.rainScale 与画面面积缩放（手机端额外收敛远层细碎雨点密度），池满即停
     if (dt > 0 && rain >= 0.03) {
-      const k = rain * Quality.preset.rainScale * ((W * H) / (1280 * 720)) * dt;
+      const mobileFactor = engine.isTouchUi ? 0.68 : 1.0;
+      const k = rain * Quality.preset.rainScale * mobileFactor * ((W * H) / (1280 * 720)) * dt;
       const roofA = engine.hideoutRoofAlpha;
       const sawA = engine.sawmillRoofAlpha;
       const sr = SAWMILL_ROOF_RECT;
@@ -5916,91 +6091,332 @@ export class GameRenderer {
       ctx.fillRect(12.5, 1.7, 2.8, 2.1);
       ctx.restore();
     } else if (e.kind === 'dancer') {
-      // --- 腐裙舞者（树林中诡异旋转起舞：双层泥血撕裂长裙 + 反折枯白长臂 + 披散黑发） ---
-      const spin = e.state === 'prowl' ? time * 2.2 + e.id : Math.sin(time * 7 + e.id) * 0.28;
-      ctx.save();
-      ctx.rotate(spin);
-      // 底层污黄撕裂衬裙
-      ctx.fillStyle = flash ? '#a8524a' : '#7d7564';
-      ctx.beginPath();
-      for (let k = 0; k <= 14; k++) {
-        const a = (k / 14) * Math.PI * 2;
-        const r = 16.2 + Math.cos(a * 5 - time * 4.4 + e.id) * 2.6;
-        const px = Math.cos(a) * r;
-        const py = Math.sin(a) * r;
-        if (k === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
+      // --- 僵尸新娘 / 腐裙舞者（专业华尔兹+芭蕾挥鞭转编舞 + 残破染血婚纱头纱 + 枯萎荆棘花冠 + 反关节舞臂） ---
+      const isDancing = e.state === 'prowl' || e.state === 'stalk';
+      // 4拍舞步乐句（0..1）：急旋 → 芭蕾骤停定格（Spotting 颈部抽搐）→ 反向华尔兹滑转 → 诡异回卷顿挫
+      const phrase = (time * 0.42 + e.id * 0.37) % 1;
+      let spinAngle = 0;
+      let spinVel = 0;
+      let holdPose = 0; // 骤停定格强度 0..1（此时头颅反折微颤、双臂定姿）
+      let swayLat = 0;
+      let armAlt = 0; // 芭蕾手位交替（-1..1）
+
+      if (isDancing) {
+        const cycle = Math.floor(time * 0.42 + e.id * 0.37);
+        const baseTurn = cycle * Math.PI * 2;
+        if (phrase < 0.46) {
+          // 第1乐句：加速挥鞭转（Fouetté），ease-in-out 甩开裙摆
+          const u = phrase / 0.46;
+          const ease = u * u * (3 - 2 * u);
+          spinAngle = baseTurn + ease * Math.PI * 2;
+          spinVel = Math.sin(u * Math.PI) * 1.15;
+          swayLat = Math.sin(u * Math.PI * 2) * 2.4;
+          armAlt = Math.cos(u * Math.PI);
+        } else if (phrase < 0.62) {
+          // 第2乐句：专业芭蕾骤停定格（颈部与手腕诡异抽搐）
+          const u = (phrase - 0.46) / 0.16;
+          holdPose = Math.sin(u * Math.PI);
+          const twitchStop = Math.sin(time * 34 + e.id) * 0.06 * holdPose;
+          spinAngle = baseTurn + Math.PI * 2 + twitchStop;
+          spinVel = 0.08;
+          swayLat = Math.sin(u * Math.PI) * 1.4;
+          armAlt = -1;
+        } else if (phrase < 0.86) {
+          // 第3乐句：华尔兹反向优雅舒展旋身
+          const u = (phrase - 0.62) / 0.24;
+          const ease = u * u * (3 - 2 * u);
+          spinAngle = baseTurn + Math.PI * 2 - ease * Math.PI * 1.25;
+          spinVel = -Math.sin(u * Math.PI) * 0.85;
+          swayLat = -Math.sin(u * Math.PI) * 3.0;
+          armAlt = -1 + ease * 2;
+        } else {
+          // 第4乐句：失控僵直回卷顿挫，准备下一次急旋
+          const u = (phrase - 0.86) / 0.14;
+          const ease = u * u * (3 - 2 * u);
+          holdPose = Math.sin(u * Math.PI) * 0.7;
+          spinAngle = baseTurn + Math.PI * 0.75 - ease * Math.PI * 0.75 + Math.sin(time * 28 + e.id) * 0.04;
+          spinVel = -0.25;
+          swayLat = Math.sin(u * Math.PI) * 1.2;
+          armAlt = 1;
+        }
+      } else {
+        // 追逐/前摇/扑击：旋转骤停化作反关节折翼扑杀，躯干痉挛摆动
+        const frenzy = Math.sin(time * 13 + e.id) * (0.22 + windE * 0.18);
+        spinAngle = frenzy + Math.sin(e.walkPhase * 1.5) * 0.18;
+        spinVel = Math.cos(time * 13 + e.id) * 0.45;
+        holdPose = clamp(0.45 + windE * 0.55, 0, 1);
+        armAlt = Math.sin(e.walkPhase) * 0.6;
       }
+
+      const flare = clamp(0.32 + Math.abs(spinVel) * 0.68 + windE * 0.22, 0.25, 1.18);
+      const veilLag = -spinVel * 0.85; // 长头纱角动量滞后甩动
+      const skirtLag = -spinVel * 0.36; // 外层婚纱惯性滞后
+
+      ctx.save();
+      ctx.translate(swayLat * 0.35, Math.sin(time * 3.2 + e.id) * (isDancing ? 1.4 : 0.4));
+
+      // 0. 脚下腐朽暗红血雾旋涡（旋转时拖曳出诡异冷灰+干血残影）
+      if (alive > 0.15) {
+        const mistR = 23 + flare * 7;
+        const mg = ctx.createRadialGradient(0, 0, 5, 0, 0, mistR);
+        mg.addColorStop(0, 'rgba(54, 10, 12, 0.44)');
+        mg.addColorStop(0.55, 'rgba(24, 18, 20, 0.24)');
+        mg.addColorStop(1, 'rgba(12, 10, 12, 0)');
+        ctx.fillStyle = mg;
+        ctx.beginPath();
+        ctx.arc(0, 0, mistR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 1. 残破染血新娘长头纱（底层拖曳薄纱，随旋转惯性反向大幅甩出）
+      ctx.save();
+      ctx.rotate(spinAngle + veilLag);
+      const veilLen = 22 + flare * 11 + lungeW * 4;
+      const veilSpread = 9.5 + flare * 5.2;
+      ctx.fillStyle = flash ? 'rgba(218, 126, 120, 0.48)' : 'rgba(182, 186, 178, 0.30)';
+      ctx.strokeStyle = 'rgba(42, 34, 34, 0.42)';
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(-2, -4.5);
+      ctx.bezierCurveTo(
+        -veilLen * 0.42,
+        -veilSpread * 1.05 + Math.sin(time * 6.5 + e.id) * 2.8,
+        -veilLen * 0.85,
+        -veilSpread * 0.65 - Math.cos(time * 5.2) * 3.2,
+        -veilLen,
+        -3.5 + Math.sin(time * 7.4 + e.id) * 2.5
+      );
+      // 头纱撕裂锯齿尾端
+      ctx.lineTo(-veilLen * 0.82, 0.5);
+      ctx.lineTo(-veilLen * 0.96, 4.2 + Math.cos(time * 6.8 + e.id) * 2.2);
+      ctx.lineTo(-veilLen * 0.72, 6.2);
+      ctx.bezierCurveTo(
+        -veilLen * 0.58,
+        veilSpread * 0.92 + Math.sin(time * 5.8) * 2.6,
+        -veilLen * 0.28,
+        veilSpread * 0.72,
+        -2,
+        4.5
+      );
       ctx.closePath();
       ctx.fill();
-      // 外层沾满泥污与暗血的残破惨白连衣裙摆（随旋转波浪起伏）
-      ctx.fillStyle = flash ? '#d88278' : '#c4bfb0';
-      ctx.strokeStyle = '#201e1a';
-      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      // 头纱边缘干涸血浸
+      ctx.fillStyle = 'rgba(98, 16, 18, 0.42)';
       ctx.beginPath();
-      for (let k = 0; k <= 12; k++) {
-        const a = (k / 12) * Math.PI * 2;
-        const frill = 14.2 + Math.sin(a * 4 + time * 5.2 + e.id) * 2.9 + Math.cos(a * 3) * 1.5;
-        const px = Math.cos(a) * frill;
-        const py = Math.sin(a) * frill;
+      ctx.ellipse(-veilLen * 0.66, 2.2, 5.2, 2.6, 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // 2. 底层污黄腐朽衬裙（离心甩开，锯齿破损边）
+      ctx.save();
+      ctx.rotate(spinAngle + skirtLag * 1.25);
+      ctx.fillStyle = flash ? '#9e4a44' : '#6f6959';
+      ctx.strokeStyle = '#181512';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      for (let k = 0; k <= 18; k++) {
+        const a = (k / 18) * Math.PI * 2;
+        const tear = k % 3 === 0 ? -2.2 : 1.1;
+        const r = 15.0 + flare * 3.8 + tear + Math.cos(a * 5 - time * 4.8 + e.id) * 2.1;
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r * (0.94 + Math.sin(time * 3 + e.id) * 0.04);
         if (k === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       }
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-      // 裙摆放射状折痕与暗红血污
-      ctx.strokeStyle = 'rgba(42, 38, 32, 0.36)';
-      ctx.lineWidth = 0.9;
-      for (let k = 0; k < 6; k++) {
-        const a = (k / 6) * Math.PI * 2 + 0.2;
+      ctx.restore();
+
+      // 3. 外层残破惨白蕾丝婚纱礼服（带角动量滞后、螺旋折痕、暗红血斑与蕾丝扇边）
+      ctx.save();
+      ctx.rotate(spinAngle + skirtLag);
+      ctx.fillStyle = flash ? '#d88278' : '#c6c2b4';
+      ctx.strokeStyle = '#1c1917';
+      ctx.lineWidth = 1.35;
+      ctx.beginPath();
+      for (let k = 0; k <= 20; k++) {
+        const a = (k / 20) * Math.PI * 2;
+        const lace = (k & 1) === 0 ? 1.5 : -1.2; // 破损蕾丝锯齿
+        const swirl = Math.sin(a * 4 + time * 5.4 + e.id) * (1.8 + flare * 1.4);
+        const r = 12.6 + flare * 3.4 + lace + swirl;
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r * 0.96;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // 婚纱离心螺旋褶皱（随旋转方向弯曲，体现高速旋转的动势）
+      ctx.strokeStyle = 'rgba(38, 34, 30, 0.38)';
+      ctx.lineWidth = 0.85;
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2 + 0.15;
+        const bend = a - spinVel * 0.48;
         ctx.beginPath();
-        ctx.moveTo(Math.cos(a) * 4, Math.sin(a) * 4);
-        ctx.lineTo(Math.cos(a) * 12.5, Math.sin(a) * 12.5);
+        ctx.moveTo(Math.cos(a) * 4.2, Math.sin(a) * 4.2);
+        ctx.quadraticCurveTo(
+          Math.cos((a + bend) * 0.5) * 8.8,
+          Math.sin((a + bend) * 0.5) * 8.8,
+          Math.cos(bend) * (12.2 + flare * 2.2),
+          Math.sin(bend) * (12.2 + flare * 2.2)
+        );
         ctx.stroke();
       }
-      ctx.fillStyle = 'rgba(104, 20, 18, 0.60)';
+
+      // 婚纱大面积暗红血污 + 霉暗脏渍（新娘惨死的叙事痕迹）
+      ctx.fillStyle = 'rgba(108, 16, 18, 0.66)';
       ctx.beginPath();
-      ctx.ellipse(-4, 5, 5.8, 3.3, 0.4, 0, Math.PI * 2);
-      ctx.ellipse(5, -6, 4.4, 2.5, -0.5, 0, Math.PI * 2);
+      ctx.ellipse(-4.2, 5.4, 5.8, 3.2, 0.45, 0, Math.PI * 2);
+      ctx.ellipse(5.5, -5.8, 4.4, 2.4, -0.55, 0, Math.PI * 2);
+      ctx.ellipse(-6.5, -3.4, 3.2, 1.9, 0.9, 0, Math.PI * 2);
       ctx.fill();
-      // 诡异反关节舞动的苍白枯臂与分叉细爪
-      ctx.strokeStyle = flash ? '#d88278' : '#b2aca0';
-      ctx.lineCap = 'round';
+      ctx.fillStyle = 'rgba(150, 22, 24, 0.48)';
+      ctx.beginPath();
+      ctx.ellipse(-3.6, 5.0, 2.8, 1.6, 0.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // 4. 躯干、枯瘦双肩、专业芭蕾/华尔兹分段舞臂与反折骨爪
+      ctx.save();
+      ctx.rotate(spinAngle);
+
+      // 腐朽紧身胸衣/束腰与隐约苍白肩背轮廓
+      ctx.fillStyle = flash ? '#c8726a' : '#8d877a';
+      ctx.strokeStyle = '#181513';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 5.6, 7.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // 专业非对称舞臂：起舞时一臂高举成芭蕾圆弧（En Haut），另一臂舒展外延（À la Seconde），手腕诡异反折
       for (let side = -1; side <= 1; side += 2) {
-        const sway = Math.sin(time * 4.2 + e.id + side) * 3.8;
-        const hx = 13.5 + reachR * 0.42;
-        const hy = side * (17.2 + sway);
-        ctx.lineWidth = 3.0;
+        const isHighArm = side === -1 ? armAlt >= 0 : armAlt < 0;
+        const armBlend = isDancing ? (isHighArm ? 1 : 0) : 0.2;
+        const elbowX = isDancing
+          ? lerp(4.5, 9.2, armBlend) + Math.sin(time * 4.5 + side) * 1.4
+          : 9.5 - windE * 3.5 + reachR * 0.25;
+        const elbowY = isDancing
+          ? side * lerp(13.2, 9.8, armBlend) + Math.cos(time * 4.2 + e.id) * 1.6
+          : side * (12.8 + windE * 3.5);
+        const handX = isDancing
+          ? lerp(12.5, 4.2, armBlend) + Math.cos(time * 5.2 + side) * 1.8
+          : 18.5 + reachR * 0.55 + lungeW * 4.2;
+        const handY = isDancing
+          ? side * lerp(19.5, 13.8, armBlend) + Math.sin(time * 4.8 + e.id) * 2.2
+          : side * (15.6 - reachR * 0.35 + holdPose * 2.2);
+
+        // 上臂 + 前臂（惨白偏青枯瘦骨骼感）
+        ctx.strokeStyle = flash ? '#d88278' : '#b8b3a6';
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 2.7;
         ctx.beginPath();
-        ctx.moveTo(0, side * 5);
-        ctx.quadraticCurveTo(6.5, side * (12.5 - sway * 0.4), hx, hy);
+        ctx.moveTo(0.5, side * 5.4);
+        ctx.lineTo(elbowX, elbowY);
         ctx.stroke();
-        ctx.lineWidth = 1.2;
+
+        ctx.lineWidth = 2.0;
         ctx.beginPath();
-        ctx.moveTo(hx, hy);
-        ctx.lineTo(hx + 4.2, hy + side * 2.2);
-        ctx.moveTo(hx, hy);
-        ctx.lineTo(hx + 4.6, hy - side * 1.4);
+        ctx.moveTo(elbowX, elbowY);
+        ctx.lineTo(handX, handY);
         ctx.stroke();
+
+        // 诡异反折手腕与三根细长苍白骨爪（末端沾暗红血迹）
+        const wristAng = Math.atan2(handY - elbowY, handX - elbowX) + side * (isDancing ? 0.58 : -0.25);
+        ctx.strokeStyle = flash ? '#e2968e' : '#ccc6b6';
+        ctx.lineWidth = 1.05;
+        ctx.beginPath();
+        for (let f = -1; f <= 1; f++) {
+          const fa = wristAng + f * 0.32;
+          const fl = f === 0 ? 5.2 : 4.2;
+          ctx.moveTo(handX, handY);
+          ctx.lineTo(handX + Math.cos(fa) * fl, handY + Math.sin(fa) * fl);
+        }
+        ctx.stroke();
+        // 指尖干血点
+        ctx.fillStyle = 'rgba(128, 18, 20, 0.72)';
+        ctx.beginPath();
+        ctx.arc(handX + Math.cos(wristAng) * 4.6, handY + Math.sin(wristAng) * 4.6, 1.0, 0, Math.PI * 2);
+        ctx.fill();
       }
-      // 苍白头顶与披散凌乱黑发丝
-      ctx.fillStyle = '#121110';
+
+      // 5. 诡异折颈头颅 + 逆旋甩出的湿冷黑发 + 枯萎血玫瑰荆棘新娘花冠
+      const headSnap = isDancing
+        ? holdPose * (Math.sin(time * 22 + e.id) * 0.25 + 0.65) - spinVel * 0.22
+        : Math.sin(time * 18 + e.id) * 0.35 + (windE > 0.2 ? 0.55 : 0);
+      ctx.save();
+      ctx.rotate(headSnap);
+
+      // 披散湿冷长黑发（随旋转反方向甩出 9 缕）
+      ctx.strokeStyle = '#0d0d0e';
+      ctx.lineWidth = 1.35;
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.ellipse(-1.8, 0, 6.6, 5.8, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#141312';
-      ctx.lineWidth = 1.3;
-      for (let h = -2; h <= 2; h++) {
-        ctx.beginPath();
-        ctx.moveTo(-4, h * 1.8);
-        ctx.lineTo(-10 - Math.abs(h), h * 2.8 + Math.sin(time * 6 + h) * 1.4);
-        ctx.stroke();
+      for (let h = -4; h <= 4; h++) {
+        const ang = Math.PI + h * 0.22 - spinVel * 0.55 + Math.sin(time * 5.8 + h * 1.3 + e.id) * 0.14;
+        const len = 10.5 + (4 - Math.abs(h)) * 1.4 + flare * 3.8;
+        ctx.moveTo(-1, h * 0.9);
+        ctx.quadraticCurveTo(
+          Math.cos(ang - spinVel * 0.3) * len * 0.52,
+          Math.sin(ang - spinVel * 0.3) * len * 0.52,
+          Math.cos(ang) * len,
+          Math.sin(ang) * len
+        );
       }
-      ctx.fillStyle = '#d2cab8';
+      ctx.stroke();
+
+      // 后脑黑发发团
+      ctx.fillStyle = '#111011';
       ctx.beginPath();
-      ctx.arc(1.8, 0, 3.6, 0, Math.PI * 2);
+      ctx.ellipse(-1.4, 0, 5.8, 5.2, 0, 0, Math.PI * 2);
       ctx.fill();
+
+      // 惨白偏青脸庞/额顶（定格或追逐时诡异微探露出半张死白脸）
+      const facePop = clamp(holdPose * 0.9 + (isDancing ? 0.15 : 0.85), 0, 1);
+      ctx.fillStyle = flash ? '#e2988e' : '#cfd0c4';
+      ctx.beginPath();
+      ctx.ellipse(1.6 + facePop * 1.2, 0, 3.8, 3.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 诡异空洞渗血双目（骤停定格/扑杀时骤亮渗血暗红微光）
+      if (facePop > 0.35) {
+        const eyeX = 3.6 + facePop * 0.9;
+        ctx.fillStyle = '#0a0607';
+        ctx.beginPath();
+        ctx.arc(eyeX, -1.35, 0.95, 0, Math.PI * 2);
+        ctx.arc(eyeX, 1.35, 0.95, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = `rgba(218, 32, 28, ${(0.55 + holdPose * 0.42).toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(eyeX + 0.2, -1.35, 0.45, 0, Math.PI * 2);
+        ctx.arc(eyeX + 0.2, 1.35, 0.45, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 枯萎新娘荆棘花冠（Withered Bridal Wreath）：黑褐枯枝环 + 3 朵干涸血红残花
+      ctx.strokeStyle = '#241b16';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.arc(0.4, 0, 4.9, -Math.PI * 0.68, Math.PI * 0.68);
+      ctx.stroke();
+      ctx.fillStyle = '#7a1418';
+      ctx.beginPath();
+      ctx.arc(3.8, -3.1, 1.45, 0, Math.PI * 2);
+      ctx.arc(4.8, 0.2, 1.65, 0, Math.PI * 2);
+      ctx.arc(3.4, 3.3, 1.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#b42a2e';
+      ctx.beginPath();
+      ctx.arc(4.8, 0.2, 0.7, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+      ctx.restore();
       ctx.restore();
     } else if (e.kind === 'chomper') {
       // --- 纵裂裂口怪 Chomper（对标《Darkwood》招牌红肉爬行怪：肿胀暗红躯体 + 纵向撕裂锯齿巨口 + 蠕动触须） ---
@@ -7612,6 +8028,32 @@ export class GameRenderer {
     ctx.fillRect(-10, 9, 3, 2);
 
     ctx.restore();
+  }
+
+  /** 预烘焙单张 128×64 柔和径向羽化椭圆树影贴图（供所有贴地树影复用，零每帧渐变分配） */
+  private ensureTreeShadowSprite(): HTMLCanvasElement {
+    if (this.treeShadowSprite) return this.treeShadowSprite;
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 64;
+    const g = c.getContext('2d');
+    if (g) {
+      g.save();
+      g.translate(64, 32);
+      g.scale(64, 32);
+      const grad = g.createRadialGradient(0, 0, 0.08, 0, 0, 1);
+      grad.addColorStop(0, 'rgba(3, 4, 4, 0.84)');
+      grad.addColorStop(0.45, 'rgba(4, 5, 5, 0.44)');
+      grad.addColorStop(0.78, 'rgba(4, 5, 5, 0.14)');
+      grad.addColorStop(1, 'rgba(4, 5, 5, 0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(0, 0, 1, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+    this.treeShadowSprite = c;
+    return c;
   }
 
   /** 首次按需预烘焙 8 套蜿蜒盘错的地面树根离屏精灵（192×192，基准树干半径 20px），大幅降低每帧 2D 路径光栅化耗时 */

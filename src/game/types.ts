@@ -536,3 +536,54 @@ export interface PilotInput {
   toggleLight: boolean;
   dodge?: boolean;
 }
+
+/** 血潮袭击地面蠕动血色不明物团块（预分配池，渲染只读） */
+export interface BloodTideBlob {
+  x: number;
+  y: number;
+  r: number;
+  seed: number;
+  wobbleSpeed: number;
+  /** 离中心出现延迟（秒），让血潮从脚底慢慢向外蔓延 */
+  spawnDelay: number;
+  /** 当前显形膨胀进度 0..1 */
+  growth: number;
+}
+
+/** 血潮袭击地面冒出的红色眼睛（上下翻动眼球，预分配池，渲染只读） */
+export interface BloodTideEye {
+  x: number;
+  y: number;
+  /** 眼眶半径（px） */
+  r: number;
+  /** 眼眶朝向角（弧度） */
+  angle: number;
+  /** 冒出延迟（秒，从脚底近处向远处逐步密密麻麻冒出） */
+  spawnDelay: number;
+  /** 当前睁眼程度 0..1 */
+  open: number;
+  /** 眼球上下翻动相位 */
+  rollPhase: number;
+  /** 眼球上下翻动角速度 */
+  rollSpeed: number;
+  /** 痉挛眨眼随机种子 */
+  seed: number;
+}
+
+/** 低血量/夜外被追逐危机与血潮袭击单源状态（engine.ts 推进，renderer.ts 只读） */
+export interface BloodTideState {
+  /** 是否处于危机背景音/女孩笑声预警阶段 */
+  crisisActive: boolean;
+  /** 危机持续计时（秒）；满 10s 且血量 < 30% 时触发血潮袭击 */
+  crisisTimer: number;
+  /** 危机氛围平滑强度 0..1 */
+  crisisIntensity: number;
+  /** 血潮袭击是否已爆发 */
+  active: boolean;
+  /** 血潮蔓延总强度 0..1 */
+  intensity: number;
+  /** 血潮持续秒数（驱动脚底红眼由近及远慢慢冒出） */
+  duration: number;
+  blobs: BloodTideBlob[];
+  eyes: BloodTideEye[];
+}

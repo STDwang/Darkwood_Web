@@ -32,6 +32,10 @@ export class GameRuntime {
   // 身体反馈音频：上一步体力（识别疾跑）与耗尽锁定标记
   private prevStamina = -1;
   private exhaustLatch = false;
+  // 刷新优化：记录最近一次实际渲染时间戳（用于手机 120Hz 高刷屏稳帧 60fps 与结算页背景降频）及暂停态脏标记
+  private lastRenderAt = 0;
+  private holdDirty = true;
+  private lastMode = '';
 
   constructor(canvas: HTMLCanvasElement, onFirstFrame?: () => void) {
     this.canvas = canvas;
@@ -46,11 +50,18 @@ export class GameRuntime {
     window.addEventListener('resize', this.handleResize);
 
     // Re-size offscreen FBOs & re-render immediately when Quality or Variants change in hold mode
-    this.unsubs.push(Quality.subscribe(() => this.handleResize()));
+    this.unsubs.push(
+      Quality.subscribe(() => {
+        this.holdDirty = true;
+        this.handleResize();
+      })
+    );
     this.unsubs.push(
       Variants.subscribe(() => {
+        this.holdDirty = true;
         if (this.engine.mode === 'hold' || this.engine.mode === 'title') {
           this.renderer.render(this.engine);
+          this.holdDirty = false;
         }
       })
     );
@@ -83,8 +94,10 @@ export class GameRuntime {
     const w = this.canvas.clientWidth || this.canvas.getBoundingClientRect().width || window.innerWidth;
     const h = this.canvas.clientHeight || this.canvas.getBoundingClientRect().height || window.innerHeight;
     this.renderer.resize(w, h);
+    this.holdDirty = true;
     if (this.engine.mode === 'hold' || this.engine.mode === 'title') {
       this.renderer.render(this.engine);
+      this.holdDirty = false;
     }
   };
 
@@ -96,6 +109,39 @@ export class GameRuntime {
 
   private loop = (now: number) => {
     if (this.destroyed) return;
+    this.rafId = requestAnimationFrame(this.loop);
+
+    // 页面处于后台隐藏态时完全休眠，零 CPU/GPU 消耗
+    if (document.hidden) {
+      this.lastTime = now;
+      return;
+    }
+
+    const mode = this.engine.mode;
+    if (mode !== this.lastMode) {
+      this.lastMode = mode;
+      this.holdDirty = true;
+    }
+
+    // 弹窗暂停态（工作台/地图/日志/排行榜/设置）：画面静止，若无脏标记则完全跳过主画布渲染，释放全部算力给 UI 滑动
+    if (mode === 'hold') {
+      this.lastTime = now;
+      this.feedBodyAudio(FIXED_DT);
+      if (this.holdDirty) {
+        this.renderer.render(this.engine);
+        this.holdDirty = false;
+      }
+      return;
+    }
+
+    // 手机高刷屏（90Hz/120Hz）稳帧节拍器：控制在稳定 ~60fps（>=14.2ms），消除高频 WebGL 上传引发的发热与帧抖动；
+    // 死亡/胜利结算背景遮罩态自动降频至 ~15fps（>=64ms）节省电量
+    const minRenderGap = mode === 'dead' || mode === 'victory' ? 64 : this.engine.isTouchUi ? 14.2 : 0;
+    if (minRenderGap > 0 && now - this.lastRenderAt < minRenderGap) {
+      return;
+    }
+    this.lastRenderAt = now;
+
     const rawFrameMs = now - this.lastTime;
     this.lastTime = now;
     const clampedSec = Math.min(rawFrameMs / 1000, 0.1);
@@ -114,12 +160,10 @@ export class GameRuntime {
     this.renderer.render(this.engine);
     const jsMs = performance.now() - jsStart;
 
-    if (rawFrameMs > 0) {
+    if (rawFrameMs > 0 && mode === 'play') {
       this.engine.fps = this.engine.fps * 0.9 + (1000 / rawFrameMs) * 0.1;
       Quality.reportFrame(rawFrameMs, jsMs);
     }
-
-    this.rafId = requestAnimationFrame(this.loop);
   };
 
   /**

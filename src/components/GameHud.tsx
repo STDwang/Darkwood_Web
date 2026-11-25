@@ -8,7 +8,7 @@
 // 约束：完整保留 layout-check / smoke-check 契约（aria-label / data-hud / data-guidance-mode / .hud2.is-threat / 零 sticky / 按钮 ≥ 44px）。
 
 import React, { useEffect, useRef, useState } from 'react';
-import { SlidersHorizontal } from 'lucide-react';
+import { Map, SlidersHorizontal } from 'lucide-react';
 import {
   BandageInkIcon,
   CraftInkIcon,
@@ -38,6 +38,7 @@ interface GameHudProps {
   hud: HudSnapshot;
   t: TFn;
   isDev: boolean;
+  compact: boolean;
   guidanceMode: 'full' | 'reduced';
   runtimeRef: { current: GameRuntime | null };
   exploreRef: { current: MinimapExploreState | null };
@@ -84,15 +85,15 @@ function useFlash(value: number, ms = 1400): boolean {
   return on;
 }
 
-/** 昼夜进度表盘：三段弧线 + 日/月相游标 */
-function DayArc({ dayTime, phase }: { dayTime: number; phase: HudSnapshot['phase'] }) {
-  const ticks: React.ReactNode[] = [];
+// 静态预计算昼夜表盘的 20 条刻度线与 2 条阶段分界线（避免每次 HUD 刷新重复生成 22 个 SVG 元素）
+const STATIC_ARC_TICKS: React.ReactNode[] = (() => {
+  const list: React.ReactNode[] = [];
   for (let i = 0; i <= 19; i++) {
     const u = i / 19;
     const major = i % 5 === 0;
     const a = arcPoint(u);
     const b = arcPoint(u, ARC_R - (major ? 3.8 : 2.2));
-    ticks.push(
+    list.push(
       <line
         key={i}
         x1={a.x.toFixed(2)}
@@ -103,35 +104,49 @@ function DayArc({ dayTime, phase }: { dayTime: number; phase: HudSnapshot['phase
       />
     );
   }
-  const m = arcPoint(dayTime);
-  const bounds = [ARC_DAY_END, ARC_DUSK_END].map((u, i) => {
-    const a = arcPoint(u, ARC_R + 2.4);
-    const b = arcPoint(u, ARC_R - 4.4);
-    return <line key={`b${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} strokeWidth={1.1} />;
-  });
-  return (
-    <svg className="hud2-arc" viewBox={`0 0 ${ARC_W} 24`} aria-hidden="true">
-      <path d={arcPath(0, ARC_DAY_END)} className="hud2-arc__seg hud2-arc__seg--day" />
-      <path d={arcPath(ARC_DAY_END, ARC_DUSK_END)} className="hud2-arc__seg hud2-arc__seg--dusk" />
-      <path d={arcPath(ARC_DUSK_END, 1)} className="hud2-arc__seg hud2-arc__seg--night" />
-      <g className="hud2-arc__ticks">{ticks}</g>
-      <g className="hud2-arc__bounds">{bounds}</g>
-      <g transform={`translate(${m.x.toFixed(2)} ${m.y.toFixed(2)})`}>
-        {phase === 'night' ? (
-          <path className="hud2-arc__moon" d="M0 -3.4 A3.4 3.4 0 1 0 0 3.4 A4.1 4.1 0 0 1 0 -3.4 Z" />
-        ) : (
-          <>
-            <circle r="5" className="hud2-arc__glow" />
-            <circle r="2.8" className={`hud2-arc__sun ${phase === 'dusk' ? 'is-dusk' : ''}`} />
-          </>
-        )}
-      </g>
-    </svg>
-  );
-}
+  return list;
+})();
 
-/** 手绘质感体征条（带专属血滴/闪电图标） */
-function InkBar({
+const STATIC_ARC_BOUNDS: React.ReactNode[] = [ARC_DAY_END, ARC_DUSK_END].map((u, i) => {
+  const a = arcPoint(u, ARC_R + 2.4);
+  const b = arcPoint(u, ARC_R - 4.4);
+  return <line key={`b${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} strokeWidth={1.1} />;
+});
+
+const STATIC_DAY_PATH = arcPath(0, ARC_DAY_END);
+const STATIC_DUSK_PATH = arcPath(ARC_DAY_END, ARC_DUSK_END);
+const STATIC_NIGHT_PATH = arcPath(ARC_DUSK_END, 1);
+
+/** 昼夜进度表盘：三段弧线 + 日/月相游标（按量化刻度 memo，消除高频重绘） */
+const DayArc = React.memo(
+  function DayArc({ dayTime, phase }: { dayTime: number; phase: HudSnapshot['phase'] }) {
+    const m = arcPoint(dayTime);
+    return (
+      <svg className="hud2-arc" viewBox={`0 0 ${ARC_W} 24`} aria-hidden="true">
+        <path d={STATIC_DAY_PATH} className="hud2-arc__seg hud2-arc__seg--day" />
+        <path d={STATIC_DUSK_PATH} className="hud2-arc__seg hud2-arc__seg--dusk" />
+        <path d={STATIC_NIGHT_PATH} className="hud2-arc__seg hud2-arc__seg--night" />
+        <g className="hud2-arc__ticks">{STATIC_ARC_TICKS}</g>
+        <g className="hud2-arc__bounds">{STATIC_ARC_BOUNDS}</g>
+        <g transform={`translate(${m.x.toFixed(2)} ${m.y.toFixed(2)})`}>
+          {phase === 'night' ? (
+            <path className="hud2-arc__moon" d="M0 -3.4 A3.4 3.4 0 1 0 0 3.4 A4.1 4.1 0 0 1 0 -3.4 Z" />
+          ) : (
+            <>
+              <circle r="5" className="hud2-arc__glow" />
+              <circle r="2.8" className={`hud2-arc__sun ${phase === 'dusk' ? 'is-dusk' : ''}`} />
+            </>
+          )}
+        </g>
+      </svg>
+    );
+  },
+  (prev, next) =>
+    prev.phase === next.phase && Math.round(prev.dayTime * 260) === Math.round(next.dayTime * 260)
+);
+
+/** 手绘质感体征条（带专属血滴/闪电图标，memo 避免无变化时重渲染） */
+const InkBar = React.memo(function InkBar({
   kind,
   value,
   max,
@@ -196,12 +211,13 @@ function InkBar({
       <span className={`hud2-num ${flash ? 'is-on' : ''}`}>{value}</span>
     </div>
   );
-}
+});
 
-export default function GameHud({
+const GameHud = React.memo(function GameHud({
   hud,
   t,
   isDev,
+  compact,
   guidanceMode,
   runtimeRef,
   exploreRef,
@@ -224,7 +240,7 @@ export default function GameHud({
     <div
       className={`hud2 pointer-events-none fixed inset-0 z-20 flex flex-col justify-between ${
         hud.dangerLevel >= 65 ? 'is-threat' : ''
-      }`}
+      } ${compact ? 'is-compact' : ''}`}
       aria-live="polite"
       data-guidance-mode={guidanceMode}
     >
@@ -236,6 +252,9 @@ export default function GameHud({
             <span className="inline-flex items-center gap-1.5">
               <DayPhaseInkIcon phase={hud.phase} className="w-4 h-4" />
               <span className="hud2-time__day font-mono-num">D{hud.day}</span>
+              <span className={`hud2-time__phase is-${hud.phase}`}>
+                {hud.phase === 'night' ? t('黑夜') : hud.phase === 'dusk' ? t('黄昏') : t('白昼')}
+              </span>
             </span>
             <span className="hud2-time__wx" aria-hidden="true">
               <WeatherInkIcon kind={hud.weather} className="hud2-time__wxicon" />
@@ -260,27 +279,29 @@ export default function GameHud({
 
           <DayArc dayTime={hud.dayTime} phase={hud.phase} />
 
-          {/* 纯图形中继进度徽章（替代大段目标文字，同时保留 data-hud="objective" 契约） */}
+          {/* 中继进度做成钉在巡林记录签上的图示；桌面保留目标全文，手机只保留紧凑图示。 */}
           {guidanceMode === 'full' && (
-            <div className="hud2-obj-icons" data-hud="objective" title={t(hud.objectiveText)}>
-              <RelayInkIcon className="w-4 h-4 shrink-0" />
-              <span className="hud2-obj-dots" aria-hidden="true">
-                {[0, 1, 2].map((idx) => (
-                  <span
-                    key={idx}
-                    className={`hud2-obj-dot ${
-                      idx < hud.relayInstalled
-                        ? 'is-installed'
-                        : idx < hud.relayInstalled + hud.relayParts
-                        ? 'is-carried'
-                        : ''
-                    }`}
-                  />
-                ))}
-              </span>
-              <span className="font-mono-num text-[11px] text-[#cfe8df]">
-                {hud.relayInstalled}/3
-              </span>
+            <div className="hud2-objective-note" data-hud="objective">
+              <div className="hud2-obj-icons" title={t(hud.objectiveText)}>
+                <RelayInkIcon className="w-4 h-4 shrink-0" />
+                <span className="hud2-obj-dots" aria-hidden="true">
+                  {[0, 1, 2].map((idx) => (
+                    <span
+                      key={idx}
+                      className={`hud2-obj-dot ${
+                        idx < hud.relayInstalled
+                          ? 'is-installed'
+                          : idx < hud.relayInstalled + hud.relayParts
+                          ? 'is-carried'
+                          : ''
+                      }`}
+                    />
+                  ))}
+                </span>
+                <span className="hud2-obj-count font-mono-num">{hud.relayInstalled}/3</span>
+              </div>
+              <p className="hud2-objective__text">{t(hud.objectiveText)}</p>
+              <span className="hud2-objective__zone">{t(hud.zoneName)}</span>
             </div>
           )}
         </div>
@@ -300,6 +321,7 @@ export default function GameHud({
               type="button"
               onClick={() => onOpenLayer('journal')}
               aria-label={t('日志')}
+              title={`${t('日志')} · J`}
               className="hud2-iconbtn"
             >
               <JournalInkIcon className="hud2-iconbtn__svg" />
@@ -308,6 +330,7 @@ export default function GameHud({
               type="button"
               onClick={() => onOpenLayer('craft')}
               aria-label={t('制作')}
+              title={`${t('制作')} · C`}
               className="hud2-iconbtn"
             >
               <CraftInkIcon className="hud2-iconbtn__svg" />
@@ -316,10 +339,22 @@ export default function GameHud({
               type="button"
               onClick={() => onOpenLayer('pause')}
               aria-label={t('暂停')}
+              title={`${t('暂停')} · Esc`}
               className="hud2-iconbtn"
             >
               <PauseInkIcon className="hud2-iconbtn__svg" />
             </button>
+            {guidanceMode === 'full' && (
+              <button
+                type="button"
+                onClick={() => onOpenLayer('map')}
+                aria-label={t('地图')}
+                title={`${t('地图')} · M`}
+                className="hud2-iconbtn hud2-mapbtn"
+              >
+                <Map className="hud2-iconbtn__svg" aria-hidden="true" />
+              </button>
+            )}
           </div>
 
           {guidanceMode === 'full' && (
@@ -354,8 +389,8 @@ export default function GameHud({
           {importantToasts.slice(-1).map((msg) => (
             <div
               key={msg.id}
-              className={`px-3 py-1 rounded text-xs text-center border ink-note ${
-                msg.tone === 'danger' ? 'ink-note--danger' : 'ink-note--warn'
+              className={`hud2-toast ${
+                msg.tone === 'danger' ? 'hud2-toast--danger' : 'hud2-toast--warn'
               }`}
             >
               {t(msg.text)}
@@ -384,7 +419,7 @@ export default function GameHud({
             <span><kbd>R</kbd>{t('换弹')}</span>
             <span><kbd>C</kbd>{t('制作')}</span>
           </div>
-          <div className="hud2-quickbar" role="group" aria-label={t('快捷栏')}>
+          <div className="hud2-quickbar hud2-toolbelt" role="group" aria-label={t('快捷栏')}>
           {/* [F] 手电快捷键 + 电量格 */}
           <button
             type="button"
@@ -414,7 +449,7 @@ export default function GameHud({
               type="button"
               onClick={() => runtimeRef.current?.engine.toggleWeapon()}
               aria-label={t('切换武器')}
-              className={`hud2-slot hud2-slot--tool ${
+              className={`hud2-slot hud2-slot--tool hud2-slot--weapon ${
                 hud.equip.mode === 'pistol' || hud.equip.torchLit ? 'is-active' : ''
               }`}
             >
@@ -484,4 +519,6 @@ export default function GameHud({
       </div>
     </div>
   );
-}
+});
+
+export default GameHud;

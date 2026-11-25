@@ -103,13 +103,13 @@ export default function App() {
     ox: 0,
     oy: 0,
   });
-  const aimStickRef = useRef<{ id: number | null; ox: number; oy: number }>({
+  const atkTouchRef = useRef<{ id: number | null; ox: number; oy: number }>({
     id: null,
     ox: 0,
     oy: 0,
   });
   const [moveKnob, setMoveKnob] = useState({ x: 0, y: 0 });
-  const [aimKnob, setAimKnob] = useState({ x: 0, y: 0 });
+  const [atkPressing, setAtkPressing] = useState(false);
 
   // 小地图探索网格（UI 层自维护，跨 HUD 卸载/重挂保留；Minimap 检测到 engine.world 更换即新开局重置）
   const exploreRef = useRef<MinimapExploreState | null>(null);
@@ -430,7 +430,7 @@ export default function App() {
       if (e.button === 0) {
         // 手机/触控模式下，先检测是否点中了世界中的物理交互徽章（点一下即可直接交互，不误触攻击）
         if (rt.engine.isTouchUi) {
-          const prompt = rt.engine.getHudSnapshot().prompt;
+          const prompt = rt.engine.activePrompt;
           if (prompt) {
             const sx = forceLandscapeRef.current ? e.clientY : e.clientX - canvas.getBoundingClientRect().left;
             const sy = forceLandscapeRef.current
@@ -454,6 +454,8 @@ export default function App() {
 
     const onMouseUp = (e: MouseEvent) => {
       if (e.button === 0) {
+        // 触控模式下完全忽略浏览器派发的合成 mouseup，防止左手摇杆或其他手指抬起时打断右手攻击蓄力
+        if (rt.engine.isTouchUi) return;
         rt.engine.mouseDownLeft = false;
         rt.engine.releaseAttackCharge();
       }
@@ -495,9 +497,10 @@ export default function App() {
     };
   }, [clearLayers, popLayer, pushLayer, startSurvival]);
 
-  // 统一 Pointer Events 虚拟双摇杆（同时兼容手机真机多指触控与电脑端手机模拟器，并自动处理 90° 强制横屏方向映射）
+  // 手机单摇杆（左转盘同时控制移动与朝向）+ 独立多指防断触攻击轮盘（支持移动中随时点按/长按蓄力/滑动转向攻击）
   const onMovePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (moveStickRef.current.id !== null) return;
+    e.preventDefault();
     e.stopPropagation();
     AudioFX.unlock();
     try {
@@ -516,16 +519,16 @@ export default function App() {
     // 顺时针旋转 90° 后，物理向下(+rawDy)为横屏向右(+dx)，物理向右(+rawDx)为横屏向上(-dy)
     const dx = forceLandscapeRef.current ? rawDy : rawDx;
     const dy = forceLandscapeRef.current ? -rawDx : rawDy;
-    const maxR = 46;
+    const maxR = 48;
     const mag = Math.hypot(dx, dy);
     const scale = mag > maxR ? maxR / mag : 1;
     const nx = (dx * scale) / maxR;
     const ny = (dy * scale) / maxR;
-    setMoveKnob({ x: nx * 32, y: ny * 32 });
+    setMoveKnob({ x: nx * 34, y: ny * 34 });
     if (runtimeRef.current) {
       runtimeRef.current.engine.touchMoveX = nx;
       runtimeRef.current.engine.touchMoveY = ny;
-      runtimeRef.current.engine.touchSprint = mag > maxR * 0.88;
+      runtimeRef.current.engine.touchSprint = mag > maxR * 0.92;
     }
   };
 
@@ -540,44 +543,54 @@ export default function App() {
     }
   };
 
-  const onAimPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (aimStickRef.current.id !== null) return;
+  const onAttackPointerDown = (e: React.PointerEvent<HTMLElement>) => {
+    if (atkTouchRef.current.id !== null) return;
+    e.preventDefault();
     e.stopPropagation();
     AudioFX.unlock();
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
-      // 忽略
+      // 忽略不支持指针捕获的环境
     }
-    aimStickRef.current = { id: e.pointerId, ox: e.clientX, oy: e.clientY };
-    if (runtimeRef.current) runtimeRef.current.engine.touchAimActive = true;
+    atkTouchRef.current = { id: e.pointerId, ox: e.clientX, oy: e.clientY };
+    setAtkPressing(true);
+    const rt = runtimeRef.current;
+    if (rt) {
+      rt.engine.touchAttackHeld = true;
+      rt.engine.beginAttackCharge();
+    }
   };
 
-  const onAimPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const st = aimStickRef.current;
+  const onAttackPointerMove = (e: React.PointerEvent<HTMLElement>) => {
+    const st = atkTouchRef.current;
     if (st.id !== e.pointerId) return;
     const rawDx = e.clientX - st.ox;
     const rawDy = e.clientY - st.oy;
     const dx = forceLandscapeRef.current ? rawDy : rawDx;
     const dy = forceLandscapeRef.current ? -rawDx : rawDy;
-    const maxR = 46;
     const mag = Math.hypot(dx, dy);
-    const scale = mag > maxR ? maxR / mag : 1;
-    const nx = (dx * scale) / maxR;
-    const ny = (dy * scale) / maxR;
-    setAimKnob({ x: nx * 32, y: ny * 32 });
-    if (runtimeRef.current) {
-      runtimeRef.current.engine.touchAimX = nx;
-      runtimeRef.current.engine.touchAimY = ny;
+    const rt = runtimeRef.current;
+    if (!rt) return;
+    // 按住攻击键滑动超过 14px 时启用临时战斗转向（支持边后退边回头反击）；不滑则直接朝左摇杆方向攻击
+    if (mag > 14) {
+      rt.engine.touchAimActive = true;
+      rt.engine.touchAimX = dx / mag;
+      rt.engine.touchAimY = dy / mag;
+    } else {
+      rt.engine.touchAimActive = false;
     }
   };
 
-  const onAimPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (aimStickRef.current.id !== e.pointerId) return;
-    aimStickRef.current.id = null;
-    setAimKnob({ x: 0, y: 0 });
-    if (runtimeRef.current) {
-      runtimeRef.current.engine.touchAimActive = false;
+  const onAttackPointerUp = (e: React.PointerEvent<HTMLElement>) => {
+    if (atkTouchRef.current.id !== e.pointerId) return;
+    atkTouchRef.current.id = null;
+    setAtkPressing(false);
+    const rt = runtimeRef.current;
+    if (rt) {
+      rt.engine.touchAttackHeld = false;
+      rt.engine.touchAimActive = false;
+      rt.engine.releaseAttackCharge();
     }
   };
 
@@ -622,7 +635,7 @@ export default function App() {
           const rt = runtimeRef.current;
           if (!rt || rt.engine.mode !== 'play' || topLayer !== null) return;
           AudioFX.unlock();
-          const prompt = rt.engine.getHudSnapshot().prompt;
+          const prompt = rt.engine.activePrompt;
           if (!prompt) return;
           const rect = e.currentTarget.getBoundingClientRect();
           const sx = forceLandscapeRef.current ? e.clientY : e.clientX - rect.left;
@@ -654,7 +667,7 @@ export default function App() {
             className="pointer-events-none fixed inset-0 z-10 bg-gradient-to-b from-black/75 via-black/22 to-black/88"
           />
           <div
-            className="fixed inset-0 z-20 flex flex-col justify-between"
+            className="title-screen fixed inset-0 z-20 flex flex-col justify-between"
             style={{
               paddingLeft: 'var(--gl)',
               paddingRight: 'var(--gr)',
@@ -662,7 +675,7 @@ export default function App() {
               paddingBottom: 'var(--gb)',
             }}
           >
-            <div className="title-seq title-seq--chrome flex items-center justify-between">
+            <div className="title-chrome title-seq title-seq--chrome flex items-center justify-between">
               <span className="text-xs tracking-widest text-[#a89f8e]/75 whitespace-nowrap">
                 {lang === 'zh' ? '东欧暗林恐怖生存 · 实时法线光影' : 'Eastern European Survival Horror'}
               </span>
@@ -694,7 +707,13 @@ export default function App() {
               </div>
             </div>
 
-            <div className="max-w-xl my-auto">
+            <main className="title-board my-auto" aria-label={t('幽林余烬')}>
+              <span className="title-board__nail title-board__nail--left" aria-hidden="true" />
+              <span className="title-board__nail title-board__nail--right" aria-hidden="true" />
+              <div className="title-board__eyebrow title-seq title-seq--1">
+                <span>{lang === 'zh' ? '黑木林区 · 第九巡护段' : 'BLACKWOOD DISTRICT · SECTOR 09'}</span>
+                <span className="font-mono-num">NO. 09</span>
+              </div>
               {/* 标题：系统宋体/衬线 + 宽字距骨白，SVG 噪声蒙版做旧（外层负责模糊显影动画） */}
               <div className="title-seq title-seq--1">
                 <h1
@@ -710,53 +729,61 @@ export default function App() {
               </p>
 
               {/* 克制的文字按钮：左侧余烬点/短横线，悬停余烬微光 + 字距展开；文案与可访问名称保持不变 */}
-              <div className="title-seq title-seq--4 mt-8 flex flex-wrap items-center gap-x-6 gap-y-1 sm:gap-x-8">
+              <nav className="title-menu title-seq title-seq--4" aria-label={t('主菜单')}>
                 <button
                   type="button"
                   onClick={startSurvival}
+                  aria-label={t('开始求生')}
                   className={`title-btn title-btn--primary ${lang === 'en' ? 'is-latin' : ''}`}
                 >
-                  <span className="title-btn__ember" aria-hidden="true" />
+                  <span className="title-btn__index font-mono-num" aria-hidden="true">01</span>
                   <span>{t('开始求生')}</span>
+                  <span className="title-btn__ember" aria-hidden="true" />
                 </button>
 
                 <button
                   type="button"
                   onClick={() => pushLayer('controls')}
+                  aria-label={t('操作说明')}
                   className={`title-btn ${lang === 'en' ? 'is-latin' : ''}`}
                 >
-                  <span className="title-btn__ember" aria-hidden="true" />
+                  <span className="title-btn__index font-mono-num" aria-hidden="true">02</span>
                   <span>{t('操作说明')}</span>
+                  <span className="title-btn__ember" aria-hidden="true" />
                 </button>
 
                 <button
                   type="button"
                   onClick={() => pushLayer('settings')}
+                  aria-label={t('设置')}
                   className={`title-btn ${lang === 'en' ? 'is-latin' : ''}`}
                 >
-                  <span className="title-btn__ember" aria-hidden="true" />
+                  <span className="title-btn__index font-mono-num" aria-hidden="true">03</span>
                   <span>{t('设置')}</span>
+                  <span className="title-btn__ember" aria-hidden="true" />
                 </button>
 
                 <button
                   type="button"
                   onClick={() => pushLayer('rank')}
+                  aria-label={t('排行榜')}
                   className={`title-btn ${lang === 'en' ? 'is-latin' : ''}`}
                 >
-                  <span className="title-btn__ember" aria-hidden="true" />
+                  <span className="title-btn__index font-mono-num" aria-hidden="true">04</span>
                   <span>{t('排行榜')}</span>
+                  <span className="title-btn__ember" aria-hidden="true" />
                 </button>
-              </div>
-            </div>
+              </nav>
+            </main>
 
-            <div className="title-seq title-seq--chrome flex items-center justify-between text-xs text-[#91897a] gap-3">
+            <div className="title-footer title-seq title-seq--chrome flex items-center justify-between text-xs text-[#91897a] gap-3">
               <span className="hidden sm:inline">
                 {lang === 'zh'
                   ? 'WASD 移动 · 鼠标照明 · 长按 E 搜刮与加固 · 左键挥击 · 右键照明弹 · J 翻阅日志'
                   : 'WASD Move · Mouse Light · Hold E Loot & Barricade · LMB Swing · RMB Flare · J Journal'}
               </span>
               <span className="sm:hidden">
-                {lang === 'zh' ? '双摇杆移动照明 · 右侧搜刮攻击' : 'Twin-Stick Move & Aim'}
+                {lang === 'zh' ? '左侧转盘移动转向 · 右侧扇形按键攻击交互' : 'Left Stick Move & Aim · Right Arc Actions'}
               </span>
               <span className="font-mono-num whitespace-nowrap shrink-0">
                 {I18n.lang === 'zh' ? '中文' : 'EN'} · {t(Quality.preset.label)}
@@ -786,6 +813,7 @@ export default function App() {
           hud={hud}
           t={t}
           isDev={isDev}
+          compact={isTouch}
           guidanceMode={guidanceMode}
           runtimeRef={runtimeRef}
           exploreRef={exploreRef}
@@ -1113,154 +1141,146 @@ export default function App() {
         </div>
       )}
 
-      {/* TOUCH CONTROLS（手机横屏大尺寸人体工学纯美术图标物理交互，Pointer Events 同时兼容真机多指与模拟器） */}
+      {/* TOUCH CONTROLS（单摇杆移动+朝向合一 + 右下角人体工学扇形无断触动作面板） */}
       {isTouch && hud?.mode === 'play' && topLayer === null && (
         <div className="pointer-events-none fixed inset-0 z-25">
-          {/* 左侧大尺寸移动虚拟摇杆（拉满边缘自动疾跑） */}
+          {/* 左侧全向转盘：同时控制移动与手电/武器朝向（外圈四向罗盘刻度点） */}
           <div
             onPointerDown={onMovePointerDown}
             onPointerMove={onMovePointerMove}
             onPointerUp={onMovePointerUp}
             onPointerCancel={onMovePointerUp}
-            className="touch-stick touch-stick--move pointer-events-auto fixed w-28 h-28 rounded-full border-2 border-[#c9b796]/42 bg-black/38 flex items-center justify-center shadow-[0_6px_22px_rgba(0,0,0,0.68)]"
+            className="touch-stick touch-stick--move pointer-events-auto fixed w-[116px] h-[116px] rounded-full border-2 border-[#d8b463]/46 bg-black/40 flex items-center justify-center shadow-[0_6px_24px_rgba(0,0,0,0.72)]"
           >
+            <span aria-hidden="true" className="pointer-events-none absolute inset-2 rounded-full border border-[#c9b796]/18" />
             <div
-              className="w-12 h-12 rounded-full bg-[#c9b796]/48 border border-[#f2e8d2]/60 pointer-events-none"
+              className="w-12 h-12 rounded-full bg-[#d8b463]/48 border border-[#f5e6c4]/72 pointer-events-none shadow-[0_2px_10px_rgba(0,0,0,0.6)]"
               style={{ transform: `translate(${moveKnob.x}px, ${moveKnob.y}px)` }}
             />
           </div>
 
-          {/* 右侧物理化纯图标动作集群 + 瞄准摇杆 */}
-          <div className="touch-cluster pointer-events-auto fixed flex items-end gap-3">
-            <div className="flex flex-col gap-2.5 items-end">
-              <div className="flex items-center gap-2.5">
-                {(hud.equip?.mode === 'pistol' || (hud.equip && !hud.equip.torchLit)) && (
-                  <button
-                    type="button"
-                    aria-label={t('换弹')}
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                      AudioFX.unlock();
-                      runtimeRef.current?.engine.reloadWeapon();
-                    }}
-                    className="w-12 h-12 min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/92 border border-[#d6c8ad]/55 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
-                  >
-                    <ReloadInkIcon className="w-6 h-6" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  aria-label={t('闪避')}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    AudioFX.unlock();
-                    runtimeRef.current?.engine.triggerDodge();
-                  }}
-                  className="w-[52px] h-[52px] min-w-[52px] min-h-[52px] rounded-full bg-[#152420]/92 border border-[#7bc2ac]/65 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
-                >
-                  <DodgeInkIcon className="w-6 h-6" />
-                </button>
-                <button
-                  type="button"
-                  aria-label={hud.draggingFurniture ? t('松开') : t('搜刮')}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    AudioFX.unlock();
-                    if (!runtimeRef.current) return;
-                    runtimeRef.current.engine.touchInteract = true;
-                    runtimeRef.current.engine.triggerInstantInteract();
-                  }}
-                  onPointerUp={() => {
-                    if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
-                  }}
-                  onPointerCancel={() => {
-                    if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
-                  }}
-                  className={`w-[54px] h-[54px] min-w-[54px] min-h-[54px] rounded-full border-2 flex items-center justify-center shadow-lg active:scale-95 transition-transform ${
-                    hud.prompt
-                      ? 'bg-[#2e2414]/95 border-[#e8be6c] shadow-[0_0_18px_rgba(232,190,108,0.55)]'
-                      : 'bg-[#1a1814]/90 border-[#d8b463]/55'
-                  }`}
-                >
-                  <InteractHandIcon className="w-7 h-7" />
-                </button>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <button
-                  type="button"
-                  aria-label={t('切换武器')}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    AudioFX.unlock();
-                    runtimeRef.current?.engine.toggleWeapon();
-                  }}
-                  className="w-12 h-12 min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/92 border border-[#c9824f]/65 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
-                >
-                  {hud.equip?.mode === 'pistol' ? (
-                    <FlameInkIcon className="w-6 h-6 text-[#e8a354]" />
-                  ) : (
-                    <PistolInkIcon className="w-6 h-6" />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  aria-label={hud.equip?.mode === 'pistol' ? t('射击') : t('攻击')}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    AudioFX.unlock();
-                    if (!runtimeRef.current) return;
-                    runtimeRef.current.engine.mouseDownLeft = true;
-                    runtimeRef.current.engine.beginAttackCharge();
-                  }}
-                  onPointerUp={() => {
-                    if (!runtimeRef.current) return;
-                    runtimeRef.current.engine.mouseDownLeft = false;
-                    runtimeRef.current.engine.releaseAttackCharge();
-                  }}
-                  onPointerCancel={() => {
-                    if (!runtimeRef.current) return;
-                    runtimeRef.current.engine.mouseDownLeft = false;
-                    runtimeRef.current.engine.releaseAttackCharge();
-                  }}
-                  className="relative w-16 h-16 min-w-[64px] min-h-[64px] rounded-full bg-[#6d221c]/94 border-2 border-[#e08276]/80 flex items-center justify-center shadow-[0_6px_22px_rgba(0,0,0,0.75)] active:scale-95 transition-transform"
-                >
-                  {hud.chargeRatio > 0.05 && (
-                    <span
-                      aria-hidden="true"
-                      className="pointer-events-none absolute -inset-1 rounded-full border-2 border-[#f2c46d]"
-                      style={{ opacity: hud.chargeRatio }}
-                    />
-                  )}
-                  {hud.equip?.mode === 'pistol' ? (
-                    <PistolInkIcon className="w-8 h-8" />
-                  ) : (
-                    <AxeInkIcon className="w-8 h-8" />
-                  )}
-                </button>
-              </div>
-            </div>
+          {/* 右下角扇形拇指动作面板（去掉右侧摇杆，全独立 pointerId 防多指断触，严格零重叠） */}
+          <div className="touch-arc-pad pointer-events-none">
+            {/* [左上弧] 换弹 / 火把重燃（仅手枪模式或火把熄灭时显示） */}
+            {(hud.equip?.mode === 'pistol' || (hud.equip && !hud.equip.torchLit)) && (
+              <button
+                type="button"
+                aria-label={t('换弹')}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  AudioFX.unlock();
+                  runtimeRef.current?.engine.reloadWeapon();
+                }}
+                style={{ right: '64px', bottom: '124px' }}
+                className="touch-btn pointer-events-auto absolute w-[46px] h-[46px] min-w-[46px] min-h-[46px] rounded-full bg-[#1a1814]/92 border border-[#d6c8ad]/60 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
+              >
+                <ReloadInkIcon className="w-5 h-5" />
+              </button>
+            )}
 
-            {/* 右侧瞄准与照明摇杆 */}
-            <div
-              onPointerDown={onAimPointerDown}
-              onPointerMove={onAimPointerMove}
-              onPointerUp={onAimPointerUp}
-              onPointerCancel={onAimPointerUp}
-              className="w-28 h-28 rounded-full border-2 border-[#d8b463]/42 bg-black/38 flex items-center justify-center shadow-[0_6px_22px_rgba(0,0,0,0.68)]"
+            {/* [正上方] 切换武器（火把 ⇄ 手枪） */}
+            <button
+              type="button"
+              aria-label={t('切换武器')}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                AudioFX.unlock();
+                runtimeRef.current?.engine.toggleWeapon();
+              }}
+              style={{ right: '6px', bottom: '80px' }}
+              className="touch-btn pointer-events-auto absolute w-12 h-12 min-w-[48px] min-h-[48px] rounded-full bg-[#1a1814]/92 border border-[#c9824f]/70 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
             >
-              <div
-                className="w-12 h-12 rounded-full bg-[#d8b463]/48 border border-[#f2cf84]/65 pointer-events-none"
-                style={{ transform: `translate(${aimKnob.x}px, ${aimKnob.y}px)` }}
-              />
-            </div>
+              {hud.equip?.mode === 'pistol' ? (
+                <FlameInkIcon className="w-6 h-6 text-[#e8a354]" />
+              ) : (
+                <PistolInkIcon className="w-6 h-6" />
+              )}
+            </button>
+
+            {/* [左斜上黄金位] 搜刮 / 交互（靠近可交互目标时高亮金色脉冲） */}
+            <button
+              type="button"
+              aria-label={hud.draggingFurniture ? t('松开') : t('搜刮')}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                AudioFX.unlock();
+                if (!runtimeRef.current) return;
+                runtimeRef.current.engine.touchInteract = true;
+                runtimeRef.current.engine.triggerInstantInteract();
+              }}
+              onPointerUp={(e) => {
+                e.stopPropagation();
+                if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
+              }}
+              onPointerCancel={() => {
+                if (runtimeRef.current) runtimeRef.current.engine.touchInteract = false;
+              }}
+              style={{ right: '74px', bottom: '64px' }}
+              className={`touch-btn pointer-events-auto absolute w-[52px] h-[52px] min-w-[52px] min-h-[52px] rounded-full border-2 flex items-center justify-center shadow-lg active:scale-95 transition-transform ${
+                hud.prompt
+                  ? 'bg-[#2e2414]/96 border-[#f0c770] shadow-[0_0_18px_rgba(240,199,112,0.62)]'
+                  : 'bg-[#1a1814]/90 border-[#d8b463]/55'
+              }`}
+            >
+              <InteractHandIcon className="w-6 h-6" />
+            </button>
+
+            {/* [正左方] 闪避急退 */}
+            <button
+              type="button"
+              aria-label={t('闪避')}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                AudioFX.unlock();
+                runtimeRef.current?.engine.triggerDodge();
+              }}
+              style={{ right: '80px', bottom: '2px' }}
+              className="touch-btn pointer-events-auto absolute w-[50px] h-[50px] min-w-[50px] min-h-[50px] rounded-full bg-[#152420]/94 border border-[#7bc2ac]/70 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
+            >
+              <DodgeInkIcon className="w-6 h-6" />
+            </button>
+
+            {/* [右下核心主位] 68×68 超大攻击/射击轮盘（点按快劈 / 长按蓄力重击 / 按住滑动微调攻击朝向） */}
+            <button
+              type="button"
+              aria-label={hud.equip?.mode === 'pistol' ? t('射击') : t('攻击')}
+              onPointerDown={onAttackPointerDown}
+              onPointerMove={onAttackPointerMove}
+              onPointerUp={onAttackPointerUp}
+              onPointerCancel={onAttackPointerUp}
+              style={{ right: '0px', bottom: '0px' }}
+              className={`touch-btn pointer-events-auto absolute w-[68px] h-[68px] min-w-[68px] min-h-[68px] rounded-full border-2 flex items-center justify-center shadow-[0_8px_24px_rgba(0,0,0,0.8)] transition-transform ${
+                atkPressing
+                  ? 'scale-95 bg-[#8f2d25]/96 border-[#f5c878]'
+                  : 'bg-[#6d221c]/95 border-[#e48a7e]/85'
+              }`}
+            >
+              {(hud.chargeRatio > 0.04 || atkPressing) && (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute -inset-1.5 rounded-full border-2 border-[#f2c46d]"
+                  style={{ opacity: Math.max(0.35, hud.chargeRatio) }}
+                />
+              )}
+              {hud.equip?.mode === 'pistol' ? (
+                <PistolInkIcon className="w-8 h-8" />
+              ) : (
+                <AxeInkIcon className="w-8 h-8" />
+              )}
+            </button>
           </div>
         </div>
       )}
 
-      {/* UNIFIED LAYER STACK MODALS（类魂游实物载体美术：四角蚀刻雕花 / 渐隐暗金分隔纹 / 严格上下留白不顶边） */}
+      {/* 统一实物场景栈：视觉上是告示板、摊开的书、地图卷轴与木工台，交互仍沿用原四路退出闭环。 */}
       {topLayer && (
         <div
-          className="fixed inset-0 z-[45] flex items-center justify-center bg-black/72 backdrop-blur-[2px]"
+          className={`artifact-scene artifact-scene--${topLayer} fixed inset-0 z-[45]`}
+          data-artifact={topLayer}
           style={{
             paddingLeft: 'max(16px, var(--gl))',
             paddingRight: 'max(16px, var(--gr))',
@@ -1271,7 +1291,7 @@ export default function App() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className={`w-full ${topLayer === 'map' || topLayer === 'craft' ? 'max-w-xl' : 'max-w-lg'} max-h-full sm:max-h-[86vh] flex flex-col overflow-hidden carrier-sheet ${
+            className={`artifact-sheet artifact-sheet--${topLayer} w-full max-h-full flex flex-col overflow-hidden carrier-sheet ${
               topLayer === 'map'
                 ? 'carrier-scroll'
                 : topLayer === 'craft'
@@ -1279,7 +1299,11 @@ export default function App() {
                 : topLayer === 'journal'
                 ? 'carrier-notebook'
                 : topLayer === 'pause'
-                ? 'carrier-parchment'
+                ? 'carrier-pause'
+                : topLayer === 'rank'
+                ? 'carrier-noticeboard'
+                : topLayer === 'settings' || topLayer === 'controls'
+                ? 'carrier-clipboard'
                 : 'carrier-dossier'
             }`}
           >
@@ -1291,24 +1315,36 @@ export default function App() {
 
             {/* Fixed Modal Header (zero position: sticky) */}
             <div className="carrier-header flex items-center justify-between px-5 py-3 shrink-0">
-              <div className="flex items-center gap-2.5">
-                <span className="carrier-seal" aria-hidden="true" />
-                <h2 className="font-display text-base sm:text-lg font-semibold tracking-[0.14em] text-[#f0e6d2]">
-                  {topLayer === 'pause' && t('暂停')}
-                  {topLayer === 'craft' && t('工作台')}
-                  {topLayer === 'journal' && t('生存日志')}
-                  {topLayer === 'map' && t('探索地图')}
-                  {topLayer === 'rank' && t('生存排行榜')}
-                  {topLayer === 'settings' && t('设置')}
-                  {topLayer === 'controls' && t('操作说明')}
-                  {topLayer === 'dev' && t('开发者 Variants 面板')}
-                </h2>
+              <div className="carrier-heading">
+                <span className="carrier-heading__kicker font-mono-num" aria-hidden="true">
+                  {topLayer === 'pause' && 'FIELD REST / 09'}
+                  {topLayer === 'craft' && 'RANGER WORKBENCH / 09'}
+                  {topLayer === 'journal' && 'FIELD JOURNAL / PRIVATE'}
+                  {topLayer === 'map' && 'SURVEY MAP / BLACKWOOD'}
+                  {topLayer === 'rank' && 'SURVIVOR REGISTER / 09'}
+                  {topLayer === 'settings' && 'EQUIPMENT CHECKLIST / 09'}
+                  {topLayer === 'controls' && 'RANGER HANDBOOK / 09'}
+                  {topLayer === 'dev' && 'CALIBRATION SHEET / DEV'}
+                </span>
+                <div className="carrier-heading__title">
+                  <span className="carrier-seal" aria-hidden="true" />
+                  <h2 className="font-display font-semibold">
+                    {topLayer === 'pause' && t('暂停')}
+                    {topLayer === 'craft' && t('工作台')}
+                    {topLayer === 'journal' && t('生存日志')}
+                    {topLayer === 'map' && t('探索地图')}
+                    {topLayer === 'rank' && t('生存排行榜')}
+                    {topLayer === 'settings' && t('设置')}
+                    {topLayer === 'controls' && t('操作说明')}
+                    {topLayer === 'dev' && t('开发者 Variants 面板')}
+                  </h2>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => popLayer()}
                 aria-label={t('关闭')}
-                className="min-w-[44px] min-h-[44px] -mr-2 flex items-center justify-center text-[#c7b99c] hover:text-white transition-colors"
+                className="carrier-close min-w-[44px] min-h-[44px] flex items-center justify-center"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1316,9 +1352,13 @@ export default function App() {
             <SoulDivider className="px-4 shrink-0" />
 
             {/* Scrollable Body */}
-            <div className="carrier-body ember-scroll overflow-y-auto px-5 py-3.5 flex-1 space-y-3.5">
+            <div className={`carrier-body carrier-body--${topLayer} ember-scroll overflow-y-auto px-5 py-3.5 flex-1 space-y-3.5`}>
               {topLayer === 'pause' && (
-                <div className="soul-pause-grid flex flex-col gap-2">
+                <>
+                  <p className="pause-caption">
+                    {t('雨还在下。检查装备，再决定下一步。')}
+                  </p>
+                  <div className="soul-pause-grid flex flex-col gap-2">
                   <button
                     type="button"
                     onClick={() => clearLayers()}
@@ -1390,7 +1430,8 @@ export default function App() {
                   >
                     <span>{t('回到标题')}</span>
                   </button>
-                </div>
+                  </div>
+                </>
               )}
 
               {/* 真实探索大地图（M 键 / 手机端点击右上角小地图直接展开，展示走过的范围与实时位置） */}
@@ -1402,27 +1443,26 @@ export default function App() {
 
               {/* 生存纪事（已去除手绘草图，地图请直接按 M 或点击小地图查看真实探索范围） */}
               {topLayer === 'journal' && hud && (
-                <div className="space-y-3">
-                  <div className="space-y-2.5">
-                    {hud.journal.map((entry) => (
-                      <div key={entry.id} className={`p-3 rounded ${cardCls}`}>
-                        <div className="flex items-center justify-between gap-2 text-xs text-[#b89f74]">
-                          <span className="font-medium text-[#efe4cf]">{entry.title}</span>
-                          <span className="font-mono-num shrink-0">
-                            D{entry.day} ·{' '}
-                            {entry.phase === 'night'
-                              ? t('黑夜')
-                              : entry.phase === 'dusk'
-                              ? t('黄昏')
-                              : t('白昼')}
-                          </span>
-                        </div>
-                        <p className="text-xs text-[#bdb3a1] mt-1.5 leading-relaxed">
-                          {entry.body}
-                        </p>
+                <div className="journal-entries">
+                  {hud.journal.map((entry, index) => (
+                    <article key={entry.id} className="journal-entry">
+                      <span className="journal-entry__index font-mono-num" aria-hidden="true">
+                        {String(index + 1).padStart(2, '0')}
+                      </span>
+                      <div className="journal-entry__meta">
+                        <h3>{entry.title}</h3>
+                        <span className="font-mono-num shrink-0">
+                          D{entry.day} ·{' '}
+                          {entry.phase === 'night'
+                            ? t('黑夜')
+                            : entry.phase === 'dusk'
+                            ? t('黄昏')
+                            : t('白昼')}
+                        </span>
                       </div>
-                    ))}
-                  </div>
+                      <p>{entry.body}</p>
+                    </article>
+                  ))}
                 </div>
               )}
 
@@ -1484,6 +1524,7 @@ export default function App() {
                             </span>
                           </div>
                           <div className="workbench-card__body">
+                            <div className="workbench-card__name">{t(r.name)}</div>
                             <div className="workbench-card__costs">
                               {(Object.entries(r.cost) as [ResourceKey, number][]).map(([k, qty]) => {
                                 const enough = hud.inv[k] >= qty;
@@ -1512,8 +1553,8 @@ export default function App() {
               )}
 
               {topLayer === 'rank' && (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-3 gap-2">
+                <div className="rank-register space-y-3">
+                  <div className="rank-tabs grid grid-cols-3 gap-2">
                     {(
                       [
                         ['all', '总榜'],
@@ -1525,11 +1566,8 @@ export default function App() {
                         key={period}
                         type="button"
                         onClick={() => setRankPeriod(period)}
-                        className={`min-h-[40px] rounded text-xs font-medium border transition-colors ${
-                          rankPeriod === period
-                            ? 'bg-[#b87b3b]/30 border-[#e0b86c] text-[#f6e8c9]'
-                            : 'bg-[#171410] border-[#b8ae9c]/22 text-[#b8ae9c] hover:text-white'
-                        }`}
+                        data-active={rankPeriod === period}
+                        className="rank-tab min-h-[44px] text-xs font-medium"
                       >
                         {label}
                       </button>
@@ -1537,7 +1575,7 @@ export default function App() {
                   </div>
 
                   {/* 本人战绩 / 排名概览条 */}
-                  <div className="flex items-center justify-between px-3 py-2 rounded border border-[#c8a468]/30 bg-black/35 text-xs">
+                  <div className="rank-overview flex items-center justify-between px-3 py-2 text-xs">
                     <span className="text-[#c7b99c]">我的最佳排名</span>
                     <span className="font-mono-num text-[#f0dcb4] font-semibold">
                       {rankLoading
@@ -1555,7 +1593,7 @@ export default function App() {
                   {rankLoading ? (
                     <div className="py-6 text-center text-xs text-[#a89e8c]">正在同步幽林幸存者名录……</div>
                   ) : rankData?.ok && rankData.entries.length > 0 ? (
-                    <div className="rounded border border-[#b8ae9c]/20 bg-black/28 overflow-hidden">
+                    <div className="rank-list overflow-hidden">
                       {rankData.entries.slice(0, 50).map((item) => (
                         <div
                           key={`${item.rank}-${item.nickname}`}
@@ -1580,7 +1618,7 @@ export default function App() {
                       ))}
                     </div>
                   ) : (
-                    <div className="py-5 px-4 text-center space-y-1.5 rounded border border-[#b8ae9c]/18 bg-black/25">
+                    <div className="rank-empty py-5 px-4 text-center space-y-1.5">
                       <div className="text-sm text-[#e4d8c0]">
                         {rankData?.ok
                           ? '本期暂无人上榜，成为第一位幸存者吧！'
@@ -1597,9 +1635,9 @@ export default function App() {
               )}
 
               {topLayer === 'settings' && (
-                <div className="space-y-4">
-                  <div>
-                    <div className="text-xs text-[#a8a091] mb-2">{t('视野范围')}</div>
+                <div className="field-settings space-y-4">
+                  <section className="field-setting">
+                    <div className="field-setting__label text-xs mb-2">{t('视野范围')}</div>
                     <div className="grid grid-cols-4 gap-2">
                       {([0, 1, 2, 3] as ViewScaleLevel[]).map((lvl) => {
                         const active = viewScale === lvl;
@@ -1608,20 +1646,17 @@ export default function App() {
                             key={lvl}
                             type="button"
                             onClick={() => Quality.setViewScale(lvl)}
-                            className={`min-h-[44px] rounded text-xs sm:text-sm font-medium border transition-colors whitespace-nowrap ${
-                              active
-                                ? 'bg-[#b87b3b] border-[#d8b463] text-[#110e0a]'
-                                : 'bg-[#1b1915] border-[#b8ae9c]/22 text-[#c7bfb0] hover:text-white'
-                            }`}
+                            data-active={active}
+                            className="field-option min-h-[44px] text-xs sm:text-sm font-medium whitespace-nowrap"
                           >
                             {VIEW_SCALE_PRESETS[lvl].label}
                           </button>
                         );
                       })}
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-[#a8a091] mb-2">{t('画质档位')}</div>
+                  </section>
+                  <section className="field-setting">
+                    <div className="field-setting__label text-xs mb-2">{t('画质档位')}</div>
                     <div className="grid grid-cols-3 gap-2">
                       {([2, 1, 0] as QualityTier[]).map((tier) => {
                         const label = tier === 2 ? '高' : tier === 1 ? '均衡' : '流畅';
@@ -1631,21 +1666,18 @@ export default function App() {
                             key={tier}
                             type="button"
                             onClick={() => Quality.setTier(tier)}
-                            className={`min-h-[44px] rounded text-sm font-medium border transition-colors whitespace-nowrap ${
-                              active
-                                ? 'bg-[#b87b3b] border-[#d8b463] text-[#110e0a]'
-                                : 'bg-[#1b1915] border-[#b8ae9c]/22 text-[#c7bfb0] hover:text-white'
-                            }`}
+                            data-active={active}
+                            className="field-option min-h-[44px] text-sm font-medium whitespace-nowrap"
                           >
                             {t(label)}
                           </button>
                         );
                       })}
                     </div>
-                  </div>
+                  </section>
 
-                  <div>
-                    <div className="text-xs text-[#a8a091] mb-2">{t('声音')}</div>
+                  <section className="field-setting">
+                    <div className="field-setting__label text-xs mb-2">{t('声音')}</div>
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         type="button"
@@ -1653,74 +1685,67 @@ export default function App() {
                           AudioFX.unlock();
                           AudioFX.setMuted(false);
                         }}
-                        className={`min-h-[44px] rounded text-sm font-medium border transition-colors whitespace-nowrap ${
-                          !muted
-                            ? 'bg-[#b87b3b] border-[#d8b463] text-[#110e0a]'
-                            : 'bg-[#1b1915] border-[#b8ae9c]/22 text-[#c7bfb0]'
-                        }`}
+                        data-active={!muted}
+                        className="field-option min-h-[44px] text-sm font-medium whitespace-nowrap"
                       >
                         {t('开启')}
                       </button>
                       <button
                         type="button"
                         onClick={() => AudioFX.setMuted(true)}
-                        className={`min-h-[44px] rounded text-sm font-medium border transition-colors whitespace-nowrap ${
-                          muted
-                            ? 'bg-[#b87b3b] border-[#d8b463] text-[#110e0a]'
-                            : 'bg-[#1b1915] border-[#b8ae9c]/22 text-[#c7bfb0]'
-                        }`}
+                        data-active={muted}
+                        className="field-option min-h-[44px] text-sm font-medium whitespace-nowrap"
                       >
                         {t('静音')}
                       </button>
                     </div>
-                  </div>
+                  </section>
 
-                  <div>
-                    <div className="text-xs text-[#a8a091] mb-2">{t('语言')}</div>
+                  <section className="field-setting">
+                    <div className="field-setting__label text-xs mb-2">{t('语言')}</div>
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         type="button"
                         onClick={() => I18n.setLang('zh')}
-                        className={`min-h-[44px] rounded text-sm font-medium border transition-colors whitespace-nowrap ${
-                          lang === 'zh'
-                            ? 'bg-[#b87b3b] border-[#d8b463] text-[#110e0a]'
-                            : 'bg-[#1b1915] border-[#b8ae9c]/22 text-[#c7bfb0]'
-                        }`}
+                        data-active={lang === 'zh'}
+                        className="field-option min-h-[44px] text-sm font-medium whitespace-nowrap"
                       >
                         简体中文
                       </button>
                       <button
                         type="button"
                         onClick={() => I18n.setLang('en')}
-                        className={`min-h-[44px] rounded text-sm font-medium border transition-colors whitespace-nowrap ${
-                          lang === 'en'
-                            ? 'bg-[#b87b3b] border-[#d8b463] text-[#110e0a]'
-                            : 'bg-[#1b1915] border-[#b8ae9c]/22 text-[#c7bfb0]'
-                        }`}
+                        data-active={lang === 'en'}
+                        className="field-option min-h-[44px] text-sm font-medium whitespace-nowrap"
                       >
                         English
                       </button>
                     </div>
-                  </div>
+                  </section>
                 </div>
               )}
 
               {topLayer === 'controls' && (
-                <div className="space-y-3 text-sm">
+                <div className="field-manual space-y-3 text-sm">
                   {[
-                    ['移动与闪避', 'WASD / 方向键移动，Shift 冲刺，Space 消耗体力向移动/反方向急退闪避'],
-                    ['照明与视线', '鼠标控制视线锥光方向，按 F 开关手电节省电量'],
-                    ['搜集、家具与防线', '长按 E 搜刮物资箱；按 E 拖拽/松开屋内家具堵门、加固门窗、装零件或加油'],
-                    ['蓄力重击与道具', '左键挥动火把轻点快劈、长按蓄力爆发重击，右键投掷照明弹，1-4 快捷道具，C 制作，J 翻阅日志'],
+                    ['移动与转向', '手机端：左侧转盘同时控制移动与朝向，右侧扇形面板点按/长按蓄力攻击（按住攻击键滑动可回头瞄准）；电脑端：WASD 移动、鼠标照明、Space 闪避'],
+                    ['照明与视线', '点击底部手电槽（或按 F）开关手电节省电量'],
+                    ['搜集、家具与防线', '手机端直接轻点场景中的金色交互图标或右侧手形键即可一键搜刮、加固门窗、加油或拖拽家具堵门'],
+                    ['蓄力重击与道具', '点按攻击键轻快横扫、长按蓄力爆发重击（移动中也随时响应），底部快捷栏一键使用照明弹、绷带、捕兽夹与电池'],
                     [
                       '火把与手枪',
-                      'Q 切换火把/手枪（切枪时火把丢在身侧继续燃烧，靠近按 E 捡回）；手枪左键射击、R 换弹；火把燃尽后按 R 用木材+燃油重新点燃',
+                      '点击武器切换键（或按 Q）切换火把/手枪；手枪点按或长按射击，点击换弹键（或按 R）换弹/重燃火把',
                     ],
-                  ].map(([title, desc]) => (
-                    <div key={title} className={`p-3 rounded ${cardCls}`}>
-                      <div className="font-medium text-[#f0e6d2]">{t(title)}</div>
-                      <div className="text-xs text-[#aba190] mt-1 leading-relaxed">{t(desc)}</div>
-                    </div>
+                  ].map(([title, desc], index) => (
+                    <section key={title} className="manual-entry">
+                      <span className="manual-entry__num font-mono-num" aria-hidden="true">
+                        {String(index + 1).padStart(2, '0')}
+                      </span>
+                      <div>
+                        <h3>{t(title)}</h3>
+                        <p>{t(desc)}</p>
+                      </div>
+                    </section>
                   ))}
                 </div>
               )}
@@ -1792,11 +1817,20 @@ export default function App() {
             </div>
 
             <SoulDivider className="px-4 shrink-0" />
-            <div className="carrier-footer px-5 py-2.5 flex justify-end shrink-0">
+            <div className="carrier-footer px-5 py-2.5 flex items-center justify-between shrink-0">
+              <span className="carrier-footer__hint">
+                {topLayer === 'journal'
+                  ? t('翻页阅读 · Esc 合上日志')
+                  : topLayer === 'map'
+                  ? t('墨迹仅记录你亲自走过的区域')
+                  : topLayer === 'craft'
+                  ? t('材料不足的工具会以暗色压印显示')
+                  : t('Esc / 点击实物外的区域返回')}
+              </span>
               <button
                 type="button"
                 onClick={() => popLayer()}
-                className="soul-menuitem min-h-[44px] px-6 text-sm"
+                className="carrier-return soul-menuitem min-h-[44px] px-6 text-sm"
               >
                 {t('返回')}
               </button>
@@ -1810,7 +1844,7 @@ export default function App() {
       {/* VICTORY SUMMARY: 破雾撤离通关结算（类魂游双栏封缄信笺，横屏一屏完整展示零滚动） */}
       {hud?.mode === 'victory' && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs"
+          className="artifact-scene artifact-scene--victory fixed inset-0 z-40"
           style={{
             paddingLeft: 'max(16px, var(--gl))',
             paddingRight: 'max(16px, var(--gr))',
@@ -1818,7 +1852,7 @@ export default function App() {
             paddingBottom: 'max(16px, var(--gb))',
           }}
         >
-          <div className="soul-summary-sheet w-full max-w-md max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center carrier-sheet carrier-parchment carrier-parchment--gold">
+          <div className="soul-summary-sheet summary-poster summary-poster--gold w-full max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center carrier-sheet carrier-parchment carrier-parchment--gold">
             <SoulFrameCorners />
             <div className="soul-summary-grid space-y-4 sm:space-y-0">
               <div className="space-y-3">
@@ -1897,7 +1931,7 @@ export default function App() {
       {/* GAME OVER SUMMARY（类魂游双栏血染遗书：横屏一屏完整展示 + 发笔记/分享复活 + 排行榜） */}
       {hud?.mode === 'dead' && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs"
+          className="artifact-scene artifact-scene--dead fixed inset-0 z-40"
           style={{
             paddingLeft: 'max(16px, var(--gl))',
             paddingRight: 'max(16px, var(--gr))',
@@ -1905,7 +1939,7 @@ export default function App() {
             paddingBottom: 'max(16px, var(--gb))',
           }}
         >
-          <div className="soul-summary-sheet w-full max-w-md max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center carrier-sheet carrier-parchment carrier-parchment--blood">
+          <div className="soul-summary-sheet summary-poster summary-poster--blood w-full max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center carrier-sheet carrier-parchment carrier-parchment--blood">
             <SoulFrameCorners />
             <div className="soul-summary-grid space-y-4 sm:space-y-0">
               {/* 左栏：标题 + 积分 + 2×2 战绩 */}

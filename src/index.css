@@ -76,14 +76,29 @@ html.force-landscape #app {
   --gb: 12px;
 }
 
-/* 手机触控双摇杆与动作集群定位（自动避让左右安全区与底部快捷键栏） */
+/* 手机触控单摇杆 + 右下角扇形动作面板（去掉右侧摇杆，释放右半屏视野与拇指空间） */
 .touch-stick--move {
-  left: calc(var(--gl) + 6px);
-  bottom: calc(var(--gb) + 66px);
+  left: calc(var(--gl) + 10px);
+  bottom: calc(var(--gb) + 64px);
+  touch-action: none;
 }
-.touch-cluster {
-  right: calc(var(--gr) + 6px);
-  bottom: calc(var(--gb) + 66px);
+.touch-arc-pad {
+  position: fixed;
+  right: calc(var(--gr) + 10px);
+  bottom: calc(var(--gb) + 60px);
+  width: 176px;
+  height: 172px;
+  touch-action: none;
+}
+.touch-btn {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: pointer;
+}
+.touch-btn > * {
+  pointer-events: none;
 }
 
 .font-display {
@@ -2029,6 +2044,1354 @@ html.force-landscape .hud2-toasts {
   .hud2-iconbtn,
   .hud2-slot,
   .hud2-batt {
+    transition: none;
+  }
+}
+
+/* ================================================================
+ * R4 · 黑木巡林遗物 UI
+ * 方向：自然有机 / 腐朽林场实物。不是给弹窗换皮，而是把每个界面
+ * 组织成完整的告示牌、书页、卷轴、夹板与工作台场景。
+ * 全部纹理由本地 CSS / SVG 生成；不新增网络请求，不改变游戏状态。
+ * ================================================================ */
+:root {
+  --relic-ink: #211c15;
+  --relic-ink-soft: #473d2e;
+  --relic-paper: #c8b991;
+  --relic-paper-light: #ded1aa;
+  --relic-paper-dim: #a99a74;
+  --relic-bone: #e5dcc5;
+  --relic-ember: #c77b3f;
+  --relic-wood: #342419;
+  --relic-wood-deep: #17110c;
+  --relic-leather: #29251d;
+  --relic-metal: #625e4f;
+  --relic-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ---------- 标题：立在雨夜林地里的巡林告示牌 ---------- */
+.title-screen {
+  isolation: isolate;
+}
+.title-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(4, 6, 5, 0.52), transparent 66%),
+    radial-gradient(ellipse at 18% 54%, rgba(158, 106, 54, 0.09), transparent 48%);
+}
+.title-chrome,
+.title-footer {
+  position: relative;
+  z-index: 3;
+}
+.title-chrome > span {
+  padding-left: 12px;
+  border-left: 2px solid rgba(199, 123, 63, 0.52);
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+.title-board {
+  position: relative;
+  width: min(590px, 49vw);
+  margin-left: clamp(18px, 5vw, 88px);
+  padding: 38px 42px 32px;
+  color: var(--relic-bone);
+  background:
+    radial-gradient(circle at 16px 16px, #817762 0 2px, #17140f 2.5px 4px, transparent 4.5px),
+    radial-gradient(circle at calc(100% - 16px) 16px, #817762 0 2px, #17140f 2.5px 4px, transparent 4.5px),
+    repeating-linear-gradient(2deg, transparent 0 27px, rgba(5, 4, 3, 0.2) 28px 29px),
+    repeating-linear-gradient(91deg, rgba(234, 208, 162, 0.025) 0 1px, transparent 1px 7px),
+    linear-gradient(104deg, #3d2d20 0%, #2b2017 52%, #211811 100%);
+  border: 1px solid rgba(168, 142, 99, 0.35);
+  clip-path: polygon(0.6% 1.2%, 99.2% 0, 100% 97.8%, 83% 99%, 61% 98.5%, 38% 100%, 0 98.4%);
+  filter: drop-shadow(18px 24px 24px rgba(0, 0, 0, 0.62));
+  transform: rotate(-0.35deg);
+}
+.title-board::before {
+  content: "";
+  position: absolute;
+  inset: 11px;
+  pointer-events: none;
+  border: 1px solid rgba(204, 181, 137, 0.16);
+  box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.24);
+}
+.title-board::after {
+  content: "";
+  position: absolute;
+  left: -18px;
+  right: -18px;
+  bottom: 22px;
+  height: 7px;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, #251b12, #0e0b08);
+  border: 1px solid rgba(122, 103, 73, 0.24);
+}
+.title-board__nail {
+  position: absolute;
+  top: 13px;
+  z-index: 4;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #a99d81, #39362f 60%, #14130f);
+  box-shadow: 0 1px 2px #080706;
+}
+.title-board__nail--left { left: 13px; }
+.title-board__nail--right { right: 13px; }
+.title-board__eyebrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(218, 195, 151, 0.24);
+  color: #bcb098;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+}
+.title-board .title-mark {
+  margin-top: 18px;
+  font-size: clamp(48px, 6.2vw, 82px);
+  line-height: 1.12;
+  letter-spacing: 0.2em;
+  color: #e7ddc5;
+}
+.title-board .title-sub {
+  margin-top: 10px;
+  color: rgba(213, 198, 164, 0.72);
+}
+.title-board .title-seq--3 {
+  max-width: 410px;
+  margin-top: 18px;
+  color: #c9bda4;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.title-menu {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  margin-top: 24px;
+  border-top: 1px solid rgba(214, 185, 133, 0.2);
+}
+.title-board .title-btn {
+  display: grid;
+  grid-template-columns: 38px 1fr 28px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 0 12px;
+  color: #c9bea7;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(214, 185, 133, 0.18);
+  border-radius: 0;
+  font-size: 16px;
+  letter-spacing: 0.2em;
+  text-align: left;
+  text-shadow: 0 1px 2px #0b0906;
+  transition: color 180ms ease, background-color 180ms ease, padding-left 220ms var(--relic-ease);
+}
+.title-board .title-btn:hover,
+.title-board .title-btn:focus-visible {
+  padding-left: 18px;
+  color: #fff0d1;
+  background: linear-gradient(90deg, rgba(190, 121, 58, 0.18), transparent 82%);
+  letter-spacing: 0.22em;
+}
+.title-board .title-btn--primary {
+  color: #f3e4c5;
+  background: linear-gradient(90deg, rgba(174, 102, 46, 0.3), rgba(93, 56, 28, 0.08));
+  border-left: 2px solid var(--relic-ember);
+}
+.title-btn__index {
+  color: #9e8f73;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+.title-board .title-btn__ember {
+  justify-self: end;
+  width: 18px;
+  background: rgba(211, 143, 75, 0.62);
+}
+.title-board .title-btn:hover .title-btn__ember,
+.title-board .title-btn:focus-visible .title-btn__ember {
+  width: 26px;
+}
+.title-footer {
+  font-family: var(--f-note);
+  letter-spacing: 0.05em;
+}
+
+/* ---------- HUD：巡林记录签、工具卷带与装备皮套 ---------- */
+.hud2-tl {
+  flex: 0 1 342px;
+  max-width: 342px;
+  gap: 4px;
+  padding: 12px 16px 13px;
+  color: var(--relic-ink);
+  background:
+    linear-gradient(90deg, rgba(70, 53, 32, 0.14), transparent 18%),
+    repeating-linear-gradient(0deg, transparent 0 23px, rgba(58, 46, 30, 0.055) 24px),
+    linear-gradient(145deg, #cabc97, #b3a37e);
+  border: 0;
+  clip-path: polygon(0 2%, 97% 0, 100% 88%, 95% 100%, 2% 97%);
+  filter: drop-shadow(5px 8px 10px rgba(0, 0, 0, 0.56));
+}
+.hud2-tl::before {
+  inset: 5px;
+  z-index: 0;
+  background: none;
+  border-left: 2px solid rgba(78, 52, 28, 0.32);
+}
+.hud2-tl > * {
+  position: relative;
+  z-index: 1;
+}
+.hud2-time {
+  color: var(--relic-ink);
+  font-size: 14px;
+  text-shadow: none;
+}
+.hud2-time__phase {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+.hud2-time__phase.is-day { color: #4b432f; }
+.hud2-time__phase.is-dusk { color: #874b24; }
+.hud2-time__phase.is-night { color: #762f28; }
+.hud2-time__wx,
+.hud2-gen,
+.hud2-gen__val {
+  color: #4a4334;
+  text-shadow: none;
+}
+.hud2-gen__meter {
+  background: rgba(44, 36, 25, 0.2);
+  border-color: rgba(45, 36, 24, 0.42);
+}
+.hud2-gen__fill {
+  background: linear-gradient(90deg, #844323, #b87436);
+}
+.hud2-arc {
+  filter: none;
+}
+.hud2-arc__seg--day { stroke: rgba(47, 43, 31, 0.62); }
+.hud2-arc__seg--dusk { stroke: #945126; }
+.hud2-arc__seg--night { stroke: #75382f; }
+.hud2-arc__ticks { stroke: rgba(43, 37, 26, 0.42); }
+.hud2-arc__bounds { stroke: rgba(43, 37, 26, 0.72); }
+.hud2-arc__moon { fill: #343128; }
+.hud2-objective-note {
+  position: relative;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(54, 43, 27, 0.25);
+}
+.hud2-obj-icons {
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  color: #314c43;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.hud2-obj-count {
+  color: #2e3e36;
+  font-size: 11px;
+  font-weight: 700;
+}
+.hud2-obj-dot {
+  border-color: rgba(42, 66, 55, 0.58);
+  background: rgba(56, 51, 37, 0.12);
+}
+.hud2-obj-dot.is-carried {
+  background: #9b5b28;
+  border-color: #68401f;
+}
+.hud2-obj-dot.is-installed {
+  background: #426d5c;
+  border-color: #294b3e;
+  box-shadow: none;
+}
+.hud2-objective__text {
+  max-width: 302px;
+  margin: 5px 0 0;
+  color: #2f281d;
+  font-family: var(--f-note);
+  font-size: 12.5px;
+  line-height: 1.55;
+  letter-spacing: 0.02em;
+}
+.hud2-objective__zone {
+  display: block;
+  margin-top: 3px;
+  color: #665a43;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+.hud2-tr {
+  gap: 8px;
+}
+.hud2-actions {
+  gap: 0;
+  padding: 3px;
+  background:
+    repeating-linear-gradient(45deg, rgba(212, 190, 148, 0.025) 0 2px, transparent 2px 5px),
+    linear-gradient(180deg, #343026, #211e18);
+  border: 1px dashed rgba(192, 171, 130, 0.42);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.58), inset 0 0 12px rgba(0, 0, 0, 0.36);
+  clip-path: polygon(2% 0, 100% 4%, 98% 100%, 0 94%);
+}
+.hud2-iconbtn {
+  width: 48px;
+  height: 48px;
+  color: #d9ceb5;
+  border-right: 1px solid rgba(213, 192, 150, 0.13);
+  filter: none;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+.hud2-iconbtn:last-child { border-right: 0; }
+.hud2-iconbtn:hover,
+.hud2-iconbtn:focus-visible {
+  color: #ffe8bc;
+  background: rgba(190, 123, 60, 0.18);
+}
+.hud2-minimap {
+  width: 142px;
+  height: 142px;
+  padding: 5px;
+  background: #b7a67f;
+  border: 1px solid rgba(225, 207, 164, 0.58);
+  border-radius: 2px 8px 3px 6px;
+  box-shadow: 6px 9px 20px rgba(0, 0, 0, 0.62), inset 0 0 0 3px rgba(54, 42, 26, 0.18);
+  transform: rotate(0.7deg);
+}
+.hud2-minimap:hover,
+.hud2-minimap:active {
+  border-color: #e3c892;
+  transform: rotate(0deg) scale(1.02);
+}
+.hud2-vitals {
+  padding: 12px 14px;
+  background:
+    repeating-linear-gradient(45deg, rgba(220, 201, 160, 0.025) 0 2px, transparent 2px 6px),
+    linear-gradient(145deg, rgba(52, 47, 36, 0.96), rgba(27, 25, 20, 0.96));
+  border: 1px dashed rgba(193, 174, 135, 0.38);
+  clip-path: polygon(0 5%, 98% 0, 100% 92%, 3% 100%);
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.56);
+}
+.hud2-vitals::before {
+  inset: 4px;
+  background: none;
+  border-left: 2px solid rgba(171, 83, 52, 0.58);
+}
+.hud2-bar { width: 204px; }
+.hud2-num { font-size: 14px; }
+.hud2-barrow--st .hud2-num { font-size: 12px; }
+.hud2-toolbelt {
+  gap: 5px;
+  padding: 6px;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 24px, rgba(211, 186, 140, 0.025) 25px),
+    linear-gradient(180deg, rgba(54, 45, 32, 0.96), rgba(27, 23, 17, 0.96));
+  border-top: 1px solid rgba(196, 161, 105, 0.44);
+  border-bottom: 1px solid rgba(112, 90, 59, 0.5);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.62), inset 0 1px 8px rgba(0, 0, 0, 0.4);
+}
+.hud2-slot {
+  border: 1px solid rgba(151, 132, 96, 0.34);
+  border-radius: 0;
+}
+.hud2-slot.is-active {
+  border-color: rgba(223, 165, 88, 0.8);
+}
+.hud2-keyhints {
+  background: rgba(20, 18, 14, 0.76);
+  border: 0;
+  border-radius: 0;
+  font-size: 11px;
+}
+.hud2-res {
+  gap: 5px 12px;
+  max-width: 310px;
+  padding: 10px 12px;
+  background:
+    repeating-linear-gradient(45deg, rgba(198, 180, 145, 0.04) 0 2px, transparent 2px 5px),
+    linear-gradient(160deg, rgba(59, 52, 39, 0.92), rgba(34, 30, 23, 0.94));
+  border: 1px dashed rgba(200, 179, 137, 0.34);
+  clip-path: polygon(2% 0, 100% 4%, 97% 100%, 0 94%);
+}
+.hud2-res__item {
+  min-width: 38px;
+  font-size: 12px;
+}
+.hud2-res__item.is-zero { opacity: 0.55; }
+.hud2-ticker__pill {
+  color: var(--relic-ink);
+  background: linear-gradient(145deg, #d2c39c, #b6a67e);
+  border: 0;
+  border-bottom: 2px solid rgba(86, 58, 31, 0.45);
+  border-radius: 0;
+  clip-path: polygon(2% 0, 100% 5%, 97% 100%, 0 92%);
+}
+.hud2-ticker__qty { color: #33291b; }
+.hud2-toast {
+  position: relative;
+  padding: 10px 18px 10px 24px;
+  color: #30271b;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 21px, rgba(64, 47, 28, 0.06) 22px),
+    linear-gradient(100deg, #c3b48c, #d5c69e 52%, #b3a27a);
+  border: 0;
+  clip-path: polygon(1% 5%, 99% 0, 100% 88%, 96% 100%, 0 94%);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.5);
+  font-family: var(--f-note);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: center;
+}
+.hud2-toast::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: #8d4c26;
+}
+.hud2-toast--danger { border-left: 3px solid #84362e; }
+.hud2-toast--danger::before { background: #84362e; }
+
+/* 触控物件：铜制罗盘与带凹槽的机械按钮，不改变原触控热区。 */
+.touch-stick--move {
+  background:
+    radial-gradient(circle, rgba(26, 23, 17, 0.9) 0 42%, transparent 43%),
+    repeating-conic-gradient(from 0deg, rgba(211, 183, 127, 0.34) 0 1deg, transparent 1deg 15deg),
+    radial-gradient(circle, #4b4434, #211f18 72%);
+  border-color: rgba(205, 179, 125, 0.56);
+  box-shadow: inset 0 0 0 5px rgba(18, 16, 12, 0.68), 0 8px 24px rgba(0, 0, 0, 0.66);
+}
+.touch-arc-pad .touch-btn {
+  box-shadow: inset 0 0 0 4px rgba(10, 9, 7, 0.2), 0 6px 18px rgba(0, 0, 0, 0.66);
+}
+
+/* ---------- 全屏实物场景：取消居中弹窗观感 ---------- */
+.artifact-scene {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 50% 42%, rgba(68, 63, 48, 0.26), transparent 56%),
+    linear-gradient(145deg, rgba(8, 11, 9, 0.94), rgba(15, 14, 11, 0.97));
+}
+.artifact-scene::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.18;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='3' seed='19' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.32'/%3E%3C/svg%3E");
+}
+.artifact-scene::after {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid rgba(179, 156, 111, 0.08);
+}
+.artifact-sheet {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1040px;
+  height: min(780px, 100%);
+  min-height: 0;
+  max-height: 100%;
+  border-radius: 0;
+  box-shadow: 16px 26px 64px rgba(0, 0, 0, 0.74);
+  animation: relic-arrive 420ms var(--relic-ease) both;
+}
+@keyframes relic-arrive {
+  from { opacity: 0.18; }
+  to { opacity: 1; }
+}
+.artifact-sheet--pause { max-width: 1000px; height: min(680px, 100%); }
+.artifact-sheet--journal { max-width: 1060px; height: min(760px, 100%); }
+.artifact-sheet--map { max-width: 1120px; height: min(760px, 100%); }
+.artifact-sheet--craft { max-width: 1060px; height: min(760px, 100%); }
+.artifact-sheet--rank { max-width: 960px; height: min(740px, 100%); }
+.artifact-sheet--settings,
+.artifact-sheet--controls { max-width: 960px; height: min(740px, 100%); }
+.artifact-sheet--dev { max-width: 980px; }
+.artifact-sheet > .soul-corner { display: none; }
+.carrier-header {
+  min-height: 92px;
+  padding: 20px 30px 14px !important;
+  color: inherit;
+  background: transparent;
+}
+.carrier-heading { min-width: 0; }
+.carrier-heading__kicker {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  opacity: 0.64;
+}
+.carrier-heading__title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.carrier-heading__title h2 {
+  color: inherit;
+  font-size: clamp(24px, 3vw, 36px);
+  line-height: 1.15;
+  letter-spacing: 0.16em;
+}
+.carrier-seal {
+  width: 12px;
+  height: 28px;
+  border-radius: 0;
+  background: currentColor;
+  box-shadow: none;
+  opacity: 0.56;
+}
+.carrier-close {
+  flex-shrink: 0;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  opacity: 0.72;
+  transition: opacity 160ms ease, transform 180ms var(--relic-ease);
+}
+.carrier-close:hover,
+.carrier-close:focus-visible {
+  opacity: 1;
+  transform: rotate(5deg);
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+.carrier-body {
+  min-height: 0;
+  padding: 12px 32px 22px !important;
+  color: inherit;
+}
+.carrier-footer {
+  min-height: 62px;
+  padding: 9px 30px !important;
+  color: inherit;
+  background: transparent;
+  border-top: 1px solid currentColor;
+  border-color: rgba(115, 96, 64, 0.25);
+}
+.carrier-footer__hint {
+  font-family: var(--f-note);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  opacity: 0.68;
+}
+.carrier-return {
+  min-width: 118px;
+  justify-content: center;
+  color: inherit !important;
+  background: transparent !important;
+  border: 1px solid currentColor !important;
+}
+.carrier-return:hover { opacity: 0.76; }
+.artifact-sheet .soul-divider { display: none; }
+.ember-scroll {
+  scrollbar-color: rgba(91, 72, 43, 0.55) transparent;
+}
+
+/* 暂停：钉钉木牌，菜单是凿刻在木板上的巡林事项。 */
+.carrier-pause {
+  color: var(--relic-bone);
+  background:
+    radial-gradient(circle at 15px 15px, #847a65 0 2px, #17140f 2.5px 4px, transparent 4.5px),
+    radial-gradient(circle at calc(100% - 15px) 15px, #847a65 0 2px, #17140f 2.5px 4px, transparent 4.5px),
+    repeating-linear-gradient(90deg, transparent 0 154px, rgba(5, 4, 3, 0.32) 155px 157px),
+    repeating-linear-gradient(2deg, rgba(230, 203, 156, 0.022) 0 1px, transparent 1px 8px),
+    linear-gradient(110deg, #3b2b1e, #271d14 62%, #1b140e);
+  border: 9px solid #21170f;
+  outline: 1px solid rgba(157, 130, 86, 0.4);
+}
+.carrier-pause .carrier-body {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1.28fr);
+  align-items: center;
+  gap: 34px;
+}
+.pause-caption {
+  max-width: 250px;
+  margin: 0;
+  padding: 12px 0 12px 20px;
+  color: #c8b99b;
+  border-left: 2px solid var(--relic-ember);
+  font-family: var(--f-note);
+  font-size: 22px;
+  line-height: 1.8;
+}
+.carrier-pause .soul-pause-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+.carrier-pause .soul-menuitem {
+  min-height: 50px;
+  justify-content: flex-start;
+  padding: 9px 14px;
+  color: #d8ccb3;
+  background: linear-gradient(90deg, rgba(203, 169, 111, 0.05), transparent);
+  border: 0;
+  border-bottom: 1px solid rgba(204, 175, 125, 0.24);
+}
+.carrier-pause .soul-menuitem--primary {
+  grid-column: 1 / -1;
+  color: #f4e2bd;
+  background: linear-gradient(90deg, rgba(180, 107, 47, 0.26), transparent);
+  border-left: 2px solid var(--relic-ember);
+}
+.carrier-pause .soul-menuitem:hover,
+.carrier-pause .soul-menuitem:focus-visible {
+  color: #fff0d2;
+  background: linear-gradient(90deg, rgba(190, 123, 60, 0.22), transparent);
+  border-color: rgba(222, 175, 104, 0.56);
+  outline: 1px solid rgba(222, 175, 104, 0.45);
+  outline-offset: 2px;
+}
+
+/* 日志：有真正中缝与装订线的摊开书，文字使用深墨。 */
+.carrier-notebook {
+  padding-left: 0 !important;
+  color: var(--relic-ink);
+  background:
+    linear-gradient(90deg, rgba(66, 45, 25, 0.22), transparent 5%, transparent 46%, rgba(53, 37, 24, 0.34) 49.5%, rgba(239, 224, 184, 0.2) 50%, rgba(53, 37, 24, 0.28) 50.6%, transparent 54%, transparent 95%, rgba(66, 45, 25, 0.22)),
+    repeating-linear-gradient(0deg, transparent 0 29px, rgba(76, 60, 38, 0.055) 30px),
+    linear-gradient(105deg, #c8b991, #ded1aa 48%, #c4b58c 52%, #d8caa3);
+  border: 11px solid #3a291b;
+  outline: 1px solid rgba(181, 148, 93, 0.4);
+}
+.carrier-notebook::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 18px;
+  width: 5px;
+  pointer-events: none;
+  border-left: 1px dashed rgba(70, 48, 29, 0.4);
+  border-right: 1px dashed rgba(70, 48, 29, 0.25);
+}
+.carrier-notebook .carrier-header,
+.carrier-notebook .carrier-body,
+.carrier-notebook .carrier-footer {
+  background: transparent;
+}
+.journal-entries {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 64px;
+}
+.journal-entry {
+  position: relative;
+  min-width: 0;
+  padding: 18px 4px 22px 38px;
+  border-bottom: 1px solid rgba(67, 51, 31, 0.24);
+}
+.journal-entry__index {
+  position: absolute;
+  left: 3px;
+  top: 22px;
+  color: #87512e;
+  font-size: 11px;
+}
+.journal-entry__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #765234;
+  font-size: 11px;
+}
+.journal-entry__meta h3 {
+  margin: 0;
+  color: #2b2419;
+  font-family: var(--f-title);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+}
+.journal-entry p {
+  margin: 12px 0 0;
+  color: #3c3224;
+  font-family: var(--f-note);
+  font-size: 15px;
+  line-height: 1.9;
+  letter-spacing: 0.035em;
+}
+
+/* 地图：真正铺在桌面上的牛皮卷，木轴伸出纸边。 */
+.carrier-scroll {
+  color: var(--relic-ink);
+  background:
+    radial-gradient(ellipse at 18% 12%, rgba(102, 72, 35, 0.12), transparent 38%),
+    radial-gradient(ellipse at 84% 86%, rgba(91, 55, 27, 0.14), transparent 42%),
+    repeating-linear-gradient(0deg, rgba(72, 55, 32, 0.025) 0 1px, transparent 1px 5px),
+    linear-gradient(100deg, #b7a67e, #d3c49b 12%, #caba91 88%, #a8956d);
+  border: 0;
+  box-shadow: 14px 22px 58px rgba(0, 0, 0, 0.72), inset 0 0 44px rgba(67, 43, 22, 0.16);
+}
+.carrier-scroll__rod {
+  z-index: 2;
+  width: calc(100% + 40px);
+  height: 17px;
+  margin-left: -20px;
+  background:
+    radial-gradient(circle at 8px 50%, #71624a 0 5px, #241b12 6px 8px, transparent 9px),
+    radial-gradient(circle at calc(100% - 8px) 50%, #71624a 0 5px, #241b12 6px 8px, transparent 9px),
+    repeating-linear-gradient(90deg, rgba(225, 197, 143, 0.08) 0 2px, transparent 2px 16px),
+    linear-gradient(180deg, #61472d, #332417 65%, #1e150e);
+  border: 1px solid #17100b;
+  border-radius: 8px;
+}
+.carrier-scroll .carrier-body { padding-top: 2px !important; }
+.worldmap-canvas {
+  height: min(58vh, 450px) !important;
+  border: 1px solid rgba(64, 46, 27, 0.32);
+  box-shadow: inset 0 0 24px rgba(54, 37, 20, 0.16);
+}
+
+/* 制作：材料袋与压在木工台上的牛皮纸样板。 */
+.carrier-workbench {
+  color: var(--relic-bone);
+  background:
+    radial-gradient(circle at 16px 16px, #837864 0 2px, #19150f 3px 4px, transparent 5px),
+    radial-gradient(circle at calc(100% - 16px) 16px, #837864 0 2px, #19150f 3px 4px, transparent 5px),
+    repeating-linear-gradient(90deg, transparent 0 172px, rgba(5, 4, 3, 0.3) 173px 176px),
+    repeating-linear-gradient(3deg, rgba(238, 205, 153, 0.025) 0 1px, transparent 1px 9px),
+    linear-gradient(180deg, #39291c, #251b12 65%, #1b130d);
+  border: 10px solid #20160f;
+  outline: 1px solid rgba(154, 124, 79, 0.4);
+}
+.carrier-pouch {
+  background:
+    repeating-linear-gradient(45deg, rgba(225, 207, 170, 0.07) 0 2px, transparent 2px 6px),
+    repeating-linear-gradient(-45deg, rgba(33, 25, 16, 0.1) 0 2px, transparent 2px 6px),
+    linear-gradient(180deg, #5b513e, #40382a);
+  border: 2px dashed rgba(224, 201, 157, 0.46);
+}
+.workbench-tray { border-radius: 0; }
+.workbench-mat {
+  min-height: 56px;
+  color: #f0e2c4;
+  background: rgba(29, 25, 18, 0.38);
+  border: 0;
+  border-right: 1px solid rgba(232, 211, 169, 0.16);
+  border-radius: 0;
+}
+.workbench-mat:last-child { border-right: 0; }
+.workbench-card {
+  min-height: 108px;
+  padding: 14px 16px;
+  color: var(--relic-ink);
+  background:
+    radial-gradient(circle at 10px 10px, #665a46 0 2px, transparent 2.5px),
+    repeating-linear-gradient(0deg, transparent 0 24px, rgba(69, 51, 29, 0.045) 25px),
+    linear-gradient(120deg, #c9ba91, #b4a37b);
+  border: 0;
+  border-bottom: 3px solid #6e5737;
+  border-radius: 0;
+  clip-path: polygon(0 1%, 99% 0, 100% 94%, 96% 100%, 1% 98%);
+  box-shadow: 3px 6px 12px rgba(0, 0, 0, 0.38);
+}
+.workbench-card.is-ready { border-color: #855126; }
+.workbench-card.is-ready:hover,
+.workbench-card.is-ready:focus-visible {
+  transform: translateY(-2px) rotate(-0.2deg);
+  border-color: #855126;
+  box-shadow: 5px 9px 16px rgba(0, 0, 0, 0.46);
+  outline: 2px solid #e0b06c;
+  outline-offset: 2px;
+}
+.workbench-card.is-locked { opacity: 0.72; }
+.workbench-card.is-owned { border-color: #46664f; opacity: 0.86; }
+.workbench-card__icon {
+  width: 62px;
+  height: 62px;
+  color: #3c3122;
+  background: rgba(71, 55, 32, 0.08);
+  border: 0;
+  border-right: 1px solid rgba(66, 48, 27, 0.24);
+  border-radius: 0;
+}
+.workbench-card__badge {
+  color: #f2dfb8;
+  background: #714226;
+  border-radius: 0;
+}
+.workbench-card__name {
+  margin-bottom: 9px;
+  color: #2d2519;
+  font-family: var(--f-title);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.workbench-cost.is-ok { color: #345340; }
+.workbench-cost.is-lack { color: #8a392e; }
+.workbench-card__forge {
+  color: #45341f;
+  background: transparent;
+  border: 1px solid rgba(66, 45, 24, 0.48);
+  border-radius: 0;
+}
+.workbench-card.is-locked .workbench-card__forge {
+  color: #5d5140;
+  background: transparent;
+  border-color: rgba(66, 53, 36, 0.28);
+}
+
+/* 排行榜：钉在林场木板上的幸存者名录。 */
+.carrier-noticeboard {
+  color: var(--relic-bone);
+  background:
+    repeating-linear-gradient(90deg, transparent 0 188px, rgba(4, 3, 2, 0.34) 189px 192px),
+    repeating-linear-gradient(2deg, rgba(228, 198, 150, 0.022) 0 1px, transparent 1px 8px),
+    linear-gradient(110deg, #3b2b1d, #251b12);
+  border: 11px solid #1f160f;
+  outline: 1px solid rgba(157, 128, 82, 0.38);
+}
+.rank-register {
+  position: relative;
+  padding: 22px 26px;
+  color: var(--relic-ink);
+  background:
+    radial-gradient(circle at 16px 14px, #675c47 0 2px, transparent 2.5px),
+    radial-gradient(circle at calc(100% - 16px) 14px, #675c47 0 2px, transparent 2.5px),
+    repeating-linear-gradient(0deg, transparent 0 27px, rgba(70, 52, 31, 0.045) 28px),
+    linear-gradient(120deg, #d1c29a, #bcab82);
+  box-shadow: 4px 8px 18px rgba(0, 0, 0, 0.4);
+  transform: rotate(-0.15deg);
+}
+.rank-tabs { border-bottom: 2px solid rgba(57, 43, 26, 0.36); }
+.rank-tab {
+  color: #51432e;
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+}
+.rank-tab[data-active="true"] {
+  color: #f0e2c2;
+  background: #3d3223;
+  border-bottom-color: #9a5c30;
+}
+.rank-tab:focus-visible,
+.field-option:focus-visible {
+  outline: 2px solid #774824;
+  outline-offset: 2px;
+}
+.rank-overview {
+  color: #4a3d2a;
+  border-top: 1px solid rgba(63, 46, 26, 0.2);
+  border-bottom: 1px solid rgba(63, 46, 26, 0.28);
+}
+.rank-overview [class*="text-[#"] { color: #4a3d2a !important; }
+.rank-list {
+  background: rgba(235, 220, 181, 0.16);
+  border: 1px solid rgba(60, 44, 26, 0.24);
+}
+.rank-list .soul-rank-row {
+  min-height: 38px;
+  color: #352b1d;
+  border-bottom-color: rgba(63, 45, 25, 0.17);
+}
+.rank-list .soul-rank-row.is-top { background: rgba(128, 82, 39, 0.1); }
+.rank-list .soul-rank-row [class*="text-[#"] { color: #3c3020 !important; }
+.rank-empty { border: 1px dashed rgba(61, 44, 25, 0.34); }
+.rank-empty [class*="text-[#"] { color: #453824 !important; }
+
+/* 设置与说明：金属夹扣的巡林员手册。 */
+.carrier-clipboard {
+  color: var(--relic-ink);
+  background:
+    linear-gradient(90deg, rgba(78, 56, 30, 0.12), transparent 8%, transparent 94%, rgba(78, 56, 30, 0.12)),
+    repeating-linear-gradient(0deg, transparent 0 29px, rgba(70, 54, 34, 0.05) 30px),
+    linear-gradient(110deg, #cabb94, #dbcea7 52%, #bdad84);
+  border: 0;
+  border-top: 25px solid #4e4d42;
+  box-shadow: 12px 22px 54px rgba(0, 0, 0, 0.7), inset 0 0 46px rgba(64, 43, 24, 0.12);
+}
+.carrier-clipboard::before {
+  content: "";
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  z-index: 3;
+  width: 142px;
+  height: 30px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: linear-gradient(180deg, #858273, #46473f 58%, #292c27);
+  border: 1px solid #252721;
+  border-radius: 5px 5px 1px 1px;
+  box-shadow: 0 3px 5px rgba(0, 0, 0, 0.34);
+}
+.field-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px 34px;
+}
+.field-setting {
+  padding-top: 10px;
+  border-top: 2px solid rgba(59, 45, 27, 0.4);
+}
+.field-setting__label {
+  color: #4c3e29;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.field-option {
+  position: relative;
+  padding: 8px;
+  color: #3d3222;
+  background: rgba(232, 218, 181, 0.18);
+  border: 1px solid rgba(61, 45, 26, 0.34);
+  border-radius: 0;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+.field-option:hover { background: rgba(112, 77, 39, 0.12); }
+.field-option[data-active="true"] {
+  color: #efe2c2;
+  background: #3d3324;
+  border-color: #3d3324;
+  box-shadow: inset 4px 0 0 #a76835;
+}
+.field-manual { counter-reset: manual; }
+.manual-entry {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px 4px;
+  border-bottom: 1px solid rgba(63, 47, 28, 0.24);
+}
+.manual-entry__num {
+  padding-top: 2px;
+  color: #8a522c;
+  font-size: 13px;
+  border-right: 1px solid rgba(64, 45, 25, 0.24);
+}
+.manual-entry h3 {
+  margin: 0;
+  color: #302619;
+  font-family: var(--f-title);
+  font-size: 17px;
+  letter-spacing: 0.07em;
+}
+.manual-entry p {
+  margin: 7px 0 0;
+  color: #473a28;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+/* 开发者面板保持功能性，但同样成为全屏校准档案。 */
+.carrier-dossier {
+  color: var(--relic-bone);
+  background:
+    repeating-linear-gradient(0deg, transparent 0 31px, rgba(213, 188, 143, 0.025) 32px),
+    linear-gradient(145deg, #30271b, #1d1811);
+  border: 8px solid #21180f;
+}
+.carrier-dossier .carrier-body button:focus-visible,
+.soul-menuitem:focus-visible {
+  outline: 2px solid #d49a55;
+  outline-offset: 2px;
+}
+
+/* 结算：撤离公报与血染遗书，均是整页文件而非小弹窗。 */
+.summary-poster {
+  width: min(900px, 100%) !important;
+  max-width: 900px !important;
+  padding: 38px 42px !important;
+  color: var(--relic-ink);
+  border: 0 !important;
+  border-top: 14px solid #514733 !important;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 29px, rgba(66, 49, 28, 0.045) 30px),
+    linear-gradient(120deg, #d2c39a, #bcab81) !important;
+  box-shadow: 16px 26px 64px rgba(0, 0, 0, 0.76) !important;
+}
+.summary-poster--blood {
+  border-top-color: #622c25 !important;
+  background:
+    radial-gradient(ellipse at 88% 12%, rgba(121, 36, 27, 0.24), transparent 38%),
+    repeating-linear-gradient(0deg, transparent 0 29px, rgba(66, 49, 28, 0.045) 30px),
+    linear-gradient(120deg, #c7b48c, #ac9871) !important;
+}
+.summary-poster h2 {
+  color: #2c2519 !important;
+  font-size: clamp(30px, 4vw, 46px) !important;
+}
+.summary-poster [class*="text-[#"] { color: #493c29 !important; }
+.summary-poster .paper-card,
+.summary-poster .clean-card {
+  background: rgba(237, 222, 183, 0.22);
+  border: 0;
+  border-top: 1px solid rgba(59, 43, 25, 0.26);
+  border-bottom: 1px solid rgba(59, 43, 25, 0.2);
+  border-radius: 0;
+}
+.summary-poster .soul-menuitem {
+  justify-content: flex-start;
+  color: #3c3020 !important;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(61, 43, 24, 0.32);
+}
+.summary-poster .soul-menuitem--primary {
+  color: #f0e2c3 !important;
+  background: #403425;
+  border-left: 3px solid #a56333;
+}
+.summary-poster .soul-menuitem:hover,
+.summary-poster .soul-menuitem:focus-visible {
+  color: #19140e !important;
+  background: rgba(114, 74, 37, 0.13);
+  outline: 2px solid #74502c;
+  outline-offset: 2px;
+}
+.summary-poster .soul-menuitem--primary:hover,
+.summary-poster .soul-menuitem--primary:focus-visible { color: #fff0ce !important; }
+
+/* ---------- 横屏手机：整页展开、双栏阅读、触控不挤中央视野 ---------- */
+@media (max-height: 500px) {
+  .title-board {
+    width: min(510px, 64vw);
+    margin-left: 3vw;
+    padding: 17px 26px 18px;
+  }
+  .title-board__eyebrow { padding-bottom: 7px; font-size: 8px; }
+  .title-board .title-mark { margin-top: 8px; font-size: 42px; }
+  .title-board .title-sub { margin-top: 4px; font-size: 9px; }
+  .title-board .title-seq--3 { display: none; }
+  .title-menu { margin-top: 10px; }
+  .title-board .title-btn { min-height: 44px; font-size: 14px; }
+  .title-footer { display: none; }
+  .title-chrome > span { font-size: 8px; }
+  .hud2-tl { max-width: 256px; flex-basis: 256px; padding: 8px 11px 9px; }
+  .hud2-time { font-size: 13px; }
+  .hud2-arc { width: 112px; height: 21px; }
+  .hud2-objective__text { display: none; }
+  .hud2-objective-note { margin-top: 1px; padding-top: 4px; }
+  .hud2-objective__zone { margin-top: 1px; font-size: 9px; }
+  .hud2-minimap { width: 96px; height: 96px; }
+  .hud2-iconbtn { width: 44px; height: 44px; }
+  .hud2-vitals { padding: 8px 10px; }
+  .hud2-bar { width: 130px; }
+  .hud2-num { font-size: 13px; }
+  .hud2-toolbelt { padding: 4px; gap: 4px; }
+  .hud2-slot { width: 48px; height: 48px; }
+  .hud2-res { max-width: 168px; padding: 7px 9px; gap: 3px 8px; }
+  .hud2-res__item { min-width: 32px; font-size: 12px; }
+  .hud2-toasts { bottom: calc(var(--gb) + 82px); }
+  .hud2-toast { padding-top: 7px; padding-bottom: 7px; font-size: 12px; }
+  .artifact-sheet,
+  html.force-landscape .artifact-sheet {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100% !important;
+    max-height: 100% !important;
+  }
+  .carrier-header { min-height: 64px; padding: 9px 18px 7px !important; }
+  .carrier-heading__kicker { margin-bottom: 3px; font-size: 8px; }
+  .carrier-heading__title { gap: 8px; }
+  .carrier-heading__title h2 { font-size: 23px; }
+  .carrier-seal { width: 8px; height: 22px; }
+  .carrier-body { padding: 7px 20px 12px !important; }
+  .carrier-footer { min-height: 50px; padding: 3px 18px !important; }
+  .carrier-footer__hint { font-size: 10px; }
+  .carrier-return { min-height: 44px; }
+  .carrier-pause { border-width: 6px; }
+  .carrier-pause .carrier-body { grid-template-columns: 0.72fr 1.28fr; gap: 20px; }
+  .pause-caption { font-size: 17px; line-height: 1.65; }
+  .carrier-pause .soul-pause-grid { gap: 4px 10px; }
+  .carrier-pause .soul-menuitem { min-height: 44px; padding: 6px 10px; font-size: 12px; }
+  .carrier-notebook { border-width: 7px; }
+  .journal-entries { column-gap: 42px; }
+  .journal-entry { padding-top: 10px; padding-bottom: 12px; }
+  .journal-entry__index { top: 13px; }
+  .journal-entry__meta h3 { font-size: 15px; }
+  .journal-entry p { margin-top: 7px; font-size: 13px; line-height: 1.7; }
+  .carrier-workbench { border-width: 6px; }
+  .workbench-tray { padding: 4px; }
+  .workbench-mat { min-height: 44px; padding: 2px; }
+  .workbench-card { min-height: 82px; padding: 8px 11px; }
+  .workbench-card__icon { width: 50px; height: 50px; }
+  .workbench-card__name { margin-bottom: 5px; font-size: 14px; }
+  .rank-register { padding: 10px 18px; }
+  .rank-list .soul-rank-row { min-height: 32px; padding-top: 4px; padding-bottom: 4px; }
+  .field-settings { gap: 12px 26px; }
+  .field-setting { padding-top: 5px; }
+  .field-option { padding: 5px; }
+  .manual-entry { padding: 8px 3px; }
+  .manual-entry h3 { font-size: 15px; }
+  .manual-entry p { margin-top: 4px; font-size: 12px; line-height: 1.55; }
+  .worldmap-canvas { height: calc(100vh - 190px) !important; min-height: 150px; }
+  .summary-poster { padding: 16px 24px !important; border-top-width: 9px !important; }
+  .summary-poster h2 { font-size: 28px !important; }
+}
+
+@media (pointer: coarse) {
+  .hud2-keyhints { display: none; }
+  .hud2-slot__key { opacity: 0.42; }
+}
+
+@media (max-width: 619px) {
+  .title-board { width: calc(100vw - 40px); margin-left: 0; padding: 26px; }
+  .title-board .title-mark { font-size: 44px; }
+  .title-board .title-seq--3 { display: none; }
+  .title-footer { display: none; }
+  .hud2-tl { max-width: 230px; }
+  .hud2-objective__text { display: none; }
+  .carrier-pause .carrier-body { grid-template-columns: 1fr; }
+  .pause-caption { display: none; }
+  .journal-entries,
+  .field-settings { grid-template-columns: 1fr; }
+  .carrier-footer__hint { display: none; }
+  .carrier-footer { justify-content: flex-end; }
+}
+
+@media (min-width: 1600px) and (min-height: 900px) {
+  .hud2-minimap { width: 178px; height: 178px; }
+  .hud2-tl { max-width: 370px; flex-basis: 370px; }
+  .hud2-objective__text { font-size: 14px; }
+}
+
+/* 竖屏手机旋转整个 #app 后，vw/vh 仍是物理竖屏尺寸；标题木牌改用逻辑容器百分比。 */
+html.force-landscape .title-board {
+  width: min(510px, 64%);
+  margin-left: 3%;
+  padding: 17px 26px 18px;
+}
+html.force-landscape .title-board__eyebrow { padding-bottom: 7px; font-size: 8px; }
+html.force-landscape .title-board .title-mark { margin-top: 8px; font-size: 42px; }
+html.force-landscape .title-board .title-sub { margin-top: 4px; font-size: 9px; }
+html.force-landscape .title-board .title-seq--3 { display: none; }
+html.force-landscape .title-menu { margin-top: 10px; }
+html.force-landscape .title-board .title-btn { min-height: 44px; font-size: 14px; }
+html.force-landscape .title-footer { display: none; }
+html.force-landscape .title-chrome > span { font-size: 8px; }
+
+/* ---------- 手机视野优先 HUD：信息退到边缘，地图与详情按需展开 ---------- */
+.hud2-mapbtn {
+  display: none;
+}
+.hud2.is-compact .hud2-tl {
+  flex: 0 1 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  max-width: 190px;
+  padding: 5px 8px;
+  color: #e4dcc9;
+  background: linear-gradient(90deg, rgba(12, 14, 12, 0.72), rgba(12, 14, 12, 0.38));
+  border: 1px solid rgba(206, 184, 143, 0.2);
+  border-radius: 2px;
+  clip-path: none;
+  filter: none;
+}
+.hud2.is-compact .hud2-tl::before,
+.hud2.is-compact .hud2-vitals::before,
+.hud2.is-compact .hud2-arc,
+.hud2.is-compact .hud2-time__phase,
+.hud2.is-compact .hud2-time__wx,
+.hud2.is-compact .hud2-gen__meter,
+.hud2.is-compact .hud2-objective__text,
+.hud2.is-compact .hud2-objective__zone,
+.hud2.is-compact .hud2-obj-dots,
+.hud2.is-compact .hud2-minimap,
+.hud2.is-compact .hud2-slot--weapon,
+.hud2.is-compact .hud2-slot.is-empty,
+.hud2.is-compact .hud2-res__item.is-zero {
+  display: none;
+}
+.hud2.is-compact .hud2-time {
+  flex-wrap: nowrap;
+  gap: 5px;
+  color: #e4dcc9;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 2px #000;
+}
+.hud2.is-compact .hud2-gen {
+  flex-wrap: nowrap;
+  gap: 3px;
+  color: #c8bda7;
+  font-size: 10px;
+}
+.hud2.is-compact .hud2-gen__val {
+  color: #d8cdb6;
+}
+.hud2.is-compact .hud2-objective-note {
+  margin: 0;
+  padding: 0 0 0 6px;
+  border-top: 0;
+  border-left: 1px solid rgba(211, 190, 149, 0.24);
+}
+.hud2.is-compact .hud2-obj-icons {
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  color: #91b9a9;
+  background: transparent;
+  border: 0;
+}
+.hud2.is-compact .hud2-obj-count {
+  color: #d4dfd5;
+  font-size: 11px;
+}
+.hud2.is-compact .hud2-tr {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0;
+}
+.hud2.is-compact .hud2-actions {
+  gap: 0;
+  padding: 2px;
+  background: rgba(16, 18, 15, 0.58);
+  border: 1px solid rgba(199, 179, 139, 0.22);
+  clip-path: none;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.34);
+}
+.hud2.is-compact .hud2-iconbtn {
+  width: 44px;
+  height: 44px;
+  color: rgba(229, 220, 199, 0.88);
+}
+.hud2.is-compact .hud2-iconbtn__svg {
+  width: 20px;
+  height: 20px;
+}
+.hud2.is-compact .hud2-mapbtn {
+  display: inline-flex;
+}
+.hud2.is-compact .hud2-vitals {
+  padding: 6px 8px;
+  background: linear-gradient(90deg, rgba(13, 15, 13, 0.68), rgba(13, 15, 13, 0.18));
+  border: 0;
+  clip-path: none;
+  box-shadow: none;
+}
+.hud2.is-compact .hud2-bar {
+  width: 108px;
+}
+.hud2.is-compact .hud2-bar--hp {
+  height: 12px;
+}
+.hud2.is-compact .hud2-bar--st {
+  height: 7px;
+}
+.hud2.is-compact .hud2-num {
+  font-size: 12px;
+}
+.hud2.is-compact .hud2-toolbelt {
+  gap: 4px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.hud2.is-compact .hud2-slot {
+  width: 44px;
+  height: 44px;
+  background: rgba(24, 25, 21, 0.68);
+  border: 1px solid rgba(198, 178, 137, 0.36);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 3px rgba(8, 9, 7, 0.28), 0 2px 7px rgba(0, 0, 0, 0.4);
+}
+.hud2.is-compact .hud2-slot__key {
+  display: none;
+}
+.hud2.is-compact .hud2-slot__svg {
+  width: 20px;
+  height: 20px;
+}
+.hud2.is-compact .hud2-slot__count {
+  right: 4px;
+  bottom: 3px;
+  font-size: 10px;
+}
+.hud2.is-compact .hud2-res {
+  position: fixed;
+  top: calc(var(--gt) + var(--xhs-cap-offset, 0px) + 52px);
+  right: var(--gr);
+  max-width: 236px;
+  gap: 3px 9px;
+  padding: 3px 5px;
+  background: rgba(12, 14, 12, 0.42);
+  border: 0;
+  clip-path: none;
+}
+.hud2.is-compact .hud2-res__item {
+  min-width: 0;
+  gap: 2px;
+  color: rgba(229, 220, 199, 0.86);
+  font-size: 11px;
+}
+.hud2.is-compact .hud2-res__icon svg {
+  width: 13px;
+  height: 13px;
+}
+.hud2.is-compact .hud2-toasts {
+  bottom: calc(var(--gb) + 58px);
+  width: min(46vw, 320px);
+}
+
+/* 触控热区不变；闲置时降低材质与底色的视觉重量，按下立即恢复。 */
+.touch-stick--move {
+  opacity: 0.64;
+  transition: opacity 140ms ease;
+}
+.touch-stick--move:active {
+  opacity: 0.96;
+}
+.touch-arc-pad .touch-btn {
+  opacity: 0.8;
+  transition: opacity 140ms ease, transform 100ms ease;
+}
+.touch-arc-pad .touch-btn:active {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .artifact-sheet,
+  .hud2-ticker__pill,
+  .hud2.is-threat::before {
+    animation: none;
+  }
+  .title-board .title-btn,
+  .carrier-close,
+  .workbench-card,
+  .hud2-minimap,
+  .hud2-iconbtn {
     transition: none;
   }
 }

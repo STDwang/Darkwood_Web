@@ -4564,6 +4564,262 @@ class SoundEngine {
     shot.seal();
   }
 
+  /**
+   * 瘆人诡异的小女孩笑声（低血量 / 夜晚室外被追逐危机触发）
+   * - 童声区双声带（基频 560–860Hz + 诡异微失谐鬼影副声带）+ 急促颤音 LFO
+   * - 5–7 声下行/失谐尖笑音节（嘻-嘻-嘻-呵呵…）+ 气声喘息 + 三段童声元音共振峰
+   * - 附加幽灵反相回声与深林湿润混响
+   */
+  playCreepyGirlLaugh(pan = 0, intensity = 0.85): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const shot = new OneShot();
+    const clampedPan = clamp(pan, -0.95, 0.95);
+    const out = this.distantOut(ctx, shot, clampedPan, 3800, 0.72).input;
+    const echoOut = this.distantOut(ctx, shot, clamp(-clampedPan * 0.75, -0.9, 0.9), 2500, 0.88).input;
+
+    // 2 套诡异女孩笑声音型（尖细咯咯笑 / 失谐下行阴笑）
+    const patterns = [
+      [784, 740, 698, 659, 622, 587],
+      [830, 784, 880, 740, 659, 622, 554],
+      [698, 740, 659, 622, 587, 523],
+    ];
+    const seq = patterns[Math.floor(Math.random() * patterns.length)];
+    const startT = now + 0.04;
+    const totalDur = seq.length * 0.28 + 1.15;
+    const end = startT + totalDur;
+
+    // 主童声声带 + 略微走调的鬼魅重叠声带
+    const osc1 = this.oscSource(ctx, shot, 'sawtooth', seq[0], startT, end);
+    const osc2 = this.oscSource(ctx, shot, 'triangle', seq[0] * 1.016, startT, end);
+    const vib = this.oscSource(ctx, shot, 'sine', rnd(7.2, 9.4), startT, end);
+    const vibDepth = this.amp(ctx, shot, 13.5, startT);
+    vib.connect(vibDepth);
+    vibDepth.connect(osc1.frequency);
+    vibDepth.connect(osc2.frequency);
+
+    const g1 = this.amp(ctx, shot, 0.56, startT);
+    const g2 = this.amp(ctx, shot, 0.44, startT);
+    const srcMix = this.amp(ctx, shot, 1, startT);
+    osc1.connect(g1);
+    osc2.connect(g2);
+    g1.connect(srcMix);
+    g2.connect(srcMix);
+
+    // 气声与尖锐齿音层（增强真实诡异呼吸与咯咯气音）
+    if (this.whiteBuf) {
+      const breath = this.noiseSource(ctx, shot, this.whiteBuf, startT, totalDur);
+      const bbp = this.filt(ctx, shot, 'bandpass', 2400, 2.6, startT);
+      const bg = this.amp(ctx, shot, 0.22, startT);
+      breath.connect(bbp);
+      bbp.connect(bg);
+      bg.connect(srcMix);
+    }
+
+    // 三段女童元音共振峰（Ee/He/Ha 尖笑音色）
+    const env = this.amp(ctx, shot, 0.0001, startT);
+    const f1 = this.filt(ctx, shot, 'bandpass', 520, 5.2, startT);
+    const f2 = this.filt(ctx, shot, 'bandpass', 2320, 6.2, startT);
+    const f3 = this.filt(ctx, shot, 'bandpass', 3250, 7.0, startT);
+    const fg1 = this.amp(ctx, shot, 0.92, startT);
+    const fg2 = this.amp(ctx, shot, 0.88, startT);
+    const fg3 = this.amp(ctx, shot, 0.42, startT);
+
+    srcMix.connect(f1);
+    srcMix.connect(f2);
+    srcMix.connect(f3);
+    f1.connect(fg1);
+    f2.connect(fg2);
+    f3.connect(fg3);
+    fg1.connect(env);
+    fg2.connect(env);
+    fg3.connect(env);
+
+    // 主输出 + 幽灵延迟回声（0.24s 滞后，反相声像）
+    env.connect(out);
+    const dly = ctx.createDelay(0.6);
+    dly.delayTime.setValueAtTime(rnd(0.21, 0.28), startT);
+    const dlyG = this.amp(ctx, shot, 0.42, startT);
+    shot.add(dly);
+    env.connect(dly);
+    dly.connect(dlyG);
+    dlyG.connect(echoOut);
+
+    const baseVol = clamp(0.11 + intensity * 0.08, 0.08, 0.21);
+    let t = startT;
+    for (let i = 0; i < seq.length; i++) {
+      const f = seq[i] * rnd(0.985, 1.015);
+      const isLast = i === seq.length - 1;
+      const sylDur = isLast ? rnd(0.46, 0.62) : rnd(0.14, 0.21);
+      const gap = isLast ? 0.08 : rnd(0.055, 0.095);
+
+      // 每个笑声音节由高略向低诡异滑落，末尾音节发颤下滑
+      osc1.frequency.setValueAtTime(f * 1.06, t);
+      osc1.frequency.exponentialRampToValueAtTime(f * (isLast ? 0.88 : 0.94), t + sylDur);
+      osc2.frequency.setValueAtTime(f * 1.078, t);
+      osc2.frequency.exponentialRampToValueAtTime(f * (isLast ? 0.895 : 0.955), t + sylDur);
+
+      // 共振峰在 "嘻(i)" 与 "呵(e/a)" 之间微滑
+      f1.frequency.setTargetAtTime(i % 2 === 0 ? 480 : 710, t, 0.03);
+      f2.frequency.setTargetAtTime(i % 2 === 0 ? 2420 : 1980, t, 0.03);
+
+      const peak = baseVol * (isLast ? 0.78 : rnd(0.75, 1.05));
+      env.gain.setValueAtTime(0.0001, t);
+      env.gain.linearRampToValueAtTime(peak, t + 0.025);
+      env.gain.exponentialRampToValueAtTime(Math.max(0.0004, peak * 0.14), t + sylDur);
+      env.gain.exponentialRampToValueAtTime(0.0001, t + sylDur + gap * 0.75);
+      t += sylDur + gap;
+    }
+
+    shot.seal();
+  }
+
+  /**
+   * 危机惊悚背景音乐乐句（血量见底或夜晚室外被追逐时触发，血潮期间压迫感倍增）
+   * - 失谐尖锐弦乐滑音（小二度摩擦）+ 走调八音盒鬼魅单音 + 深沉次声脉动
+   */
+  playCrisisBgmPhrase(intensity = 0.75, bloodTide = 0): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const shot = new OneShot();
+    const out = this.distantOut(ctx, shot, randomPan(0.28), 2600 + bloodTide * 1400, 0.82).input;
+
+    const dur = rnd(4.2, 5.4);
+    const end = now + dur + 0.5;
+    const vol = clamp(0.045 + intensity * 0.038 + bloodTide * 0.042, 0.03, 0.14);
+
+    // 1. 失谐紧张弦乐（小二度 + 增四度摩擦缓慢上滑）
+    const strEnv = this.amp(ctx, shot, 0.0001, now);
+    strEnv.gain.linearRampToValueAtTime(vol * 0.55, now + 0.85);
+    strEnv.gain.linearRampToValueAtTime(vol * 0.72, now + dur * 0.65);
+    strEnv.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    const strLp = this.filt(ctx, shot, 'bandpass', 620 + bloodTide * 520, 1.8, now);
+    strLp.connect(strEnv);
+    strEnv.connect(out);
+
+    const strFreqs = bloodTide > 0.2 ? [110, 116.54, 155.56, 311.13] : [130.81, 138.59, 185.0];
+    for (let i = 0; i < strFreqs.length; i++) {
+      const f = strFreqs[i];
+      const o = this.oscSource(ctx, shot, 'sawtooth', f, now, end);
+      o.frequency.linearRampToValueAtTime(f * (1 + 0.025 + bloodTide * 0.035), now + dur);
+      const g = this.amp(ctx, shot, 0.35 / strFreqs.length, now);
+      o.connect(g);
+      g.connect(strLp);
+    }
+
+    // 2. 走调鬼魅八音盒碎音（3–4 个高音失谐金属残响）
+    const boxNotes = [987.77, 1046.5, 932.33, 783.99, 739.99];
+    const noteCount = bloodTide > 0.2 ? 4 : 3;
+    let nt = now + 0.25;
+    for (let i = 0; i < noteCount; i++) {
+      const nf = boxNotes[Math.floor(Math.random() * boxNotes.length)] * rnd(0.985, 1.018);
+      const o1 = this.oscSource(ctx, shot, 'sine', nf, nt, nt + 1.3);
+      const o2 = this.oscSource(ctx, shot, 'triangle', nf * 2.756, nt, nt + 0.55); // 非谐金属泛音
+      const ne = this.amp(ctx, shot, 0.0001, nt);
+      ne.gain.linearRampToValueAtTime(vol * 0.38, nt + 0.015);
+      ne.gain.exponentialRampToValueAtTime(0.0001, nt + 1.2);
+      const g2 = this.amp(ctx, shot, 0.22, nt);
+      o1.connect(ne);
+      o2.connect(g2);
+      g2.connect(ne);
+      ne.connect(out);
+      nt += rnd(0.55, 1.05);
+    }
+
+    // 3. 压迫低频心跳脉动（46Hz 次声暗涌）
+    const sub = this.oscSource(ctx, shot, 'sine', 46, now, end);
+    const subEnv = this.amp(ctx, shot, 0.0001, now);
+    subEnv.gain.linearRampToValueAtTime(vol * 0.95, now + 0.45);
+    subEnv.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    sub.connect(subEnv);
+    subEnv.connect(out);
+
+    shot.seal();
+  }
+
+  /**
+   * 血潮袭击恐怖音效（地面蠕动血色不明物 + 密密麻麻红眼撑开翻动）
+   * - burst=true：血潮骤然爆发时的深渊次声轰鸣 + 撕裂金属尖啸
+   * - 持续段：粘稠血肉翻滚湿滑滤波噪声 + 高频眼球湿润翻动/眨眼啵啵声
+   */
+  playBloodTideTerror(intensity = 0.9, burst = false): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain || this.muted || this.pageHidden) return;
+    const now = ctx.currentTime;
+    const shot = new OneShot();
+    const out = this.distantOut(ctx, shot, randomPan(0.45), 3200, 0.65).input;
+
+    const dur = burst ? 3.2 : rnd(1.8, 2.6);
+    const end = now + dur + 0.35;
+    const vol = clamp(0.08 + intensity * 0.11, 0.06, 0.22);
+
+    // 1. 粘稠血色不明物蠕动/翻滚湿声（双路高 Q 扫频滤波噪声）
+    const noiseBuf = this.pinkBuf ?? this.whiteBuf;
+    if (noiseBuf) {
+      const sq = this.noiseSource(ctx, shot, noiseBuf, now, dur + 0.1);
+      const bp1 = this.filt(ctx, shot, 'bandpass', 240, 4.5, now);
+      const bp2 = this.filt(ctx, shot, 'bandpass', 760, 5.2, now);
+      const env = this.amp(ctx, shot, 0.0001, now);
+      env.gain.linearRampToValueAtTime(vol * 0.95, now + 0.18);
+
+      let t = now + 0.15;
+      while (t < now + dur - 0.22) {
+        bp1.frequency.setTargetAtTime(rnd(160, 480), t, 0.08);
+        bp2.frequency.setTargetAtTime(rnd(520, 1380), t, 0.07);
+        env.gain.linearRampToValueAtTime(vol * rnd(0.55, 1.15), t + 0.11);
+        t += rnd(0.18, 0.32);
+      }
+      env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+      sq.connect(bp1);
+      sq.connect(bp2);
+      bp1.connect(env);
+      bp2.connect(env);
+      env.connect(out);
+    }
+
+    // 2. 脚底密密麻麻红眼撑开与上下翻动眼球的湿润“啵/黏”细碎声
+    const popCount = burst ? 7 : 4;
+    for (let i = 0; i < popCount; i++) {
+      const pt = now + rnd(0.08, dur - 0.25);
+      const f0 = rnd(420, 980);
+      const pop = this.oscSource(ctx, shot, 'sine', f0, pt, pt + 0.09);
+      pop.frequency.exponentialRampToValueAtTime(f0 * rnd(1.8, 2.6), pt + 0.065);
+      const pe = this.amp(ctx, shot, 0.0001, pt);
+      pe.gain.linearRampToValueAtTime(vol * 0.32, pt + 0.012);
+      pe.gain.exponentialRampToValueAtTime(0.0001, pt + 0.08);
+      pop.connect(pe);
+      pe.connect(out);
+    }
+
+    // 3. 深渊次声冲击 + 爆发瞬间尖锐失谐金属/肉膜撕裂啸音
+    const sub = this.oscSource(ctx, shot, 'triangle', burst ? 58 : 44, now, end);
+    sub.frequency.exponentialRampToValueAtTime(28, now + dur);
+    const subG = this.amp(ctx, shot, 0.0001, now);
+    subG.gain.linearRampToValueAtTime(vol * (burst ? 1.35 : 0.72), now + 0.12);
+    subG.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    sub.connect(subG);
+    subG.connect(out);
+
+    if (burst) {
+      const screech = this.oscSource(ctx, shot, 'sawtooth', 880, now, now + 1.8);
+      screech.frequency.exponentialRampToValueAtTime(1420, now + 0.65);
+      screech.frequency.exponentialRampToValueAtTime(610, now + 1.75);
+      const sbp = this.filt(ctx, shot, 'bandpass', 1280, 4.2, now);
+      const sg = this.amp(ctx, shot, 0.0001, now);
+      sg.gain.linearRampToValueAtTime(vol * 0.42, now + 0.16);
+      sg.gain.exponentialRampToValueAtTime(0.0001, now + 1.78);
+      screech.connect(sbp);
+      sbp.connect(sg);
+      sg.connect(out);
+    }
+
+    shot.seal();
+  }
+
   /** 白天远处鸦鸣（环境叙事用）：清亮穿透林间风声 */
   private playCrowCall(pan: number) {
     const ctx = this.ctx;

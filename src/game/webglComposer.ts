@@ -662,6 +662,12 @@ export class WebGL2Composer {
   private texAlbedo: WebGLTexture | null = null;
   private texNormal: WebGLTexture | null = null;
   private texShadow: WebGLTexture | null = null;
+  private texAlbedoW = 0;
+  private texAlbedoH = 0;
+  private texNormalW = 0;
+  private texNormalH = 0;
+  private texShadowW = 0;
+  private texShadowH = 0;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
 
   private posRadBuf = new Float32Array(12 * 4);
@@ -802,17 +808,35 @@ export class WebGL2Composer {
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texAlbedo);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, albedoCanvas);
+    if (this.texAlbedoW !== albedoCanvas.width || this.texAlbedoH !== albedoCanvas.height) {
+      this.texAlbedoW = albedoCanvas.width;
+      this.texAlbedoH = albedoCanvas.height;
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, albedoCanvas);
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, albedoCanvas);
+    }
     gl.uniform1i(this.uniforms.uAlbedo, 0);
 
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.texNormal);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, normalCanvas);
+    if (this.texNormalW !== normalCanvas.width || this.texNormalH !== normalCanvas.height) {
+      this.texNormalW = normalCanvas.width;
+      this.texNormalH = normalCanvas.height;
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, normalCanvas);
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, normalCanvas);
+    }
     gl.uniform1i(this.uniforms.uNormalWet, 1);
 
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.texShadow);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, shadowCanvas);
+    if (this.texShadowW !== shadowCanvas.width || this.texShadowH !== shadowCanvas.height) {
+      this.texShadowW = shadowCanvas.width;
+      this.texShadowH = shadowCanvas.height;
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, shadowCanvas);
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, shadowCanvas);
+    }
     gl.uniform1i(this.uniforms.uShadow, 2);
 
     gl.uniform2f(this.uniforms.uResolution, u.width, u.height);

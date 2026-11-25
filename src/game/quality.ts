@@ -1,5 +1,5 @@
 // 3-tier graphics quality + dynamic framerate governor (desktop 60fps + mobile scaling)
-import { hydratePrefAsync, safePrefGet, safePrefSet } from './xhsBridge';
+import { hydratePrefAsync, isMiniToolEnv, safePrefGet, safePrefSet } from './xhsBridge';
 
 export type QualityTier = 0 | 1 | 2; // 0 = 流畅 Smooth, 1 = 均衡 Balanced, 2 = 高 High
 export type ViewScaleLevel = 0 | 1 | 2 | 3; // 0 = 近景, 1 = 标准(默认更广), 2 = 广阔, 3 = 超广
@@ -45,9 +45,9 @@ export const QUALITY_PRESETS: Record<QualityTier, QualityPreset> = {
     tier: 1,
     label: '均衡',
     maxDpr: 1.5,
-    lightScale: 0.72,
-    particleScale: 0.75,
-    rainScale: 0.7,
+    lightScale: 0.8,
+    particleScale: 0.72,
+    rainScale: 0.68,
     fogLayers: 2,
     penumbraSamples: 3,
     puddleReflections: true,
@@ -83,7 +83,8 @@ function detectInitialViewScale(): ViewScaleLevel {
   } catch {
     // ignore
   }
-  return 1;
+  // 默认启用“超广”视野，呈现更开阔的暗林全局环境与安全屋全貌
+  return 3;
 }
 
 function hasForcedUrlQuality(): boolean {
@@ -107,10 +108,18 @@ function detectInitialTier(): QualityTier {
     if (saved === '0' || saved === '1' || saved === '2') {
       return Number(saved) as QualityTier;
     }
+    if (typeof window !== 'undefined') {
+      const coarse = window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window;
+      const smallScreen = Math.min(window.innerWidth || 1280, window.innerHeight || 720) <= 540;
+      if (coarse || smallScreen || isMiniToolEnv()) {
+        // 手机端默认启用专门调优的“均衡”档（3-tap 软阴影 + 0.8x 光照缓冲 + 1.5x 锐利主画布），兼顾高帧率与清晰度
+        return 1;
+      }
+    }
   } catch {
     // ignore
   }
-  // 默认始终开启高画质（保证清晰度与完整光影细节）
+  // 桌面端默认开启高画质（保证完整光影细节）
   return 2;
 }
 

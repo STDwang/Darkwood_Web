@@ -301,33 +301,52 @@ export function drawHauntsOverlay(
 }
 
 /**
- * 跳舞女幽灵（俯视程序化剪影）：喇叭裙摆随旋转离心甩开、长发向旋转反方向甩出、一臂高举一臂外展；
- * 灰白偏青半透明，先画一层滞后相位的偏青重影（轻微色差/残影），再画本体；边缘噪点溶解。
+ * 跳舞新娘幽灵（俯视程序化剪影）：华尔兹+芭蕾顿挫旋身、拖曳幽灵新娘头纱、枯萎花冠、
+ * 非对称芭蕾手位与反折手腕；灰白偏青半透明，先画滞后冷青与极轻暗红双色差残影，再画本体；边缘噪点溶解。
  */
 function drawDanceGhost(ctx: CanvasRenderingContext2D, g: DanceGhostState, time: number) {
   const dissolving = g.state === 'dispel';
   // 噪点溶解：整体透明度按 18Hz 噪声轻微闪烁
   const flick = 0.82 + 0.18 * hash1(Math.floor(time * 18) + g.seed);
   const base = clamp(g.alpha * flick, 0, 1);
-  const swayX = Math.sin(g.sway) * 5;
-  const swayY = Math.cos(g.sway * 0.7) * 3;
+
+  // 4拍芭蕾/华尔兹律动相位（急旋 → 骤停定格颤栗 → 反向滑步）
+  const phrase = (time * 0.38 + g.seed * 0.13) % 1;
+  let spinMod = g.spin;
+  let holdPose = 0;
+  if (phrase < 0.45) {
+    const u = phrase / 0.45;
+    spinMod = g.spin + Math.sin(u * Math.PI) * 0.65;
+  } else if (phrase < 0.62) {
+    const u = (phrase - 0.45) / 0.17;
+    holdPose = Math.sin(u * Math.PI);
+    spinMod = g.spin + Math.sin(time * 32 + g.seed) * 0.06 * holdPose;
+  } else {
+    const u = (phrase - 0.62) / 0.38;
+    spinMod = g.spin - Math.sin(u * Math.PI) * 0.45;
+  }
+
+  const swayX = Math.sin(g.sway) * 6.2;
+  const swayY = Math.cos(g.sway * 0.72) * 3.6;
   const x = g.x + swayX;
   const y = g.y + swayY;
 
-  // 偏青重影（滞后 0.45rad，右偏 1.6px）
-  danceBody(ctx, x + 1.6, y + 0.4, g.spin - 0.45, g.sway, time, base * 0.3, true);
+  // 滞后暗红微色差残影（左偏 1.3px，增添新娘惨死诡异感）
+  danceBody(ctx, x - 1.3, y - 0.3, spinMod - 0.24, g.sway, time, base * 0.18, 'crimson', holdPose);
+  // 滞后冷青重影（滞后 0.52rad，右偏 1.8px）
+  danceBody(ctx, x + 1.8, y + 0.5, spinMod - 0.52, g.sway, time, base * 0.34, 'cyan', holdPose);
   // 本体
-  danceBody(ctx, x, y, g.spin, g.sway, time, base, false);
+  danceBody(ctx, x, y, spinMod, g.sway, time, base, 'main', holdPose);
 
   // 边缘噪点：14Hz 跳变的细碎颗粒；溶解时向外飘散
-  const spread = dissolving ? 1 + (1 - g.fade) * 1.6 : 1;
+  const spread = dissolving ? 1 + (1 - g.fade) * 1.7 : 1;
   const frame = Math.floor(time * 14);
   ctx.globalAlpha = clamp(base * 0.55, 0, 1);
   ctx.fillStyle = 'rgb(206, 218, 220)';
   ctx.beginPath();
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 16; i++) {
     const ha = hash1(frame * 3.1 + i * 7.7 + g.seed) * Math.PI * 2;
-    const hr = (10 + hash1(frame * 1.7 + i * 3.3 + g.seed) * 13) * spread;
+    const hr = (11 + hash1(frame * 1.7 + i * 3.3 + g.seed) * 15) * spread;
     const px = x + Math.cos(ha) * hr;
     const py = y + Math.sin(ha) * hr;
     ctx.rect(px, py, 1.3, 1.3);
@@ -344,75 +363,117 @@ function danceBody(
   sway: number,
   time: number,
   alpha: number,
-  echo: boolean
+  layer: 'main' | 'cyan' | 'crimson',
+  holdPose: number
 ) {
   if (alpha <= 0.002) return;
+  const isMain = layer === 'main';
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(spin);
-  const flare = 0.55 + 0.45 * Math.sin(sway * 1.3);
+  const flare = 0.45 + 0.55 * Math.sin(sway * 1.35) * (1 - holdPose * 0.55);
 
-  // 裙摆：14 点波浪轮廓，离心甩开
-  ctx.globalAlpha = alpha * 0.36;
-  ctx.fillStyle = echo ? 'rgb(132, 180, 194)' : 'rgb(166, 184, 188)';
+  // 拖曳新娘幽灵长头纱（随旋转向后弧形甩开）
+  ctx.globalAlpha = alpha * (isMain ? 0.28 : 0.2);
+  ctx.fillStyle =
+    layer === 'crimson' ? 'rgb(168, 72, 76)' : layer === 'cyan' ? 'rgb(122, 178, 194)' : 'rgb(188, 206, 210)';
   ctx.beginPath();
-  for (let k = 0; k < 14; k++) {
-    const ang = (k / 14) * Math.PI * 2;
-    const r = 11.5 + flare * 5 + Math.sin(ang * 3 + time * 4.2) * 2.2 + Math.sin(ang * 5 - time * 2.6) * 1.1;
+  const veilL = 18 + flare * 10;
+  ctx.moveTo(-1, -4);
+  ctx.quadraticCurveTo(-veilL * 0.55, -11 - Math.sin(time * 4.5) * 3, -veilL, -2 + Math.cos(time * 5.2) * 2.5);
+  ctx.lineTo(-veilL * 0.84, 2);
+  ctx.lineTo(-veilL * 0.94, 6 + Math.sin(time * 4.8) * 2.2);
+  ctx.quadraticCurveTo(-veilL * 0.48, 10, -1, 4);
+  ctx.closePath();
+  ctx.fill();
+
+  // 破损蕾丝婚纱裙摆：18 点锯齿波浪轮廓，离心甩开
+  ctx.globalAlpha = alpha * 0.38;
+  ctx.fillStyle =
+    layer === 'crimson' ? 'rgb(154, 64, 68)' : layer === 'cyan' ? 'rgb(132, 180, 194)' : 'rgb(172, 190, 194)';
+  ctx.beginPath();
+  for (let k = 0; k < 18; k++) {
+    const ang = (k / 18) * Math.PI * 2;
+    const lace = (k & 1) === 0 ? 1.4 : -1.1;
+    const r = 12.2 + flare * 5.4 + lace + Math.sin(ang * 3 + time * 4.6) * 2.2 + Math.sin(ang * 5 - time * 2.8) * 1.1;
     const px = Math.cos(ang) * r;
-    const py = Math.sin(ang) * r * 0.92;
+    const py = Math.sin(ang) * r * 0.94;
     if (k === 0) ctx.moveTo(px, py);
     else ctx.lineTo(px, py);
   }
   ctx.closePath();
   ctx.fill();
 
-  if (!echo) {
-    // 衬裙内层
-    ctx.globalAlpha = alpha * 0.46;
-    ctx.fillStyle = 'rgb(194, 206, 208)';
+  if (isMain) {
+    // 衬裙内层 + 离心褶皱线
+    ctx.globalAlpha = alpha * 0.44;
+    ctx.fillStyle = 'rgb(196, 210, 212)';
     ctx.beginPath();
-    ctx.ellipse(0, 0, 8, 7, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 0, 8.2, 7.2, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // 手臂：一臂高举、一臂外展（随摇摆起伏）
-    const arm = Math.sin(sway) * 2;
-    ctx.globalAlpha = alpha * 0.55;
-    ctx.strokeStyle = 'rgb(200, 212, 214)';
-    ctx.lineWidth = 1.5;
+    // 专业非对称芭蕾舞臂（一臂高举成弧、一臂优雅外展，手腕诡异反折）
+    const arm = Math.sin(sway) * 2.6;
+    ctx.globalAlpha = alpha * 0.62;
+    ctx.strokeStyle = 'rgb(206, 218, 220)';
+    ctx.lineWidth = 1.6;
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(0, -4);
-    ctx.quadraticCurveTo(6, -10 - arm, 13, -7 - arm);
-    ctx.moveTo(0, 4);
-    ctx.quadraticCurveTo(-5, 9 + arm, -11, 12 + arm);
+    // 高举圆弧臂
+    ctx.moveTo(0.5, -4.5);
+    ctx.lineTo(7.5, -10.5 - arm * 0.6);
+    ctx.lineTo(13.5, -5.5 - arm);
+    // 外展反折臂
+    ctx.moveTo(0.5, 4.5);
+    ctx.lineTo(-4.5, 11.2 + arm * 0.5);
+    ctx.lineTo(-12.5, 14.5 + arm);
+    ctx.stroke();
+
+    // 枯萎花冠暗影环
+    ctx.globalAlpha = alpha * 0.52;
+    ctx.strokeStyle = 'rgb(74, 48, 52)';
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.arc(0.8, 0, 4.7, -Math.PI * 0.65, Math.PI * 0.65);
     ctx.stroke();
   }
 
-  // 长发：向旋转反方向甩出 6 缕
-  ctx.globalAlpha = alpha * (echo ? 0.5 : 0.62);
-  ctx.strokeStyle = echo ? 'rgb(96, 132, 142)' : 'rgb(74, 88, 94)';
+  // 长发：向旋转反方向甩出 7 缕
+  ctx.globalAlpha = alpha * (isMain ? 0.64 : 0.45);
+  ctx.strokeStyle =
+    layer === 'crimson' ? 'rgb(112, 46, 52)' : layer === 'cyan' ? 'rgb(96, 132, 142)' : 'rgb(64, 78, 84)';
   ctx.lineWidth = 1.3;
   ctx.beginPath();
-  for (let s = 0; s < 6; s++) {
-    const a = Math.PI * 0.82 + s * 0.13 + Math.sin(time * 3 + s) * 0.12;
-    const len = 12 + (s % 3) * 3 + flare * 5;
+  for (let s = 0; s < 7; s++) {
+    const a = Math.PI * 0.78 + s * 0.13 + Math.sin(time * 3.4 + s) * 0.12;
+    const len = 12.5 + (s % 3) * 3.2 + flare * 5.2;
     ctx.moveTo(1, 0);
     ctx.quadraticCurveTo(
-      1 + Math.cos(a - 0.45) * len * 0.55,
-      Math.sin(a - 0.45) * len * 0.55,
+      1 + Math.cos(a - 0.48) * len * 0.55,
+      Math.sin(a - 0.48) * len * 0.55,
       1 + Math.cos(a) * len,
       Math.sin(a) * len
     );
   }
   ctx.stroke();
 
-  // 头
-  ctx.globalAlpha = alpha * (echo ? 0.5 : 0.78);
-  ctx.fillStyle = echo ? 'rgb(150, 192, 204)' : 'rgb(208, 218, 220)';
+  // 头（骤停定格时颈部微歪，露出两点空洞幽暗眼窝）
+  ctx.globalAlpha = alpha * (isMain ? 0.8 : 0.48);
+  ctx.fillStyle =
+    layer === 'crimson' ? 'rgb(174, 96, 98)' : layer === 'cyan' ? 'rgb(150, 192, 204)' : 'rgb(210, 220, 222)';
   ctx.beginPath();
-  ctx.arc(1, 0, 4.1, 0, Math.PI * 2);
+  ctx.arc(1.2, 0, 4.1, 0, Math.PI * 2);
   ctx.fill();
+
+  if (isMain && holdPose > 0.25) {
+    ctx.globalAlpha = alpha * holdPose * 0.75;
+    ctx.fillStyle = 'rgb(18, 22, 24)';
+    ctx.beginPath();
+    ctx.arc(3.3, -1.2, 0.75, 0, Math.PI * 2);
+    ctx.arc(3.3, 1.2, 0.75, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   ctx.restore();
 }

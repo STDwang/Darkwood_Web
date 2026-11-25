@@ -19,8 +19,8 @@ const HALF = WORLD_SIZE / 2;
 const VIEW_HALF = 560;
 /** 世界墨图烘焙精度：每像素 4 世界单位（650×650 离屏画布） */
 const BAKE_SCALE = 4;
-/** 约 12Hz 重绘 */
-const DRAW_INTERVAL_MS = 1000 / 12;
+/** 约 9Hz 节流重绘（静止或弹窗态自动跳过，兼顾流畅度与手机省电） */
+const DRAW_INTERVAL_MS = 110;
 /** 昼夜分段（仅用于夜色压暗的装饰插值，与 engine.ts 90s 昼 / 25s 黄昏 / 75s 夜 对齐） */
 const DAY_END = 90 / 190;
 const DUSK_END = 115 / 190;
@@ -135,10 +135,15 @@ function drawClipped(
   );
 }
 
-/** 烘焙世界墨图（每个世界一次）：淡褐道路、墨点簇树木、灰石、断墙；不含庇护所（动态绘制小屋图标）、不含任何敌人 */
+const worldInkCache = new WeakMap<WorldData, HTMLCanvasElement>();
+
+/** 烘焙世界墨图（按 WorldData 弱引用缓存，右上角小地图与全屏探索大地图零开销共享同一张墨图） */
 function bakeWorldInk(world: WorldData): HTMLCanvasElement {
+  const cached = worldInkCache.get(world);
+  if (cached) return cached;
   const n = WORLD_SIZE / BAKE_SCALE;
   const c = makeCanvas(n, n);
+  worldInkCache.set(world, c);
   const ctx = c.getContext('2d');
   if (!ctx) return c;
   const rnd = makeRng((world.seed || 19847) * 7 + 3);
@@ -555,6 +560,11 @@ export default function Minimap({ runtimeRef, exploreRef, className }: MinimapPr
     let nightAmt = -1;
     let raf = 0;
     let last = 0;
+    let lastPx = NaN;
+    let lastPy = NaN;
+    let lastAng = NaN;
+    let lastNight = NaN;
+    let lastDiscCount = -1;
 
     const syncFog = (st: MinimapExploreState) => {
       if (!fogCtx || !fogImg) return;
@@ -595,22 +605,30 @@ export default function Minimap({ runtimeRef, exploreRef, className }: MinimapPr
         inkWorld = world;
       }
 
+      // 非游玩态（如弹窗 hold 暂停态）若已完成首次绘制则直接休眠跳过，释放手机主线程
+      if (eng.mode !== 'play' && !Number.isNaN(lastPx)) {
+        return;
+      }
+
       const phase = eng.phase;
       if (eng.mode === 'play' || eng.mode === 'hold') {
         const revealR = phase === 'night' ? 170 : phase === 'dusk' ? 215 : 255;
         revealAt(st, p.x, p.y, revealR);
       }
-      if (st.dirty || fogStale) syncFog(st);
+      const hadDirtyFog = st.dirty || fogStale;
+      if (hadDirtyFog) syncFog(st);
 
-      // 2. 尺寸 / dpr 变化才重新烘焙底纸
+      // 2. 尺寸 / dpr 变化才重新烘焙底纸（手机端 DPR 控制在 <= 1.5）
       const size = canvas.clientWidth;
       if (size < 8) return;
-      const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      const dpr = Math.min(eng.isTouchUi ? 1.5 : 2, Math.max(1, window.devicePixelRatio || 1));
+      let resized = false;
       if (!paper || size !== cssSize || paper.dpr !== dpr) {
         cssSize = size;
         paper = bakePaper(size, dpr);
         canvas.width = paper.size;
         canvas.height = paper.size;
+        resized = true;
       }
 
       // 3. 夜色压暗目标值（黄昏渐暗、夜晚最暗，破晓前 10% 回亮），指数平滑
@@ -623,6 +641,24 @@ export default function Minimap({ runtimeRef, exploreRef, className }: MinimapPr
         target = np > 0.9 ? 0.5 - (np - 0.9) * 3.2 : 0.5;
       }
       nightAmt = nightAmt < 0 ? target : nightAmt + (target - nightAmt) * 0.12;
+
+      // 4. 静止零重绘判据：位移、朝向、迷雾、地标发现数与夜色均无明显变化时跳过 Canvas 合成
+      const discCount = eng.discoveredZones ? eng.discoveredZones.size : 0;
+      if (
+        !resized &&
+        !hadDirtyFog &&
+        Math.hypot(p.x - lastPx, p.y - lastPy) < 1.2 &&
+        Math.abs(p.angle - lastAng) < 0.025 &&
+        Math.abs(nightAmt - lastNight) < 0.006 &&
+        discCount === lastDiscCount
+      ) {
+        return;
+      }
+      lastPx = p.x;
+      lastPy = p.y;
+      lastAng = p.angle;
+      lastNight = nightAmt;
+      lastDiscCount = discCount;
 
       draw(st, eng.discoveredZones, p.x, p.y, p.angle);
     };
@@ -838,19 +874,22 @@ export function WorldMapView({
     let bakedWorld: WorldData | null = null;
     let ink: HTMLCanvasElement | null = null;
     let fog: HTMLCanvasElement | null = null;
+    let fogImg: ImageData | null = null;
+    let fogUploaded = false;
     let layer: HTMLCanvasElement | null = null;
 
     const draw = (now: number) => {
       raf = window.requestAnimationFrame(draw);
-      if (now - last < 120) return;
+      // 大地图打开期间世界处于暂停静止态，仅以 ~4Hz 极低频刷新中继脉冲，且复用迷雾缓冲零对象分配
+      if (last > 0 && now - last < 250) return;
       last = now;
 
       const engine = runtimeRef.current?.engine;
       if (!engine || !engine.world) return;
       const world = engine.world;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = Math.min(window.devicePixelRatio || 1, engine.isTouchUi ? 1.5 : 2);
       const cssW = Math.max(200, Math.round(canvas.clientWidth || 460));
-      const cssH = Math.max(200, Math.round(canvas.clientHeight || 320));
+      const cssH = Math.max(160, Math.round(canvas.clientHeight || 320));
       const W = Math.round(cssW * dpr);
       const H = Math.round(cssH * dpr);
       if (canvas.width !== W || canvas.height !== H) {
@@ -866,6 +905,7 @@ export function WorldMapView({
         st.grid.fill(0);
         revealAt(st, HIDEOUT_RECT.x + HIDEOUT_RECT.w * 0.5, HIDEOUT_RECT.y + HIDEOUT_RECT.h * 0.5, 420);
         st.dirty = true;
+        fogUploaded = false;
       }
       const px = engine.player.x;
       const py = engine.player.y;
@@ -875,16 +915,31 @@ export function WorldMapView({
         bakedWorld = world;
         ink = bakeWorldInk(world);
       }
-      if (!fog) fog = makeCanvas(GRID, GRID);
-      const fctx = fog.getContext('2d');
-      if (fctx) {
-        const img = fctx.createImageData(GRID, GRID);
-        const data = img.data;
-        const g = st.grid;
-        for (let i = 0; i < g.length; i++) {
-          data[i * 4 + 3] = g[i];
+      if (!fog) {
+        fog = makeCanvas(GRID, GRID);
+        fogUploaded = false;
+      }
+      if (!fogUploaded || st.dirty) {
+        const fctx = fog.getContext('2d');
+        if (fctx) {
+          if (!fogImg) {
+            fogImg = fctx.createImageData(GRID, GRID);
+            const d = fogImg.data;
+            for (let i = 0; i < GRID * GRID; i++) {
+              const o = i * 4;
+              d[o] = 255;
+              d[o + 1] = 255;
+              d[o + 2] = 255;
+            }
+          }
+          const data = fogImg.data;
+          const g = st.grid;
+          for (let i = 0; i < g.length; i++) {
+            data[i * 4 + 3] = g[i];
+          }
+          fctx.putImageData(fogImg, 0, 0);
+          fogUploaded = true;
         }
-        fctx.putImageData(img, 0, 0);
       }
 
       const viewSpan = Math.min(WORLD_SIZE, 4400);

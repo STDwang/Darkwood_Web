@@ -37,6 +37,9 @@ import {
   ActiveFlare,
   BarricadeSlot,
   BearTrap,
+  BloodTideBlob,
+  BloodTideEye,
+  BloodTideState,
   Crow,
   CrowFlock,
   DecalEvent,
@@ -224,6 +227,9 @@ export interface PlayerState {
   pose: PlayerPose;
 }
 
+const EMPTY_TOASTS: HudSnapshot['toasts'] = [];
+const EMPTY_GAINS: NonNullable<HudSnapshot['resourceGains']> = [];
+
 export class GameEngine {
   /** 渲染层共用的动作节奏常量（只读，单源） */
   static readonly HAMMER_HIT_FRACS = HAMMER_HIT_FRACS;
@@ -311,6 +317,11 @@ export class GameEngine {
   touchAimActive = false;
   touchSprint = false;
   touchInteract = false;
+  /** 手机端右侧攻击键当前是否处于按住状态（与桌面鼠标隔离，防多指合成事件覆盖） */
+  touchAttackHeld = false;
+  /** 攻击预输入缓冲计时器（后摇/闪避收尾期间点击攻击不丢指令，冷却一结束立即触发） */
+  private attackBufferTimer = 0;
+  private attackBufferHeavy = false;
   /** 是否处于手机/触控交互模式（由 App 层同步，用于交互徽章去 E 键帽与点击直触交互） */
   isTouchUi = false;
 
@@ -345,6 +356,22 @@ export class GameEngine {
   private nightSporeTick = 0;
   private nightKnockQueue: number[] = [];
   private lastNightEventKind = -1;
+  /** 低血量/夜外被追逐危机与血潮袭击状态（单源真相，渲染只读；独立 RNG 不影响 engine.rng） */
+  bloodTide: BloodTideState = {
+    crisisActive: false,
+    crisisTimer: 0,
+    crisisIntensity: 0,
+    active: false,
+    intensity: 0,
+    duration: 0,
+    blobs: [],
+    eyes: [],
+  };
+  private bloodTideRng = createRng(99371);
+  private bloodLaughCd = 0;
+  private bloodBgmCd = 0;
+  private bloodTerrorCd = 0;
+  private bloodDamageTick = 0;
   /** 内心独白浮字队列（thoughts.ts 推进；渲染只读；自带种子，不消耗 this.rng） */
   thoughts = new ThoughtSystem();
   private crowRng = createRng(19847 ^ 0x2c5a);
@@ -711,6 +738,7 @@ export class GameEngine {
     this.nightSporeTick = 0;
     this.nightKnockQueue = [];
     this.lastNightEventKind = -1;
+    this.resetBloodTide(seed);
     this.draggedFurnitureId = null;
     this.relayInstalled = 0;
     this.endlessMode = false;
@@ -723,6 +751,8 @@ export class GameEngine {
     this.playerSprinting = false;
     this.stopChargeAudio();
     this.resetCrows(seed);
+    this.cachedJournalLen = -1;
+    this.cachedZonesLen = -1;
     this.thoughts.reset(seed);
     this.mode = startPlaying ? 'play' : 'title';
     if (startPlaying) {
@@ -799,6 +829,7 @@ export class GameEngine {
     this.mode = 'play';
     this.nightShadowSurge = 0;
     this.nightFlicker = 1;
+    this.resetBloodTide();
 
     // 震退玩家周围 195px 内的怪物并短暂击晕，防止复活瞬间被围杀
     for (const e of this.enemies) {
@@ -828,6 +859,9 @@ export class GameEngine {
     this.keys.clear();
     this.mouseDownLeft = false;
     this.touchInteract = false;
+    this.touchAttackHeld = false;
+    this.touchAimActive = false;
+    this.attackBufferTimer = 0;
     this.player.isCharging = false;
     this.player.chargeTimer = 0;
     this.stopChargeAudio();
@@ -908,16 +942,17 @@ export class GameEngine {
   }
 
   private spawnEnemyAt(x: number, y: number, kind: EnemyKind, initialStalk = 0) {
+    // 怪物基础移速整体下调 30%（乘以 0.7），使攻防博弈节奏更沉稳清晰
     const spec =
       kind === 'hound'
-        ? { r: 13, hp: 52, speed: 122, damage: 15 }
+        ? { r: 13, hp: 52, speed: 85, damage: 15 }
         : kind === 'banshee'
-        ? { r: 18, hp: 110, speed: 84, damage: 24 }
+        ? { r: 18, hp: 110, speed: 59, damage: 24 }
         : kind === 'dancer'
-        ? { r: 15, hp: 64, speed: 96, damage: 17 }
+        ? { r: 15, hp: 64, speed: 67, damage: 17 }
         : kind === 'chomper'
-        ? { r: 17, hp: 86, speed: 78, damage: 22 }
-        : { r: 15, hp: 72, speed: 92, damage: 18 };
+        ? { r: 17, hp: 86, speed: 55, damage: 22 }
+        : { r: 15, hp: 72, speed: 64, damage: 18 };
 
     this.enemies.push({
       id: this.nextEntityId++,
@@ -995,27 +1030,45 @@ export class GameEngine {
   }
 
   /**
-   * 按下左键开始蓄力（拖拽家具或冷却中禁止进入蓄力）
+   * 按下攻击键/左键开始蓄力（支持预输入缓冲：若处于上一次挥砍后摇或闪避收尾，自动记入缓冲不吞指令）
    */
   beginAttackCharge() {
     if (this.mode !== 'play') return;
-    if (this.draggedFurnitureId) return;
-    // R3：手枪模式左键 = 射击（半自动，每次按下一发；空仓空响）
+    if (this.draggedFurnitureId) {
+      // 手机端紧要关头按攻击键时自动丢下正在拖拽的家具立即迎战
+      if (this.isTouchUi) {
+        this.draggedFurnitureId = null;
+      } else {
+        return;
+      }
+    }
+    // R3：手枪模式 = 射击（半自动，若处于射击冷却则写入短缓冲）
     if (this.equip.mode === 'pistol') {
-      equipFire(this, this.equipHost);
+      if (!equipFire(this, this.equipHost)) {
+        this.attackBufferTimer = 0.22;
+      }
       return;
     }
-    if (equipBlocksMelee(this.equip)) return;
+    if (equipBlocksMelee(this.equip)) {
+      this.attackBufferTimer = 0.24;
+      return;
+    }
     const p = this.player;
-    if (p.swingCd > 0 || p.dodgeTimer > 0 || p.stamina < 16) return;
+    if (p.swingCd > 0 || p.dodgeTimer > 0) {
+      // 处于挥砍冷却或闪避中：写入 0.26s 预输入缓冲，冷却结束瞬间自动接续攻击！
+      this.attackBufferTimer = 0.26;
+      this.attackBufferHeavy = false;
+      return;
+    }
     p.isCharging = true;
     p.chargeTimer = 0;
+    this.attackBufferTimer = 0;
     // 攻击打断限时交互（未结算即无消耗）
     this.cancelAction();
   }
 
   /**
-   * 松开左键：短按 (<0.22s) 触发轻快横扫；长按 (>=0.22s) 爆发蓄力重击
+   * 松开左键/攻击键：短按 (<0.22s) 触发轻快横扫；长按 (>=0.22s) 爆发蓄力重击
    */
   releaseAttackCharge() {
     const p = this.player;
@@ -1074,8 +1127,8 @@ export class GameEngine {
     p.dodgeCd = 0.65;
     p.dodgeDirX = dx;
     p.dodgeDirY = dy;
-    p.vx = dx * 340;
-    p.vy = dy * 340;
+    p.vx = dx * 255;
+    p.vy = dy * 255;
 
     // 爆发尘土/雨地水花粒子、衣料破风声与急退脚步声
     const wet = this.weather.wetness > 0.35 && !isPointInHideout(p.x, p.y);
@@ -1099,30 +1152,37 @@ export class GameEngine {
     }
     if (equipBlocksMelee(this.equip)) return;
     const p = this.player;
-    if (p.swingCd > 0 || p.dodgeTimer > 0 || p.stamina < 16) return;
+    if (p.swingCd > 0 || p.dodgeTimer > 0) {
+      this.attackBufferTimer = 0.24;
+      this.attackBufferHeavy = heavy;
+      return;
+    }
+    // 即使跑动后体力不足 16，仍允许挥出保底应急横扫（仅取消突进与重击加成），彻底杜绝“移动后按攻击没反应”
+    const lowStamina = p.stamina < 16;
+    const actualHeavy = heavy && !lowStamina;
 
     const isAxe = this.inv.weaponTier === 2;
     const baseStamina = isAxe ? 22 : 17;
-    const totalStamina = heavy ? baseStamina + 14 : baseStamina;
+    const totalStamina = actualHeavy ? baseStamina + 14 : baseStamina;
     p.stamina = Math.max(0, p.stamina - totalStamina);
-    p.swingDuration = heavy ? (isAxe ? 0.42 : 0.34) : isAxe ? 0.36 : 0.28;
+    p.swingDuration = actualHeavy ? (isAxe ? 0.42 : 0.34) : isAxe ? 0.36 : 0.28;
     p.swingTimer = p.swingDuration;
-    p.swingCd = heavy ? (isAxe ? 0.62 : 0.52) : isAxe ? 0.54 : 0.44;
+    p.swingCd = (actualHeavy ? (isAxe ? 0.62 : 0.52) : isAxe ? 0.54 : 0.44) + (lowStamina ? 0.08 : 0);
     p.swingDir = -p.swingDir;
     this.cancelAction();
 
-    const lunge = heavy ? 132 : 78;
+    const lunge = lowStamina ? 18 : actualHeavy ? 96 : 56;
     p.vx += Math.cos(p.angle) * lunge;
     p.vy += Math.sin(p.angle) * lunge;
 
-    AudioFX.playChargeSwing(heavy || isAxe);
+    AudioFX.playChargeSwing(actualHeavy || isAxe);
 
-    const reach = (isAxe ? 68 : 56) + (heavy ? 10 : 0);
+    const reach = (isAxe ? 68 : 56) + (actualHeavy ? 10 : 0);
     const arcHalf = isAxe ? 1.05 : 0.92;
     const baseDmg = isAxe ? 48 : 28;
     const baseKb = isAxe ? 265 : 185;
-    const dmg = heavy ? Math.round(baseDmg * 1.85) : baseDmg;
-    const kb = heavy ? Math.round(baseKb * 1.75) : baseKb;
+    const dmg = actualHeavy ? Math.round(baseDmg * 1.85) : baseDmg;
+    const kb = actualHeavy ? Math.round(baseKb * 1.75) : baseKb;
 
     let hitSomething = false;
     for (let i = this.enemies.length - 1; i >= 0; i--) {
@@ -1899,6 +1959,7 @@ export class GameEngine {
     // 8. Enemies & Night Siege
     this.updateEnemies(dt);
     this.updateNightHazards(dt);
+    this.updateBloodTide(dt);
     this.updateDyingEnemies(dt);
 
     // 8b. 乌鸦生态
@@ -1962,10 +2023,13 @@ export class GameEngine {
       time: this.simTime,
     });
 
-    this.hudAccum += dt;
-    if (this.hudAccum >= 0.066) {
-      this.hudAccum = 0;
-      this.emitHud();
+    if (this.mode === 'play') {
+      this.hudAccum += dt;
+      const hudStep = this.isTouchUi ? 0.1 : 0.066;
+      if (this.hudAccum >= hudStep) {
+        this.hudAccum = 0;
+        this.emitHud();
+      }
     }
   }
 
@@ -2430,10 +2494,22 @@ export class GameEngine {
         my = this.touchMoveY;
       }
       wantSprint =
-        this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || this.touchSprint;
+        (this.keys.has('ShiftLeft') ||
+          this.keys.has('ShiftRight') ||
+          (this.touchSprint && !this.touchAttackHeld && !p.isCharging));
       holdInteract = this.keys.has('KeyE') || this.touchInteract;
 
-      if (this.touchAimActive) {
+      if (this.isTouchUi) {
+        // 手机端单摇杆联动：默认由左侧移动摇杆同步驱动角色与手电朝向；
+        // 若右手按住攻击键微滑瞄准（touchAimActive），则优先朝向攻击瞄准方向；松开摇杆后保持最后朝向
+        if (this.touchAimActive && Math.hypot(this.touchAimX, this.touchAimY) > 0.16) {
+          const targetA = Math.atan2(this.touchAimY, this.touchAimX);
+          p.angle = wrapAngle(p.angle + angleDiff(p.angle, targetA) * clamp(dt * 24, 0, 1));
+        } else if (Math.hypot(this.touchMoveX, this.touchMoveY) > 0.08) {
+          const moveA = Math.atan2(this.touchMoveY, this.touchMoveX);
+          p.angle = wrapAngle(p.angle + angleDiff(p.angle, moveA) * clamp(dt * 18, 0, 1));
+        }
+      } else if (this.touchAimActive) {
         if (Math.hypot(this.touchAimX, this.touchAimY) > 0.15) {
           p.angle = Math.atan2(this.touchAimY, this.touchAimX);
         }
@@ -2443,9 +2519,39 @@ export class GameEngine {
         p.angle = Math.atan2(worldMouseY - p.y, worldMouseX - p.x);
       }
 
-      // 蓄力计时推进（左键持续按住时累计，上限 0.65s）
+      const holdingAttack = this.mouseDownLeft || this.touchAttackHeld;
+
+      // 攻击预输入缓冲与长按连续响应：当上一次挥砍后摇/闪避结束时，若仍有缓冲或手指仍按住攻击键，立即无缝衔接！
+      if (this.attackBufferTimer > 0) {
+        this.attackBufferTimer = Math.max(0, this.attackBufferTimer - dt);
+      }
+      if (!p.isCharging && p.swingCd <= 0 && p.dodgeTimer <= 0 && !draggedFurn) {
+        if (this.equip.mode === 'pistol') {
+          if (holdingAttack || this.attackBufferTimer > 0) {
+            if (equipFire(this, this.equipHost)) {
+              this.attackBufferTimer = 0;
+            }
+          }
+        } else if (!equipBlocksMelee(this.equip)) {
+          if (holdingAttack) {
+            // 手指仍按住攻击键：立刻开始新一轮蓄力！
+            p.isCharging = true;
+            p.chargeTimer = 0;
+            this.attackBufferTimer = 0;
+            this.cancelAction();
+          } else if (this.attackBufferTimer > 0) {
+            // 之前快速点按了一下但当时在后摇：后摇结束瞬间立刻补出这一刀！
+            const bufferedHeavy = this.attackBufferHeavy;
+            this.attackBufferTimer = 0;
+            this.attackBufferHeavy = false;
+            this.triggerAttack(bufferedHeavy);
+          }
+        }
+      }
+
+      // 蓄力计时推进（左键或手机攻击键持续按住时累计，上限 0.65s）
       if (p.isCharging) {
-        if (!this.mouseDownLeft || draggedFurn || p.dodgeTimer > 0) {
+        if (!holdingAttack || draggedFurn || p.dodgeTimer > 0) {
           this.releaseAttackCharge();
         } else {
           const before = p.chargeTimer;
@@ -2495,8 +2601,8 @@ export class GameEngine {
       p.stamina = Math.min(p.maxStamina, p.stamina + (isMoving ? 15 : 24) * dt);
     }
 
-    // Single Budget Ledger for player speed
-    const baseSpeed = 128;
+    // Single Budget Ledger for player speed（整体下调 30%：128 * 0.7 = 90）
+    const baseSpeed = 90;
     const sprintMul = sprinting ? 1.52 : 1.0;
     const searchMul = acting ? 0.12 : 1.0; // 限时交互：定身，仅允许极慢挪动
     const woundMul = p.hp < 25 ? 0.86 : 1.0;
@@ -2507,8 +2613,8 @@ export class GameEngine {
 
     if (p.dodgeTimer > 0) {
       // 闪避急退期间维持高爆发速度并洒出微粒
-      p.vx = p.dodgeDirX * 340;
-      p.vy = p.dodgeDirY * 340;
+      p.vx = p.dodgeDirX * 255;
+      p.vy = p.dodgeDirY * 255;
       if (this.rng() < 0.55 * Quality.preset.particleScale) {
         const pt = this.particles.alloc();
         pt.active = true;
@@ -3382,6 +3488,243 @@ export class GameEngine {
       this.think('别开门。外面不是人。');
       if (this.enemies.length < Math.min(10, 4 + this.day * 2)) {
         this.spawnEnemyAt((this.nightRng() - 0.5) * 90, HIDEOUT_RECT.y + HIDEOUT_RECT.h + 150, 'stalker', 1.8);
+      }
+    }
+  }
+
+  /** 重置低血量/夜外追逐危机与血潮袭击状态 */
+  private resetBloodTide(seed = 19847) {
+    this.bloodTideRng = createRng(((seed * 2246822519) ^ 0x1842b) >>> 0);
+    const bt = this.bloodTide;
+    bt.crisisActive = false;
+    bt.crisisTimer = 0;
+    bt.crisisIntensity = 0;
+    bt.active = false;
+    bt.intensity = 0;
+    bt.duration = 0;
+    bt.blobs.length = 0;
+    bt.eyes.length = 0;
+    this.bloodLaughCd = 0;
+    this.bloodBgmCd = 0;
+    this.bloodTerrorCd = 0;
+    this.bloodDamageTick = 0;
+  }
+
+  /** 以玩家脚底为中心生成地面蠕动血色不明物（18 块）与密密麻麻缓慢冒出的红眼（44 只） */
+  private seedBloodTideField(px: number, py: number) {
+    const bt = this.bloodTide;
+    const rng = this.bloodTideRng;
+
+    // 预分配并复用数组，避免重复 GC
+    bt.blobs.length = 0;
+    for (let i = 0; i < 18; i++) {
+      const ring = i < 6 ? 18 + rng() * 34 : i < 12 ? 48 + rng() * 44 : 86 + rng() * 56;
+      const ang = (i / 18) * Math.PI * 2 + (rng() - 0.5) * 0.55;
+      const blob: BloodTideBlob = {
+        x: px + Math.cos(ang) * ring,
+        y: py + Math.sin(ang) * ring,
+        r: (i < 6 ? 24 : 18) + rng() * 19,
+        seed: rng() * 100,
+        wobbleSpeed: 2.2 + rng() * 2.4,
+        spawnDelay: (ring / 145) * 2.6 + rng() * 0.55,
+        growth: 0,
+      };
+      bt.blobs.push(blob);
+    }
+
+    // 44 只红眼：从脚底 16px 处开始，随时间由近及远密密麻麻慢慢冒出
+    bt.eyes.length = 0;
+    for (let i = 0; i < 44; i++) {
+      const norm = i / 43;
+      const rad = 16 + Math.pow(norm, 0.85) * 124 + (rng() - 0.5) * 12;
+      const ang = i * 2.39996 + (rng() - 0.5) * 0.4; // 黄金角螺旋分布，自然密集不重叠
+      const eye: BloodTideEye = {
+        x: px + Math.cos(ang) * rad,
+        y: py + Math.sin(ang) * rad,
+        r: 4.2 + rng() * 4.4,
+        angle: (rng() - 0.5) * 0.55, // 微微倾斜，保持清晰可见的上下翻动视觉方向
+        spawnDelay: 0.25 + norm * 5.8 + rng() * 0.55,
+        open: 0,
+        rollPhase: rng() * Math.PI * 2,
+        rollSpeed: 3.6 + rng() * 3.8,
+        seed: rng() * 200,
+      };
+      bt.eyes.push(eye);
+    }
+  }
+
+  /**
+   * 危机背景音（瘆人女孩笑声）与血潮袭击推进：
+   * 1) 玩家血量见底（<30%）或夜晚在室外被怪物追逐时，触发瘆人女孩笑声 + 惊悚危机背景音乐，并累计危机计时器；
+   * 2) 满 10s 时若玩家血量仍低于 30%，触发血潮袭击：地面蔓延蠕动血色不明物 + 恐怖音效 + 脚底慢慢冒出密密麻麻上下翻动眼球的红眼；
+   * 3) 玩家回血至 >=35% 且脱离追逐时，血潮与危机平滑消退。
+   */
+  private updateBloodTide(dt: number) {
+    const bt = this.bloodTide;
+    const p = this.player;
+
+    if (this.mode !== 'play' || p.hp <= 0) {
+      bt.crisisActive = false;
+      bt.active = false;
+      bt.crisisIntensity = expDecay(bt.crisisIntensity, 0, 4.5, dt);
+      bt.intensity = expDecay(bt.intensity, 0, 4.5, dt);
+      if (bt.intensity < 0.01) {
+        bt.duration = 0;
+        bt.blobs.length = 0;
+        bt.eyes.length = 0;
+      }
+      return;
+    }
+
+    const hpRatio = p.hp / Math.max(1, p.maxHp);
+    const lowHp = hpRatio < 0.3;
+    const safeHp = hpRatio >= 0.35;
+
+    // 夜晚室外被怪物追逐判定
+    let nightOutdoorChased = false;
+    if (this.phase === 'night' && !isPointIndoors(p.x, p.y)) {
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e = this.enemies[i];
+        if (e.state === 'chase' && dist(e.x, e.y, p.x, p.y) < 540) {
+          nightOutdoorChased = true;
+          break;
+        }
+      }
+    }
+
+    const crisisCond = lowHp || nightOutdoorChased;
+    const wasCrisis = bt.crisisActive;
+
+    if (crisisCond) {
+      bt.crisisActive = true;
+      bt.crisisTimer += dt;
+      bt.crisisIntensity = expDecay(bt.crisisIntensity, 1, 2.2, dt);
+
+      // 刚触发危机：立刻响起瘆人诡异女孩笑声 + 惊悚背景音乐
+      if (!wasCrisis) {
+        AudioFX.playCreepyGirlLaugh((this.bloodTideRng() - 0.5) * 1.1, 0.92);
+        AudioFX.playCrisisBgmPhrase(0.8, 0);
+        this.bloodLaughCd = 4.6 + this.bloodTideRng() * 2.8;
+        this.bloodBgmCd = 3.9 + this.bloodTideRng() * 1.1;
+        if (lowHp) {
+          this.think('耳边有小女孩在笑……血越流越多了。');
+        } else {
+          this.think('黑夜里有人跟着我……听见那笑声了吗？');
+        }
+      } else {
+        this.bloodLaughCd -= dt;
+        if (this.bloodLaughCd <= 0) {
+          const pan = (this.bloodTideRng() - 0.5) * 1.5;
+          AudioFX.playCreepyGirlLaugh(pan, bt.active ? 1.0 : 0.85);
+          this.bloodLaughCd = bt.active
+            ? 4.2 + this.bloodTideRng() * 3.0
+            : 5.5 + this.bloodTideRng() * 3.2;
+        }
+        this.bloodBgmCd -= dt;
+        if (this.bloodBgmCd <= 0) {
+          AudioFX.playCrisisBgmPhrase(bt.crisisIntensity, bt.intensity);
+          this.bloodBgmCd = bt.active ? 3.6 + this.bloodTideRng() * 1.0 : 4.2 + this.bloodTideRng() * 1.2;
+        }
+      }
+
+      // 10s 后若血量低于 30%，触发血潮袭击！
+      if (!bt.active && bt.crisisTimer >= 10.0 && lowHp) {
+        bt.active = true;
+        bt.duration = 0;
+        this.seedBloodTideField(p.x, p.y);
+        AudioFX.playBloodTideTerror(1.0, true);
+        AudioFX.playCreepyGirlLaugh(0, 1.0);
+        this.bloodTerrorCd = 2.0;
+        this.bloodDamageTick = 0;
+        this.shake = Math.min(12, this.shake + 4.8);
+        this.pushToast('血潮来袭！地面正在蠕动，脚底浮现出密密麻麻的红眼！', 'danger');
+        this.think('脚下的泥土在翻涌……全都是血红的眼睛……快止血！');
+      }
+    } else {
+      bt.crisisActive = false;
+      bt.crisisTimer = Math.max(0, bt.crisisTimer - dt * 1.6);
+      bt.crisisIntensity = expDecay(bt.crisisIntensity, 0, 1.8, dt);
+    }
+
+    // 血潮袭击解除条件：玩家回血至 >= 35%
+    if (bt.active && safeHp) {
+      bt.active = false;
+      this.pushToast('伤口止住了，脚下的血潮缓缓退入地底……', 'info');
+    }
+
+    // 推进血潮视觉元素（地面蠕动血色不明物 + 脚底慢慢冒出的红眼）
+    if (bt.active) {
+      bt.duration += dt;
+      bt.intensity = expDecay(bt.intensity, 1, 1.6, dt);
+
+      // 血潮恐怖音效周期播放
+      this.bloodTerrorCd -= dt;
+      if (this.bloodTerrorCd <= 0) {
+        AudioFX.playBloodTideTerror(bt.intensity, false);
+        this.bloodTerrorCd = 1.8 + this.bloodTideRng() * 0.9;
+      }
+
+      // 轻微血潮黏滞感与压迫微震（不锁死玩家，允许跑位与使用绷带自救）
+      p.vx *= Math.exp(-1.6 * dt * bt.intensity);
+      p.vy *= Math.exp(-1.6 * dt * bt.intensity);
+      this.shake = Math.max(this.shake, 0.55 * bt.intensity);
+
+      // 血潮持续超过 4s 后施加极缓慢的侵蚀掉血（保留逃生与止血窗口）
+      if (bt.duration > 4.0) {
+        this.bloodDamageTick += dt;
+        if (this.bloodDamageTick >= 2.6) {
+          this.bloodDamageTick = 0;
+          if (p.hp > 4) {
+            this.applyNightHazardDamage(2);
+          }
+        }
+      }
+
+      // 更新地面蠕动血色不明物：远离玩家时在玩家周围重新渗出
+      for (let i = 0; i < bt.blobs.length; i++) {
+        const b = bt.blobs[i];
+        const targetG = bt.duration >= b.spawnDelay ? 1 : 0;
+        b.growth = expDecay(b.growth, targetG, 2.1, dt);
+        const d = dist(b.x, b.y, p.x, p.y);
+        if (d > 185) {
+          const ang = this.bloodTideRng() * Math.PI * 2;
+          const nr = 24 + this.bloodTideRng() * 98;
+          b.x = p.x + Math.cos(ang) * nr;
+          b.y = p.y + Math.sin(ang) * nr;
+          b.growth = 0.05;
+        }
+      }
+
+      // 更新密密麻麻红眼：随时间从脚底慢慢睁开，眼球持续上下翻动；远离时在脚边重新冒出
+      for (let i = 0; i < bt.eyes.length; i++) {
+        const eye = bt.eyes[i];
+        const targetOpen = bt.duration >= eye.spawnDelay ? 1 : 0;
+        eye.open = expDecay(eye.open, targetOpen, 2.4, dt);
+        eye.rollPhase += dt * eye.rollSpeed;
+        const d = dist(eye.x, eye.y, p.x, p.y);
+        if (d > 175) {
+          const ang = this.bloodTideRng() * Math.PI * 2;
+          const nr = 18 + this.bloodTideRng() * 112;
+          eye.x = p.x + Math.cos(ang) * nr;
+          eye.y = p.y + Math.sin(ang) * nr;
+          eye.open = 0.02;
+        }
+      }
+    } else if (bt.intensity > 0.008) {
+      // 血潮退去：眼睛慢慢闭合、血团收缩
+      bt.intensity = expDecay(bt.intensity, 0, 2.0, dt);
+      for (let i = 0; i < bt.blobs.length; i++) {
+        bt.blobs[i].growth = expDecay(bt.blobs[i].growth, 0, 2.6, dt);
+      }
+      for (let i = 0; i < bt.eyes.length; i++) {
+        bt.eyes[i].open = expDecay(bt.eyes[i].open, 0, 3.2, dt);
+        bt.eyes[i].rollPhase += dt * bt.eyes[i].rollSpeed * 0.5;
+      }
+      if (bt.intensity <= 0.01) {
+        bt.intensity = 0;
+        bt.duration = 0;
+        bt.blobs.length = 0;
+        bt.eyes.length = 0;
       }
     }
   }
@@ -4748,10 +5091,28 @@ export class GameEngine {
     return `收集信号零件 ${this.relayInstalled}/3 · 探索地标`;
   }
 
+  /** 渲染层专用的零分配当前交互提示只读引用（避免每帧调用 getHudSnapshot 产生对象克隆与 GC） */
+  get activePrompt() {
+    return this.currentPrompt;
+  }
+
+  private cachedJournalLen = -1;
+  private cachedJournalSnap: HudSnapshot['journal'] = [];
+  private cachedZonesLen = -1;
+  private cachedZonesSnap: string[] = [];
+
   getHudSnapshot(): HudSnapshot {
     const chargeRatio = this.player.isCharging
       ? clamp((this.player.chargeTimer - 0.12) / (0.65 - 0.12), 0, 1)
       : 0;
+    if (this.journal.length !== this.cachedJournalLen) {
+      this.cachedJournalLen = this.journal.length;
+      this.cachedJournalSnap = this.journal.map((j) => ({ ...j }));
+    }
+    if (this.discoveredZones.size !== this.cachedZonesLen) {
+      this.cachedZonesLen = this.discoveredZones.size;
+      this.cachedZonesSnap = Array.from(this.discoveredZones);
+    }
     return {
       mode: this.mode,
       day: this.day,
@@ -4776,15 +5137,15 @@ export class GameEngine {
       inv: { ...this.inv },
       activeSlot: this.activeSlot,
       prompt: this.currentPrompt ? { ...this.currentPrompt } : null,
-      toasts: this.toasts.map((t) => ({ ...t })),
-      resourceGains: this.resourceGains.map((g) => ({ ...g })),
+      toasts: this.toasts.length > 0 ? this.toasts.map((t) => ({ ...t })) : EMPTY_TOASTS,
+      resourceGains: this.resourceGains.length > 0 ? this.resourceGains.map((g) => ({ ...g })) : EMPTY_GAINS,
       containersLooted: this.containersLooted,
       totalContainers: this.world.containers.length,
       enemiesDefeated: this.enemiesDefeated,
       essenceCollected: this.essenceCollected,
       dangerLevel: this.dangerLevel,
-      discoveredZones: Array.from(this.discoveredZones),
-      journal: this.journal.map((j) => ({ ...j })),
+      discoveredZones: this.cachedZonesSnap,
+      journal: this.cachedJournalSnap,
       relayParts: this.inv.relayParts,
       relayInstalled: this.relayInstalled,
       relayCollectedZones: this.world.relayNodes.filter((rn) => rn.collected).map((rn) => rn.zone),
