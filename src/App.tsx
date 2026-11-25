@@ -9,10 +9,13 @@ import {
   Play,
   RotateCcw,
   Settings,
+  Share2,
   ShieldAlert,
   SlidersHorizontal,
+  Sparkles,
   Sun,
   Sunset,
+  Trophy,
   Volume2,
   VolumeX,
   X,
@@ -36,14 +39,26 @@ import GameHud from './components/GameHud';
 import { MinimapExploreState, WorldMapView } from './components/Minimap';
 import { AudioFX } from './game/audio';
 import { I18n, Lang } from './game/i18n';
-import { Quality, QualityTier } from './game/quality';
+import { Quality, QualityTier, VIEW_SCALE_PRESETS, ViewScaleLevel } from './game/quality';
 import { GameRuntime } from './game/runtime';
 import { HudSnapshot, ResourceKey, TimePhase, WeatherKind } from './game/types';
 import { Variants } from './game/variants';
 import { CRAFT_RECIPES } from './game/world';
-import { applyXhsWindowMetrics, isMiniToolEnv, setXhsKeepScreenOn } from './game/xhsBridge';
+import {
+  applyXhsWindowMetrics,
+  fetchXhsRankList,
+  getLocalBestScore,
+  hydrateLocalBestScore,
+  isMiniToolEnv,
+  postXhsReviveNote,
+  setXhsKeepScreenOn,
+  shareXhsReviveCard,
+  submitXhsScore,
+  XhsRankListResult,
+  XhsRankPeriod,
+} from './game/xhsBridge';
 
-type LayerId = 'pause' | 'craft' | 'journal' | 'settings' | 'controls' | 'dev' | 'map';
+type LayerId = 'pause' | 'craft' | 'journal' | 'settings' | 'controls' | 'dev' | 'map' | 'rank';
 
 const RESOURCE_META: Array<{ key: ResourceKey; label: string; color: string }> = [
   { key: 'wood', label: '木材', color: '#cca16f' },
@@ -70,9 +85,16 @@ export default function App() {
   const [layers, setLayers] = useState<LayerId[]>([]);
   const [lang, setLang] = useState<Lang>(I18n.lang);
   const [qualityTier, setQualityTier] = useState<QualityTier>(Quality.tier);
+  const [viewScale, setViewScale] = useState<ViewScaleLevel>(Quality.viewScale);
   const [muted, setMuted] = useState<boolean>(AudioFX.isMuted);
   const [variantTick, setVariantTick] = useState(0);
   const [isTouch, setIsTouch] = useState(false);
+  const [rankPeriod, setRankPeriod] = useState<XhsRankPeriod>('all');
+  const [rankLoading, setRankLoading] = useState(false);
+  const [rankData, setRankData] = useState<XhsRankListResult | null>(null);
+  const [reviveBusy, setReviveBusy] = useState(false);
+  const [reviveMsg, setReviveMsg] = useState<string | null>(null);
+  const lastSubmittedModeRef = useRef<string>('title');
   const forceLandscapeRef = useRef(false);
   const isDev = Variants.isDevMode();
 
@@ -99,7 +121,10 @@ export default function App() {
 
   useEffect(() => {
     const u1 = I18n.subscribe(() => setLang(I18n.lang));
-    const u2 = Quality.subscribe(() => setQualityTier(Quality.tier));
+    const u2 = Quality.subscribe(() => {
+      setQualityTier(Quality.tier);
+      setViewScale(Quality.viewScale);
+    });
     const u3 = AudioFX.subscribe(() => setMuted(AudioFX.isMuted));
     const u4 = Variants.subscribe(() => setVariantTick((n) => n + 1));
 
@@ -131,6 +156,7 @@ export default function App() {
     I18n.hydrateFromContainer();
     Quality.hydrateFromContainer();
     AudioFX.hydrateFromContainer();
+    hydrateLocalBestScore();
     window.addEventListener('resize', syncViewportMode);
     window.addEventListener('orientationchange', syncViewportMode);
 
@@ -148,7 +174,77 @@ export default function App() {
   // 游玩态保持屏幕常亮（9.55+），防止黑夜守屋观察动静时手机自动息屏
   useEffect(() => {
     setXhsKeepScreenOn(hud?.mode === 'play');
+    // 进入死亡或黎明胜利结算时，自动提交一次生存积分至小红书排行榜（带去重，避免重复刷接口）
+    const mode = hud?.mode ?? 'title';
+    if ((mode === 'dead' || mode === 'victory') && lastSubmittedModeRef.current !== mode) {
+      const score = runtimeRef.current?.engine.getSurvivalScore() ?? 0;
+      if (score > 0) {
+        submitXhsScore(score).catch(() => {});
+      }
+      setReviveMsg(null);
+    }
+    lastSubmittedModeRef.current = mode;
   }, [hud?.mode]);
+
+  const topLayer = layers[layers.length - 1] ?? null;
+
+  // 打开排行榜弹层或切换周期时查询榜单（内部自带 45s 缓存）
+  useEffect(() => {
+    if (topLayer !== 'rank') return;
+    let alive = true;
+    setRankLoading(true);
+    fetchXhsRankList(rankPeriod)
+      .then((res) => {
+        if (alive) setRankData(res);
+      })
+      .finally(() => {
+        if (alive) setRankLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [topLayer, rankPeriod]);
+
+  const handleReviveByNote = useCallback(async () => {
+    const rt = runtimeRef.current;
+    if (!rt || reviveBusy) return;
+    setReviveBusy(true);
+    setReviveMsg(null);
+    try {
+      const score = rt.engine.getSurvivalScore();
+      const looted = rt.engine.world.containers.filter((c) => c.searched).length;
+      const res = await postXhsReviveNote({
+        day: rt.engine.day,
+        defeated: rt.engine.enemiesDefeated,
+        looted,
+        score,
+      });
+      if (res.ok) {
+        rt.engine.revivePlayer();
+      } else {
+        setReviveMsg(res.message || '未完成发布，暂未触发复活');
+      }
+    } finally {
+      setReviveBusy(false);
+    }
+  }, [reviveBusy]);
+
+  const handleReviveByShare = useCallback(async () => {
+    const rt = runtimeRef.current;
+    if (!rt || reviveBusy) return;
+    setReviveBusy(true);
+    setReviveMsg(null);
+    try {
+      const res = await shareXhsReviveCard();
+      if (res.ok) {
+        rt.engine.revivePlayer();
+      } else {
+        setReviveMsg(res.message || '未完成分享，暂未触发复活');
+      }
+    } finally {
+      setReviveBusy(false);
+    }
+  }, [reviveBusy]);
 
   const syncEngineHold = useCallback((nextLayers: LayerId[]) => {
     const rt = runtimeRef.current;
@@ -485,7 +581,6 @@ export default function App() {
     }
   };
 
-  const topLayer = layers[layers.length - 1] ?? null;
   const t = (key: string, vars?: Record<string, string | number>) => {
     void lang;
     void variantTick;
@@ -641,6 +736,15 @@ export default function App() {
                 >
                   <span className="title-btn__ember" aria-hidden="true" />
                   <span>{t('设置')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => pushLayer('rank')}
+                  className={`title-btn ${lang === 'en' ? 'is-latin' : ''}`}
+                >
+                  <span className="title-btn__ember" aria-hidden="true" />
+                  <span>{t('排行榜')}</span>
                 </button>
               </div>
             </div>
@@ -1156,7 +1260,7 @@ export default function App() {
       {/* UNIFIED LAYER STACK MODALS（类魂游实物载体美术：四角蚀刻雕花 / 渐隐暗金分隔纹 / 严格上下留白不顶边） */}
       {topLayer && (
         <div
-          className="fixed inset-0 z-30 flex items-center justify-center bg-black/72 backdrop-blur-[2px]"
+          className="fixed inset-0 z-[45] flex items-center justify-center bg-black/72 backdrop-blur-[2px]"
           style={{
             paddingLeft: 'max(16px, var(--gl))',
             paddingRight: 'max(16px, var(--gr))',
@@ -1194,6 +1298,7 @@ export default function App() {
                   {topLayer === 'craft' && t('工作台')}
                   {topLayer === 'journal' && t('生存日志')}
                   {topLayer === 'map' && t('探索地图')}
+                  {topLayer === 'rank' && t('生存排行榜')}
                   {topLayer === 'settings' && t('设置')}
                   {topLayer === 'controls' && t('操作说明')}
                   {topLayer === 'dev' && t('开发者 Variants 面板')}
@@ -1245,6 +1350,14 @@ export default function App() {
                   >
                     <Settings className="w-4 h-4 text-[#c4b49a]" />
                     <span>{t('设置')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => pushLayer('rank')}
+                    className="soul-menuitem"
+                  >
+                    <Trophy className="w-4 h-4 text-[#dfb763]" />
+                    <span>{t('生存排行榜')}</span>
                   </button>
                   <button
                     type="button"
@@ -1398,8 +1511,115 @@ export default function App() {
                 </div>
               )}
 
+              {topLayer === 'rank' && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-3 gap-2">
+                    {(
+                      [
+                        ['all', '总榜'],
+                        ['week', '周榜'],
+                        ['day', '日榜'],
+                      ] as Array<[XhsRankPeriod, string]>
+                    ).map(([period, label]) => (
+                      <button
+                        key={period}
+                        type="button"
+                        onClick={() => setRankPeriod(period)}
+                        className={`min-h-[40px] rounded text-xs font-medium border transition-colors ${
+                          rankPeriod === period
+                            ? 'bg-[#b87b3b]/30 border-[#e0b86c] text-[#f6e8c9]'
+                            : 'bg-[#171410] border-[#b8ae9c]/22 text-[#b8ae9c] hover:text-white'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 本人战绩 / 排名概览条 */}
+                  <div className="flex items-center justify-between px-3 py-2 rounded border border-[#c8a468]/30 bg-black/35 text-xs">
+                    <span className="text-[#c7b99c]">我的最佳排名</span>
+                    <span className="font-mono-num text-[#f0dcb4] font-semibold">
+                      {rankLoading
+                        ? '读取中...'
+                        : rankData?.ok
+                        ? rankData.myRank.status === 'EXACT' && rankData.myRank.rank !== null
+                          ? `第 ${rankData.myRank.rank} 名 · ${rankData.myRank.score ?? 0} 分`
+                          : rankData.myRank.status === 'OVER_LIMIT'
+                          ? `500+ 名 · 最高 ${rankData.localBest} 分`
+                          : `暂未上榜 · 本机最高 ${rankData.localBest} 分`
+                        : `本机最高 ${rankData?.localBest ?? getLocalBestScore()} 分`}
+                    </span>
+                  </div>
+
+                  {rankLoading ? (
+                    <div className="py-6 text-center text-xs text-[#a89e8c]">正在同步幽林幸存者名录……</div>
+                  ) : rankData?.ok && rankData.entries.length > 0 ? (
+                    <div className="rounded border border-[#b8ae9c]/20 bg-black/28 overflow-hidden">
+                      {rankData.entries.slice(0, 50).map((item) => (
+                        <div
+                          key={`${item.rank}-${item.nickname}`}
+                          className={`soul-rank-row ${item.rank <= 3 ? 'is-top' : ''}`}
+                        >
+                          <span
+                            className={`font-mono-num font-bold text-center ${
+                              item.rank === 1
+                                ? 'text-[#f2c86b]'
+                                : item.rank === 2
+                                ? 'text-[#cfd6dc]'
+                                : item.rank === 3
+                                ? 'text-[#d49664]'
+                                : 'text-[#8c8272]'
+                            }`}
+                          >
+                            #{item.rank}
+                          </span>
+                          <span className="truncate text-[#e6dcc6]">{item.nickname}</span>
+                          <span className="font-mono-num text-[#d8be8a] font-semibold">{item.score}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="py-5 px-4 text-center space-y-1.5 rounded border border-[#b8ae9c]/18 bg-black/25">
+                      <div className="text-sm text-[#e4d8c0]">
+                        {rankData?.ok
+                          ? '本期暂无人上榜，成为第一位幸存者吧！'
+                          : rankData?.reason === 'unauthorized'
+                          ? '排行榜需在小工具授权昵称后开启'
+                          : '请在小红书小工具内查看全服排行榜'}
+                      </div>
+                      <div className="text-xs text-[#9c9282]">
+                        当前已为你保留本机最高生存积分（{rankData?.localBest ?? getLocalBestScore()} 分）
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {topLayer === 'settings' && (
-                <div className="space-y-5">
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-xs text-[#a8a091] mb-2">{t('视野范围')}</div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {([0, 1, 2, 3] as ViewScaleLevel[]).map((lvl) => {
+                        const active = viewScale === lvl;
+                        return (
+                          <button
+                            key={lvl}
+                            type="button"
+                            onClick={() => Quality.setViewScale(lvl)}
+                            className={`min-h-[44px] rounded text-xs sm:text-sm font-medium border transition-colors whitespace-nowrap ${
+                              active
+                                ? 'bg-[#b87b3b] border-[#d8b463] text-[#110e0a]'
+                                : 'bg-[#1b1915] border-[#b8ae9c]/22 text-[#c7bfb0] hover:text-white'
+                            }`}
+                          >
+                            {VIEW_SCALE_PRESETS[lvl].label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <div>
                     <div className="text-xs text-[#a8a091] mb-2">{t('画质档位')}</div>
                     <div className="grid grid-cols-3 gap-2">
@@ -1587,7 +1807,7 @@ export default function App() {
         </div>
       )}
 
-      {/* VICTORY SUMMARY: 破雾撤离通关结算（类魂游金色火漆封缄手抄信笺） */}
+      {/* VICTORY SUMMARY: 破雾撤离通关结算（类魂游双栏封缄信笺，横屏一屏完整展示零滚动） */}
       {hud?.mode === 'victory' && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs"
@@ -1598,75 +1818,83 @@ export default function App() {
             paddingBottom: 'max(16px, var(--gb))',
           }}
         >
-          <div className="w-full max-w-md max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center space-y-4 carrier-sheet carrier-parchment carrier-parchment--gold">
+          <div className="soul-summary-sheet w-full max-w-md max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center carrier-sheet carrier-parchment carrier-parchment--gold">
             <SoulFrameCorners />
-            <div className="flex justify-center">
-              <Sun className="w-9 h-9 text-[#dfb763]" />
-            </div>
-            <div>
-              <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#f3e6c8]">
-                {t('破雾撤离')}
-              </h2>
-              <p className="mt-2 text-xs sm:text-sm text-[#c5b9a3] leading-relaxed">
-                {t('信号中继电台穿透了黑林浓雾，你在灰白黎明中找到了逃出生天的路。')}
-              </p>
-            </div>
+            <div className="soul-summary-grid space-y-4 sm:space-y-0">
+              <div className="space-y-3">
+                <div className="flex items-center justify-center sm:justify-start gap-2.5">
+                  <Sun className="w-7 h-7 text-[#dfb763] shrink-0" />
+                  <div>
+                    <h2 className="font-display text-xl sm:text-2xl font-semibold tracking-[0.12em] text-[#f3e6c8]">
+                      {t('破雾撤离')}
+                    </h2>
+                    <div className="font-mono-num text-xs text-[#d6be86]">
+                      生存积分 {runtimeRef.current?.engine.getSurvivalScore() ?? 0}
+                    </div>
+                  </div>
+                </div>
+                <SoulDivider />
+                <div className="grid grid-cols-2 gap-2 text-left">
+                  <div className={`px-3 py-2 rounded ${cardCls}`}>
+                    <div className="text-[11px] text-[#9c9485]">{t('存活天数')}</div>
+                    <div className="font-mono-num text-lg font-semibold text-[#f0e6d2]">{hud.day}</div>
+                  </div>
+                  <div className={`px-3 py-2 rounded ${cardCls}`}>
+                    <div className="text-[11px] text-[#9c9485]">{t('搜刮容器')}</div>
+                    <div className="font-mono-num text-lg font-semibold text-[#f0e6d2]">
+                      {hud.containersLooted}/{hud.totalContainers}
+                    </div>
+                  </div>
+                  <div className={`px-3 py-2 rounded ${cardCls}`}>
+                    <div className="text-[11px] text-[#9c9485]">{t('击退怪物')}</div>
+                    <div className="font-mono-num text-lg font-semibold text-[#f0e6d2]">
+                      {hud.enemiesDefeated}
+                    </div>
+                  </div>
+                  <div className={`px-3 py-2 rounded ${cardCls}`}>
+                    <div className="text-[11px] text-[#9c9485]">{t('中继零件')}</div>
+                    <div className="font-mono-num text-lg font-semibold text-[#7ad8c5]">
+                      {hud.relayInstalled}/3
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-            <div className="grid grid-cols-2 gap-3 text-left pt-1">
-              <div className={`p-3 rounded ${cardCls}`}>
-                <div className="text-xs text-[#9c9485]">{t('存活天数')}</div>
-                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
-                  {hud.day}
-                </div>
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => runtimeRef.current?.engine.continueEndless()}
+                  className="soul-menuitem soul-menuitem--primary"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current text-[#e5be72]" />
+                  <span>{t('继续无尽求生')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => pushLayer('rank')}
+                  className="soul-menuitem"
+                >
+                  <Trophy className="w-4 h-4 text-[#dfb763]" />
+                  <span>{t('生存排行榜')}</span>
+                </button>
+                <button type="button" onClick={startSurvival} className="soul-menuitem">
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>{t('再次踏入森林')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runtimeRef.current?.engine.reset(19847, false)}
+                  className="soul-menuitem text-[#b8ae9c]"
+                >
+                  <span>{t('回到标题')}</span>
+                </button>
               </div>
-              <div className={`p-3 rounded ${cardCls}`}>
-                <div className="text-xs text-[#9c9485]">{t('搜刮容器')}</div>
-                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
-                  {hud.containersLooted}/{hud.totalContainers}
-                </div>
-              </div>
-              <div className={`p-3 rounded ${cardCls}`}>
-                <div className="text-xs text-[#9c9485]">{t('击退怪物')}</div>
-                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
-                  {hud.enemiesDefeated}
-                </div>
-              </div>
-              <div className={`p-3 rounded ${cardCls}`}>
-                <div className="text-xs text-[#9c9485]">{t('中继零件')}</div>
-                <div className="font-mono-num text-xl font-semibold text-[#7ad8c5] mt-0.5">
-                  {hud.relayInstalled}/3
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-2 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => runtimeRef.current?.engine.continueEndless()}
-                className="min-h-[46px] px-5 bg-[#b87b3b] hover:bg-[#cc8b46] text-[#110e0a] font-semibold text-sm rounded transition-colors whitespace-nowrap"
-              >
-                {t('继续无尽求生')}
-              </button>
-              <button
-                type="button"
-                onClick={startSurvival}
-                className="min-h-[44px] px-5 border border-[#d8be8a]/40 hover:border-[#d8be8a]/80 text-[#f0e6d2] text-sm rounded transition-colors whitespace-nowrap"
-              >
-                {t('再次踏入森林')}
-              </button>
-              <button
-                type="button"
-                onClick={() => runtimeRef.current?.engine.reset(19847, false)}
-                className="min-h-[44px] px-5 border border-[#b8ae9c]/25 text-[#c7bfb0] hover:text-white text-sm rounded transition-colors whitespace-nowrap"
-              >
-                {t('回到标题')}
-              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* GAME OVER SUMMARY（类魂游血染遗书手稿纸页） */}
+      {/* GAME OVER SUMMARY（类魂游双栏血染遗书：横屏一屏完整展示 + 发笔记/分享复活 + 排行榜） */}
       {hud?.mode === 'dead' && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/82 backdrop-blur-xs"
@@ -1677,57 +1905,105 @@ export default function App() {
             paddingBottom: 'max(16px, var(--gb))',
           }}
         >
-          <div className="w-full max-w-md max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center space-y-4 carrier-sheet carrier-parchment carrier-parchment--blood">
+          <div className="soul-summary-sheet w-full max-w-md max-h-full overflow-y-auto ember-scroll p-5 sm:p-6 text-center carrier-sheet carrier-parchment carrier-parchment--blood">
             <SoulFrameCorners />
-            <div className="flex justify-center">
-              <ShieldAlert className="w-9 h-9 text-[#c95347]" />
-            </div>
-            <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#f0dcd8]">
-              {t('黑暗吞噬了你')}
-            </h2>
+            <div className="soul-summary-grid space-y-4 sm:space-y-0">
+              {/* 左栏：标题 + 积分 + 2×2 战绩 */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-center sm:justify-start gap-2.5">
+                  <ShieldAlert className="w-7 h-7 text-[#c95347] shrink-0" />
+                  <div>
+                    <h2 className="font-display text-xl sm:text-2xl font-semibold tracking-[0.12em] text-[#f0dcd8]">
+                      {t('黑暗吞噬了你')}
+                    </h2>
+                    <div className="font-mono-num text-xs text-[#d6a39a]">
+                      生存积分 {runtimeRef.current?.engine.getSurvivalScore() ?? 0}
+                    </div>
+                  </div>
+                </div>
+                <SoulDivider />
+                <div className="grid grid-cols-2 gap-2 text-left">
+                  <div className={`px-3 py-2 rounded ${cardCls}`}>
+                    <div className="text-[11px] text-[#9c9485]">{t('存活天数')}</div>
+                    <div className="font-mono-num text-lg font-semibold text-[#f0e6d2]">{hud.day}</div>
+                  </div>
+                  <div className={`px-3 py-2 rounded ${cardCls}`}>
+                    <div className="text-[11px] text-[#9c9485]">{t('搜刮容器')}</div>
+                    <div className="font-mono-num text-lg font-semibold text-[#f0e6d2]">
+                      {hud.containersLooted}/{hud.totalContainers}
+                    </div>
+                  </div>
+                  <div className={`px-3 py-2 rounded ${cardCls}`}>
+                    <div className="text-[11px] text-[#9c9485]">{t('击退怪物')}</div>
+                    <div className="font-mono-num text-lg font-semibold text-[#f0e6d2]">
+                      {hud.enemiesDefeated}
+                    </div>
+                  </div>
+                  <div className={`px-3 py-2 rounded ${cardCls}`}>
+                    <div className="text-[11px] text-[#9c9485]">{t('幽光菇收集')}</div>
+                    <div className="font-mono-num text-lg font-semibold text-[#7ad8c5]">
+                      {hud.essenceCollected}
+                    </div>
+                  </div>
+                </div>
+                <div className="text-[11px] text-[#a99a86] leading-snug">
+                  点右上角「···」关注作者支持更新
+                </div>
+              </div>
 
-            <div className="grid grid-cols-2 gap-3 text-left pt-2">
-              <div className={`p-3 rounded ${cardCls}`}>
-                <div className="text-xs text-[#9c9485]">{t('存活天数')}</div>
-                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
-                  {hud.day}
+              {/* 右栏：类魂游复活 & 榜单 & 重开操作栏 */}
+              <div className="flex flex-col gap-2">
+                {(runtimeRef.current?.engine.revivesUsed ?? 0) < (runtimeRef.current?.engine.maxRevives ?? 2) && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={reviveBusy}
+                      onClick={handleReviveByNote}
+                      className="soul-menuitem soul-menuitem--primary"
+                    >
+                      <Sparkles className="w-4 h-4 text-[#f0c774]" />
+                      <span>{reviveBusy ? '唤起中...' : '发笔记原地复活'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={reviveBusy}
+                      onClick={handleReviveByShare}
+                      className="soul-menuitem"
+                    >
+                      <Share2 className="w-4 h-4 text-[#d8b463]" />
+                      <span>{reviveBusy ? '唤起中...' : '分享卡片复活'}</span>
+                    </button>
+                  </>
+                )}
+                {reviveMsg && (
+                  <div className="text-[11px] text-[#e0927c] text-center px-1">{reviveMsg}</div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => pushLayer('rank')}
+                  className="soul-menuitem"
+                >
+                  <Trophy className="w-4 h-4 text-[#dfb763]" />
+                  <span>{t('生存排行榜')}</span>
+                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={startSurvival}
+                    className="soul-menuitem px-2 text-xs"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>{t('再次踏入')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runtimeRef.current?.engine.reset(19847, false)}
+                    className="soul-menuitem px-2 text-xs text-[#b8ae9c]"
+                  >
+                    <span>{t('回到标题')}</span>
+                  </button>
                 </div>
               </div>
-              <div className={`p-3 rounded ${cardCls}`}>
-                <div className="text-xs text-[#9c9485]">{t('搜刮容器')}</div>
-                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
-                  {hud.containersLooted}/{hud.totalContainers}
-                </div>
-              </div>
-              <div className={`p-3 rounded ${cardCls}`}>
-                <div className="text-xs text-[#9c9485]">{t('击退怪物')}</div>
-                <div className="font-mono-num text-xl font-semibold text-[#f0e6d2] mt-0.5">
-                  {hud.enemiesDefeated}
-                </div>
-              </div>
-              <div className={`p-3 rounded ${cardCls}`}>
-                <div className="text-xs text-[#9c9485]">{t('幽光菇收集')}</div>
-                <div className="font-mono-num text-xl font-semibold text-[#7ad8c5] mt-0.5">
-                  {hud.essenceCollected}
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-2 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={startSurvival}
-                className="min-h-[46px] px-5 bg-[#b87b3b] hover:bg-[#cc8b46] text-[#110e0a] font-semibold text-sm rounded transition-colors whitespace-nowrap"
-              >
-                {t('再次踏入森林')}
-              </button>
-              <button
-                type="button"
-                onClick={() => runtimeRef.current?.engine.reset(19847, false)}
-                className="min-h-[44px] px-5 border border-[#b8ae9c]/25 text-[#c7bfb0] hover:text-white text-sm rounded transition-colors whitespace-nowrap"
-              >
-                {t('回到标题')}
-              </button>
             </div>
           </div>
         </div>

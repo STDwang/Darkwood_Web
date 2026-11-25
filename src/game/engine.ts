@@ -318,6 +318,9 @@ export class GameEngine {
   containersLooted = 0;
   enemiesDefeated = 0;
   essenceCollected = 0;
+  /** 本局已复活次数（单局最多复活 2 次） */
+  revivesUsed = 0;
+  readonly maxRevives = 2;
   dangerLevel = 0;
   draggedFurnitureId: string | null = null;
   relayInstalled = 0;
@@ -697,6 +700,7 @@ export class GameEngine {
     this.containersLooted = 0;
     this.enemiesDefeated = 0;
     this.essenceCollected = 0;
+    this.revivesUsed = 0;
     this.dangerLevel = 0;
     this.nightFlicker = 1;
     this.nightShadowSurge = 0;
@@ -768,6 +772,55 @@ export class GameEngine {
     this.mode = 'play';
     this.pushToast('你决定留在幽林深处，继续无尽求生……', 'info');
     this.emitHud();
+  }
+
+  /** 计算当前局综合生存积分（严格控制在 ±1,000,000 以内，用于排行榜提交与结算展示） */
+  getSurvivalScore(): number {
+    const looted = this.world.containers.filter((c) => c.searched).length;
+    const raw =
+      this.day * 1000 +
+      this.enemiesDefeated * 50 +
+      looted * 15 +
+      this.essenceCollected * 25 +
+      this.relayInstalled * 200;
+    return Math.max(0, Math.min(999999, Math.round(raw)));
+  }
+
+  /** 原地余烬复活（用于小红书发笔记/分享复活，每局最多 2 次）：恢复 75% 生命 + 3.5s 无敌帧 + 震退周遭威胁 */
+  revivePlayer(): boolean {
+    if (this.mode !== 'dead' || this.revivesUsed >= this.maxRevives) return false;
+    this.revivesUsed += 1;
+    const p = this.player;
+    p.hp = Math.max(Math.round(p.maxHp * 0.75), 75);
+    p.stamina = p.maxStamina;
+    p.battery = Math.max(p.battery, 35);
+    p.dodgeInvuln = 3.5;
+    p.hitFlash = 0;
+    this.mode = 'play';
+    this.nightShadowSurge = 0;
+    this.nightFlicker = 1;
+
+    // 震退玩家周围 195px 内的怪物并短暂击晕，防止复活瞬间被围杀
+    for (const e of this.enemies) {
+      const d = dist(p.x, p.y, e.x, e.y);
+      if (d < 195) {
+        const ang = Math.atan2(e.y - p.y, e.x - p.x);
+        const push = (195 - d) * 0.85 + 48;
+        e.vx += Math.cos(ang) * push * 5;
+        e.vy += Math.sin(ang) * push * 5;
+        e.windup = 0;
+        e.attackCd = Math.max(e.attackCd, 1.8);
+        e.hitFlash = 0.4;
+      }
+    }
+
+    this.spawnBurst(p.x, p.y, 24, 'spark', '#f0be6a');
+    this.emitRipple(p.x, p.y, 220, 'rgba(240, 190, 106, 0.75)');
+    AudioFX.playRelayChime(true);
+    triggerXhsVibrate('medium');
+    this.pushToast('余烬重燃！你从黑暗中挣脱了回来！', 'loot');
+    this.emitHud();
+    return true;
   }
 
   setMode(next: GameMode) {

@@ -2,6 +2,14 @@
 import { hydratePrefAsync, safePrefGet, safePrefSet } from './xhsBridge';
 
 export type QualityTier = 0 | 1 | 2; // 0 = 流畅 Smooth, 1 = 均衡 Balanced, 2 = 高 High
+export type ViewScaleLevel = 0 | 1 | 2 | 3; // 0 = 近景, 1 = 标准(默认更广), 2 = 广阔, 3 = 超广
+
+export const VIEW_SCALE_PRESETS: Record<ViewScaleLevel, { level: ViewScaleLevel; label: string; factor: number }> = {
+  0: { level: 0, label: '近景', factor: 1.12 },
+  1: { level: 1, label: '标准', factor: 0.94 },
+  2: { level: 2, label: '广阔', factor: 0.82 },
+  3: { level: 3, label: '超广', factor: 0.72 },
+};
 
 export interface QualityPreset {
   tier: QualityTier;
@@ -64,6 +72,19 @@ export const QUALITY_PRESETS: Record<QualityTier, QualityPreset> = {
 };
 
 const STORAGE_KEY = 'blackwood_quality_v3';
+const VIEW_SCALE_KEY = 'blackwood_view_scale_v1';
+
+function detectInitialViewScale(): ViewScaleLevel {
+  try {
+    const saved = safePrefGet(VIEW_SCALE_KEY);
+    if (saved === '0' || saved === '1' || saved === '2' || saved === '3') {
+      return Number(saved) as ViewScaleLevel;
+    }
+  } catch {
+    // ignore
+  }
+  return 1;
+}
 
 function hasForcedUrlQuality(): boolean {
   try {
@@ -104,6 +125,7 @@ function isGovernorEnabled(): boolean {
 }
 
 let currentTier: QualityTier = detectInitialTier();
+let currentViewScale: ViewScaleLevel = detectInitialViewScale();
 let resScale = 1.0;
 let slowFrames = 0;
 let smoothSeconds = 0;
@@ -117,8 +139,23 @@ export const Quality = {
   get preset(): QualityPreset {
     return QUALITY_PRESETS[currentTier];
   },
+  get viewScale(): ViewScaleLevel {
+    return currentViewScale;
+  },
+  get viewZoomFactor(): number {
+    return VIEW_SCALE_PRESETS[currentViewScale].factor;
+  },
   get dynamicScale(): number {
     return resScale;
+  },
+
+  setViewScale(level: ViewScaleLevel, persist = true) {
+    if (level === currentViewScale) return;
+    currentViewScale = level;
+    if (persist) {
+      safePrefSet(VIEW_SCALE_KEY, String(level));
+    }
+    listeners.forEach((fn) => fn());
   },
 
   setTier(tier: QualityTier, persist = true) {
@@ -134,6 +171,11 @@ export const Quality = {
   },
 
   hydrateFromContainer() {
+    hydratePrefAsync(VIEW_SCALE_KEY, (saved) => {
+      if (saved === '0' || saved === '1' || saved === '2' || saved === '3') {
+        this.setViewScale(Number(saved) as ViewScaleLevel, false);
+      }
+    });
     if (hasForcedUrlQuality()) return;
     hydratePrefAsync(STORAGE_KEY, (saved) => {
       if (saved === '0' || saved === '1' || saved === '2') {

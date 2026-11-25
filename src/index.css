@@ -1456,6 +1456,17 @@ html.force-landscape .soul-pause-grid {
 html.force-landscape .soul-pause-grid > .soul-menuitem--primary {
   grid-column: 1 / -1;
 }
+html.force-landscape .soul-summary-sheet {
+  max-width: min(600px, calc(100% - 16px)) !important;
+  padding: 14px 18px !important;
+}
+html.force-landscape .soul-summary-grid {
+  display: grid;
+  grid-template-columns: 1.08fr 0.92fr;
+  gap: 16px;
+  align-items: center;
+  text-align: left;
+}
 html.force-landscape .hud2-bottom {
   grid-template-columns: 1fr auto 1fr;
   grid-template-areas: "vit qb res";
@@ -1754,6 +1765,45 @@ html.force-landscape .hud2-toasts {
   .soul-pause-grid > .soul-menuitem--primary {
     grid-column: 1 / -1;
   }
+  .soul-summary-sheet {
+    max-width: min(600px, calc(100% - 16px));
+    padding: 14px 18px;
+  }
+  .soul-summary-grid {
+    display: grid;
+    grid-template-columns: 1.08fr 0.92fr;
+    gap: 16px;
+    align-items: center;
+    text-align: left;
+  }
+}
+
+/* 类魂游结算双栏（宽屏同样优雅双栏，竖屏单栏） */
+@media (min-width: 640px) {
+  .soul-summary-sheet {
+    max-width: 600px;
+  }
+  .soul-summary-grid {
+    display: grid;
+    grid-template-columns: 1.08fr 0.92fr;
+    gap: 20px;
+    align-items: center;
+    text-align: left;
+  }
+}
+
+/* 类魂游排行榜条目 */
+.soul-rank-row {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(186, 154, 102, 0.14);
+  font-size: 13px;
+}
+.soul-rank-row.is-top {
+  background: linear-gradient(90deg, rgba(184, 130, 56, 0.14), transparent);
 }
 
 .carrier-sheet {

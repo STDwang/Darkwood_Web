@@ -585,11 +585,10 @@ export class GameRenderer {
     ctx.restore();
   }
 
-  /** 根据屏幕高度动态计算世界镜头倍率：手机横屏自动放大，使角色、房屋与物件清晰易辨 */
+  /** 根据屏幕高度与用户在设置中选择的视野档位动态计算世界镜头倍率（默认视野更广，可自由调节） */
   private getCameraZoom(): number {
-    if (this.height <= 500) return 1.28;
-    if (this.height <= 680) return 1.12;
-    return 1.04;
+    const base = this.height <= 500 ? 1.04 : this.height <= 680 ? 0.96 : 0.92;
+    return clamp(base * Quality.viewZoomFactor, 0.62, 1.38);
   }
 
   render(engine: GameEngine) {
