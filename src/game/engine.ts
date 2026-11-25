@@ -10,6 +10,7 @@ import { AudioFX } from './audio';
 import type { SpatialAudioOpts } from './audio';
 import { I18n } from './i18n';
 import { Quality } from './quality';
+import { triggerXhsVibrate } from './xhsBridge';
 // R3 装备系统（左手手电 + 右手火把 ⇄ 手枪；手势动作；火焰物理）——逻辑在 equipment.ts，由 engine 调用
 import {
   EquipHost,
@@ -1103,6 +1104,7 @@ export class GameEngine {
       this.hitStop = heavy ? 0.068 : 0.045;
       this.shake = Math.min(16, this.shake + (heavy ? 11.5 : isAxe ? 8.5 : 5.8));
       AudioFX.playImpact('flesh');
+      triggerXhsVibrate(heavy ? 'heavy' : 'medium');
       this.emitRipple(p.x, p.y, heavy ? 175 : 135, 'rgba(214, 108, 92, 0.52)');
     }
   }
@@ -1878,6 +1880,7 @@ export class GameEngine {
       if (this.thunderQueue[i].delay <= 0) {
         const th = this.thunderQueue.splice(i, 1)[0];
         AudioFX.playThunder(th.intensity);
+        if (th.intensity > 0.72) triggerXhsVibrate('medium');
         this.shake = Math.min(6, this.shake + th.intensity * 2.2);
       }
     }
@@ -2782,6 +2785,7 @@ export class GameEngine {
       while (act.hitsDone < HAMMER_HIT_FRACS.length && act.timer >= HAMMER_HIT_FRACS[act.hitsDone] * act.duration) {
         act.hitsDone++;
         AudioFX.playHammerNail();
+        triggerXhsVibrate('light');
         this.spawnBurst(act.targetX, act.targetY, 4, 'wood', '#9a7550');
         this.emitRipple(act.targetX, act.targetY, 120, 'rgba(204, 173, 128, 0.32)');
         this.shake = Math.min(14, this.shake + 1.6);
@@ -3574,6 +3578,7 @@ export class GameEngine {
               listenerY: p.y,
               muffled: isPointInHideout(e.x, e.y) !== isPointInHideout(p.x, p.y),
             });
+            triggerXhsVibrate('light');
             this.spawnBurst(e.x, e.y, 14, 'blood', '#7a1414');
             this.pushDecal({
               kind: 'blood',
@@ -3677,6 +3682,9 @@ export class GameEngine {
                   stalkSpatial,
                   Variants.val.foley === 'a' ? 'stalker' : e.kind
                 );
+                if (this.phase === 'night' && e.kind === 'stalker' && dToPlayer < 240) {
+                  this.think('门外有什么东西在学人低语……');
+                }
               }
             } else if (bestBar.hp > 0 && dBar < 46) {
               e.state = 'attack_barricade';
@@ -3696,6 +3704,9 @@ export class GameEngine {
                   listenerY: p.y,
                   muffled: true,
                 });
+                if (this.phase === 'night' && dToPlayer < 220) {
+                  this.think('木板后面有指甲在抓挠……别进来。');
+                }
                 this.spawnBurst(bx, by, 7, 'wood', '#7d5b3b');
                 this.pushDecal({
                   kind: 'wood',
@@ -3848,6 +3859,7 @@ export class GameEngine {
               p.hitFlash = 0.35;
               this.shake = Math.min(14, this.shake + 8);
               AudioFX.playImpact('flesh');
+              triggerXhsVibrate('heavy');
               AudioFX.playMonsterSnarl(0.95, {
                 worldX: e.x,
                 worldY: e.y,

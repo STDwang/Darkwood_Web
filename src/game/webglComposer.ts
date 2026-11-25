@@ -385,18 +385,18 @@ void main() {
     vec4 cc = uLightColChan[i];
     vec4 cn = uLightCone[i];
 
-    // Darkwood 真实光影曝光：保留锥内清晰反差与火把/油灯暖琥珀层次，仅防过曝截断
+    // Darkwood 真实光影曝光：保留锥内清晰反差与火把/油灯暖琥珀层次，防多光源过曝截断
     float lw = pr.w;
     if (toneOn) {
       if (cc.a < 0.5) {
-        // 视野锥/手电主光：白昼清亮通透，黑夜聚焦切开深暗
-        lw *= mix(0.68, 0.78, nA);
+        // 视野锥/手电主光：白昼克制增亮，黑夜聚焦切开深暗但保持胶片暗调
+        lw *= mix(0.54, 0.68, nA);
       } else if (cc.a < 1.5 || cc.a > 2.5) {
-        // 吊灯 / 火把 / 照明弹 / 篝火：浓郁琥珀暖光
-        lw *= mix(mix(0.64, 0.88, nA), 1.0, smoothstep(3.0, 3.6, pr.w));
+        // 吊灯 / 火把 / 照明弹 / 篝火：低彩度暖琥珀光
+        lw *= mix(mix(0.52, 0.74, nA), 0.92, smoothstep(3.0, 3.6, pr.w));
       } else {
-        // 角色近身 360° 柔和暖白/暖黄光环
-        lw *= mix(0.95, 1.15, nA);
+        // 角色近身 360° 柔和炭笔毛边感知光圈
+        lw *= mix(0.76, 0.92, nA);
       }
     }
 
@@ -405,21 +405,30 @@ void main() {
     if (d > pr.z) continue;
 
     float normD = d / pr.z;
-    // 视野锥中远段保持充足辨识度，近身光环柔滑过渡，无阴影小磷光（cc.a > 2.5）使用高次柔边衰减杜绝硬圆盘感
-    float attenPow = (cc.a < 0.5) ? 0.92 : (cc.a > 2.5) ? 2.45 : (cc.a > 1.5) ? 1.45 : 1.38;
+    // 视野锥中远段保持充足辨识度，近身光环叠加上手绘炭笔颗粒毛边（对标原作图 6/10），无阴影小磷光高次柔边衰减
+    float attenPow = (cc.a < 0.5) ? 1.04 : (cc.a > 2.5) ? 2.45 : (cc.a > 1.5) ? 1.58 : 1.48;
     float atten = pow(clamp(1.0 - normD, 0.0, 1.0), attenPow);
+    if (toneOn && cc.a > 1.5 && cc.a < 2.5) {
+      // 原作标志性角色脚下炭笔颗粒蚀刻近身光环边缘
+      float haloGrain = vnoise(worldPx * 0.14 + vec2(3.7, -2.1)) * 0.65 + vnoise(worldPx * 0.31) * 0.35;
+      float edgeBand = smoothstep(0.42, 0.92, normD) * (1.0 - smoothstep(0.90, 1.0, normD));
+      atten = clamp(atten - edgeBand * (0.48 - haloGrain * 0.62), 0.0, 1.0);
+    }
 
     float spot = 1.0;
     if (cn.z > -1.5) {
       vec2 dirToPx = d > 0.001 ? toPx / d : cn.xy;
       float cosAng = dot(dirToPx, cn.xy);
       if (toneOn && cc.a < 0.5) {
-        // Darkwood 标志性锐利 V 字视野锥：边界干净利落（极窄抗锯齿羽化），极微弱外溢避免生硬锯齿
+        // Darkwood 标志性锐利 V 字视野锥 + 极细微手绘炭笔有机毛边蚀刻（对标原作图 6/10/13）
         float ang = acos(clamp(cosAng, -1.0, 1.0));
         float halfA = acos(clamp(cn.z, -1.0, 1.0));
-        float edgeSharp = mix(0.032, 0.055, nA);
-        float core = 1.0 - smoothstep(halfA - edgeSharp * 0.45, halfA + edgeSharp, ang);
-        float halo = (1.0 - smoothstep(halfA - 0.01, halfA + 0.11, ang)) * mix(0.06, 0.14, nA);
+        float charcoalJit = (vnoise(worldPx * 0.085 + cn.xy * 4.0) - 0.5) * 0.022
+                          + (vnoise(worldPx * 0.24 - vec2(uTime * 0.12)) - 0.5) * 0.010;
+        float effAng = ang + charcoalJit * smoothstep(28.0, 180.0, d);
+        float edgeSharp = mix(0.030, 0.048, nA);
+        float core = 1.0 - smoothstep(halfA - edgeSharp * 0.45, halfA + edgeSharp, effAng);
+        float halo = (1.0 - smoothstep(halfA - 0.008, halfA + 0.095, effAng)) * mix(0.05, 0.11, nA);
         spot = max(core, halo);
       } else {
         spot = smoothstep(cn.z - 0.045, cn.z + 0.045, cosAng);
@@ -427,8 +436,8 @@ void main() {
       if (spot <= 0.001) continue;
     }
 
-    // 还原原作 6 张截图的电影级光色对比：手电视野锥带微暖枯黄/麦草骨白感，与锥外冷石板灰自然区分；火把保持浓郁暖橘
-    vec3 lc = (toneOn && cc.a < 0.5) ? mix(cc.rgb, vec3(1.0, 0.94, 0.76), mix(0.42, 0.24, nA)) : cc.rgb;
+    // 还原原作东欧腐朽油画光色对比：手电视野锥呈浑浊低彩度暖枯草/旧羊皮色，与锥外冷石板灰形成深沉冷暖反差
+    vec3 lc = (toneOn && cc.a < 0.5) ? mix(cc.rgb, vec3(0.95, 0.89, 0.74), mix(0.46, 0.34, nA)) : cc.rgb;
 
     float vis = 1.0;
     // 电影级手电树影：保留贴近树干/墙体的锐利深黑影柱，远端柔和过渡，杜绝墙后漏光
@@ -521,19 +530,24 @@ void main() {
     float reveal = smoothstep(0.05, 0.30, directVis);
     float gray = dot(surfaceAlbedo, vec3(0.299, 0.587, 0.114));
     // 锥外通透冷石板灰（白昼与黄昏下清晰呈现树墩、茶田、木板桥与泥土肌理，黑夜自然沉入深暗）
-    vec3 memoryCold = vec3(gray) * vec3(0.84, 0.88, 0.91);
-    float desatAmt = mix(0.74, 0.90, nA);
+    vec3 memoryCold = vec3(gray) * vec3(0.84, 0.88, 0.92);
+    float desatAmt = mix(0.76, 0.92, nA);
     effectiveAlbedo = mix(mix(surfaceAlbedo, memoryCold, desatAmt), surfaceAlbedo, reveal);
-    effectiveAmbient *= mix(mix(0.58, 0.24, nA), 1.0, reveal);
+    effectiveAmbient *= mix(mix(0.66, 0.26, nA), 1.0, reveal);
   }
 
-  // 数值安全红线：在 ACES 之前严格 clamp，杜绝 NaN/Inf 黑块
-  vec3 totalLight = clamp(effectiveAmbient + directLight, vec3(0.0), vec3(7.5));
-  volumetricScatter = clamp(volumetricScatter, vec3(0.0), vec3(3.5));
-  glareAccum = clamp(glareAccum, vec3(0.0), vec3(1.0));
+  // 多光源柔和胶片肩部压缩（防止室内双吊灯+火盆+手持火把线性叠加烧白过曝，完整保留木地板与地毯暗纹）
+  vec3 softDirect = directLight / (vec3(1.0) + directLight * 0.42);
+  float dirLum = dot(softDirect, vec3(0.2126, 0.7152, 0.0722));
+  softDirect = mix(softDirect, vec3(dirLum) * vec3(1.02, 0.99, 0.93), smoothstep(0.55, 1.65, dirLum) * 0.34);
 
-  // 克制体积散射（0.06），避免泛灰发白，确保画面阴郁通透且细节锐利
-  vec3 color = effectiveAlbedo * totalLight + volumetricScatter * 0.06 + glareAccum * 0.72;
+  // 数值安全红线：在 ACES 之前严格 clamp，杜绝 NaN/Inf 黑块
+  vec3 totalLight = clamp(effectiveAmbient + softDirect, vec3(0.0), vec3(4.5));
+  volumetricScatter = clamp(volumetricScatter, vec3(0.0), vec3(2.5));
+  glareAccum = clamp(glareAccum, vec3(0.0), vec3(0.75));
+
+  // 克制体积散射（0.045），避免泛灰发白，确保画面阴郁通透且细节锐利
+  vec3 color = effectiveAlbedo * totalLight + volumetricScatter * 0.045 + glareAccum * 0.46;
 
   // 东欧油画帆布织纹与胶片颗粒
   if (uEnableGrain == 1 && uCine == 0) {
@@ -549,15 +563,15 @@ void main() {
   }
 
   // 数值安全红线：所有累加项在 ACES 之前再次 clamp 至有限区间
-  color = clamp(color, vec3(0.0), vec3(12.0));
+  color = clamp(color, vec3(0.0), vec3(10.0));
 
-  // ACES Filmic 色调映射（高对比、深沉暗部、细腻暖高光）
-  color = acesFilm(color * 1.16);
+  // ACES Filmic 色调映射（高对比、深沉暗部、细腻低彩暖高光）
+  color = acesFilm(color * 1.01);
 
   if (uColdPalette == 1) {
-    // Darkwood 东欧阴郁油画色彩收敛：保留苔藓绿、枯草黄与火光暖红，仅做自然胶片去饱和（14%）和冷青暗部注入
+    // Darkwood 东欧阴郁油画色彩收敛：胶片低饱和度（保留苔藓暗绿、泥褐、干涸血迹与旧羊皮暖光，杜绝艳丽荧光色）
     float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    color = mix(vec3(lum), color, 0.86);
+    color = mix(vec3(lum), color, 0.76);
     float shadowMask = clamp(1.0 - lum * 2.5, 0.0, 0.45);
     color = mix(color, color * vec3(0.89, 0.96, 1.04), shadowMask);
   } else {

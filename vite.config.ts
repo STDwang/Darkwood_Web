@@ -61,34 +61,51 @@ function singleFileRelease(outName: string): Plugin {
 
 export default defineConfig(({mode}) => {
   const single = mode === 'single';
+  const minitool = mode === 'minitool';
   return {
-    // 相对路径，保证 dist/ 与单文件产物在 file:// 下都能工作
+    // 相对路径，保证 dist/、单文件与小工具离线包在子路径或 file:// 下都能工作
     base: './',
+    define: {
+      __MINITOOL__: JSON.stringify(minitool),
+    },
     plugins: [
       react(),
       tailwindcss(),
       // Copies src/assets into dist/ so root-relative URLs like
       // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
-      {
-        name: 'copy-unbundled-src-assets',
-        apply: 'build',
-        closeBundle(error?: Error): void {
-          if (error) {
-            return;
-          }
-          const distDir = path.resolve(ROOT_DIR, 'dist');
-          const srcAssets = path.resolve(ROOT_DIR, 'src/assets');
-          const distAssets = path.resolve(distDir, 'src/assets');
-          if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
-            fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
-          }
-        },
-      },
+      // in production builds. Minitool offline build excludes .webm assets.
+      ...(!minitool
+        ? [
+            {
+              name: 'copy-unbundled-src-assets',
+              apply: 'build' as const,
+              closeBundle(error?: Error): void {
+                if (error) {
+                  return;
+                }
+                const distDir = path.resolve(ROOT_DIR, 'dist');
+                const srcAssets = path.resolve(ROOT_DIR, 'src/assets');
+                const distAssets = path.resolve(distDir, 'src/assets');
+                if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
+                  fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+                }
+              },
+            },
+          ]
+        : []),
       ...(single ? [singleFileRelease('Blackwood_Ember.html')] : []),
     ],
     resolve: {
       alias: {
+        ...(minitool
+          ? {
+              [path.resolve(ROOT_DIR, 'src/game/audioAssets')]: path.resolve(
+                ROOT_DIR,
+                'src/game/audioAssets.minitool.ts'
+              ),
+              './game/audioAssets': path.resolve(ROOT_DIR, 'src/game/audioAssets.minitool.ts'),
+            }
+          : {}),
         '@': path.resolve(ROOT_DIR, '.'),
       },
     },
@@ -98,6 +115,16 @@ export default defineConfig(({mode}) => {
           cssCodeSplit: false,
           assetsInlineLimit: 100_000_000,
           chunkSizeWarningLimit: 100_000,
+        }
+      : minitool
+      ? {
+          outDir: 'dist-minitool',
+          emptyOutDir: true,
+          sourcemap: false,
+          modulePreload: false,
+          cssCodeSplit: false,
+          assetsInlineLimit: 100_000,
+          chunkSizeWarningLimit: 2_000,
         }
       : {},
     server: {

@@ -7,6 +7,7 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "build:single": "vite build --mode single",
+    "build:minitool": "node tools/build-minitool.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
@@ -17,6 +18,7 @@
     "check:palette": "node tools/checks/palette-check.mjs",
     "check:perf": "node tools/checks/perf-check.mjs",
     "check:shotdiff": "node tools/checks/shotdiff.mjs",
+    "check:minitool": "node tools/checks/minitool-smoke.mjs",
     "check:t1": "npm run lint && npm run check:sim && npm run check:smoke && npm run check:layout && npm run check:layer"
   },
   "dependencies": {

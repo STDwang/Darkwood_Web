@@ -1,4 +1,5 @@
-// A/B Variants tuning system: URL (?v-<name>=<id>) > localStorage > default
+// A/B Variants tuning system: URL (?v-<name>=<id>) > safePref > default
+import { safePrefGet, safePrefSet } from './xhsBridge';
 
 export interface VariantDef {
   name: string;
@@ -30,12 +31,8 @@ export const Variants = {
     let chosen = defaultId;
     const validIds = new Set(options.map(([id]) => id));
 
-    try {
-      const saved = window.localStorage.getItem(STORAGE_PREFIX + name);
-      if (saved && validIds.has(saved)) chosen = saved;
-    } catch {
-      // ignore
-    }
+    const saved = safePrefGet(STORAGE_PREFIX + name);
+    if (saved && validIds.has(saved)) chosen = saved;
 
     try {
       const params = new URLSearchParams(window.location.search);
@@ -53,11 +50,7 @@ export const Variants = {
     if (!def || !def.options.some(([optId]) => optId === id)) return;
     if (values[name] === id) return;
     values[name] = id;
-    try {
-      window.localStorage.setItem(STORAGE_PREFIX + name, id);
-    } catch {
-      // ignore
-    }
+    safePrefSet(STORAGE_PREFIX + name, id);
     if (def.reloadOnChange && typeof window !== 'undefined') {
       const url = new URL(window.location.href);
       url.searchParams.set(`v-${name}`, id);

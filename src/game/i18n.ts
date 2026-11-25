@@ -1,4 +1,5 @@
 // Zero-invasion bilingual dictionary (zh default literal keys -> en overrides)
+import { hydratePrefAsync, safePrefGet, safePrefSet } from './xhsBridge';
 
 export type Lang = 'zh' | 'en';
 
@@ -210,6 +211,8 @@ const EN_DICT: Record<string, string> = {
   '灯灭了。黑暗在靠近。': 'The light is gone. The dark is closing in.',
   '天黑了。我不该还在外面。': "It's dark. I shouldn't still be out here.",
   '天黑了。守住这点光。': 'Night. Keep this little light burning.',
+  '木板后面有指甲在抓挠……别进来。': 'Nails scraping behind the planks... stay out.',
+  '门外有什么东西在学人低语……': 'Something outside the door is mimicking a whisper...',
   '我的腿快撑不住了。': 'My legs are about to give out.',
   '血止不住……我得找东西包扎。': "The bleeding won't stop... I need to bind it.",
   // R3 装备：火把 ⇄ 手枪
@@ -239,12 +242,22 @@ const EN_DICT: Record<string, string> = {
 
 const STORAGE_KEY = 'blackwood_lang_v1';
 
+function hasForcedUrlLang(): boolean {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const forced = params.get('lang');
+    return forced === 'en' || forced === 'zh';
+  } catch {
+    return false;
+  }
+}
+
 function detectInitialLang(): Lang {
   try {
     const params = new URLSearchParams(window.location.search);
     const forced = params.get('lang');
     if (forced === 'en' || forced === 'zh') return forced;
-    const saved = window.localStorage.getItem(STORAGE_KEY);
+    const saved = safePrefGet(STORAGE_KEY);
     if (saved === 'en' || saved === 'zh') return saved;
   } catch {
     // ignore storage errors
@@ -261,15 +274,19 @@ export const I18n = {
   get lang(): Lang {
     return currentLang;
   },
-  setLang(next: Lang) {
+  setLang(next: Lang, persist = true) {
     if (next === currentLang) return;
     currentLang = next;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // ignore
-    }
+    if (persist) safePrefSet(STORAGE_KEY, next);
     listeners.forEach((fn) => fn());
+  },
+  hydrateFromContainer() {
+    if (hasForcedUrlLang()) return;
+    hydratePrefAsync(STORAGE_KEY, (saved) => {
+      if (saved === 'en' || saved === 'zh') {
+        this.setLang(saved, false);
+      }
+    });
   },
   subscribe(fn: () => void): () => void {
     listeners.add(fn);

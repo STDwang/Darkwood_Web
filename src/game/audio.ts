@@ -11,6 +11,9 @@
 //         全部雨层改为"随机重排"（两槽交叉淡化、随机段长/起点/速率，杜绝循环周期）；装备/关卡/惊吓音效与火把/闹鬼常驻链
 
 import { clamp } from './util';
+import { hydratePrefAsync, safePrefGet, safePrefSet } from './xhsBridge';
+
+declare const __MINITOOL__: boolean;
 
 const MUTE_KEY = 'blackwood_mute_v1';
 
@@ -514,11 +517,7 @@ class SoundEngine {
   private swingSide = 1;
 
   constructor() {
-    try {
-      this.muted = window.localStorage.getItem(MUTE_KEY) === '1';
-    } catch {
-      this.muted = false;
-    }
+    this.muted = safePrefGet(MUTE_KEY) === '1';
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         this.pageHidden = document.hidden;
@@ -536,15 +535,21 @@ class SoundEngine {
     return this.buildMs;
   }
 
-  setMuted(next: boolean) {
+  setMuted(next: boolean, persist = true) {
     this.muted = next;
-    try {
-      window.localStorage.setItem(MUTE_KEY, next ? '1' : '0');
-    } catch {
-      // 忽略无痕模式或禁存环境异常
+    if (persist) {
+      safePrefSet(MUTE_KEY, next ? '1' : '0');
     }
     this.applyMasterGain();
     this.listeners.forEach((fn) => fn());
+  }
+
+  hydrateFromContainer() {
+    hydratePrefAsync(MUTE_KEY, (saved) => {
+      if (saved === '1' || saved === '0') {
+        this.setMuted(saved === '1', false);
+      }
+    });
   }
 
   subscribe(fn: () => void): () => void {
@@ -3946,9 +3951,12 @@ class SoundEngine {
   }
 
   /**
-   * 怪物低吼：声门激励（锯齿基频 + 慢颤/粗糙抖动 + f0/2 次谐波 + 气声）
-   * → 振幅撕裂抖动 → 三个并联共振峰带通（F1/F2/F3 随"张嘴"滑动）+ 胸腔低通
-   * 远距离由空间路由自动加低通与更多混响；保留 StereoPanner 方位与隔墙闷化
+   * 五类怪物差异化恐怖声带合成（对标《Darkwood》原作听音辨位）：
+   * - stalker（疯癫野人）：嘶哑喘息声门激励 + 断续抽气胸腔共鸣
+   * - hound（巨型狂犬）：急促凶戾犬喉咆哮 + 双连低吠包络
+   * - banshee（群鸦女妖）：深渊哀鸣 + 失谐双高频裂颅尖啸泛音层
+   * - dancer（腐裙舞者）：诡异失谐空灵女声哼鸣 + 关节错位清脆咔哒脉冲
+   * - chomper（纵裂裂口怪）：极低频湿黏肉腔蠕动咕噜 + 利齿急促叩击咬合
    */
   playMonsterSnarl(proximity: number, spatial?: SpatialAudioOpts, kind: 'stalker' | 'hound' | 'banshee' | 'dancer' | 'chomper' = 'stalker') {
     const ctx = this.ctx;
@@ -3959,49 +3967,61 @@ class SoundEngine {
     shot.addAll(route.nodes);
     const effectiveProx = spatial ? Math.max(proximity * 0.5, route.gainScale) : proximity;
     const vol = clamp(effectiveProx * 0.25, 0.04, 0.25);
-    const durationBase = kind === 'hound' ? 0.28 : kind === 'banshee' ? 0.72 : 0.48;
-    const durationRange = kind === 'hound' ? 0.24 : kind === 'banshee' ? 0.42 : 0.34;
-    const dur = clamp(durationBase + Math.random() * durationRange + proximity * 0.12, 0.25, 1.18);
+    const durationBase =
+      kind === 'hound' ? 0.28 : kind === 'banshee' ? 0.76 : kind === 'dancer' ? 0.64 : kind === 'chomper' ? 0.44 : 0.52;
+    const durationRange =
+      kind === 'hound' ? 0.24 : kind === 'banshee' ? 0.42 : kind === 'dancer' ? 0.32 : kind === 'chomper' ? 0.26 : 0.34;
+    const dur = clamp(durationBase + Math.random() * durationRange + proximity * 0.12, 0.25, 1.22);
     const end = now + dur;
     const stopAt = end + 0.05;
-    const f0 = kind === 'hound' ? rnd(88, 142) : kind === 'banshee' ? rnd(52, 86) : rnd(68, 102);
+    const f0 =
+      kind === 'hound'
+        ? rnd(92, 146)
+        : kind === 'banshee'
+        ? rnd(52, 84)
+        : kind === 'dancer'
+        ? rnd(215, 292)
+        : kind === 'chomper'
+        ? rnd(44, 68)
+        : rnd(66, 98);
 
     // —— 声门激励 ——
-    const glottis = this.oscSource(ctx, shot, 'sawtooth', f0 * rnd(1.05, 1.18), now, stopAt);
+    const glottisType: OscillatorType = kind === 'dancer' ? 'triangle' : 'sawtooth';
+    const glottis = this.oscSource(ctx, shot, glottisType, f0 * rnd(1.04, 1.16), now, stopAt);
     glottis.frequency.linearRampToValueAtTime(f0, now + dur * 0.3);
-    glottis.frequency.exponentialRampToValueAtTime(f0 * rnd(0.55, 0.7), end);
+    glottis.frequency.exponentialRampToValueAtTime(f0 * (kind === 'dancer' ? rnd(0.84, 0.94) : rnd(0.55, 0.72)), end);
 
-    // 喉部慢颤（5.5–9Hz）与粗糙抖动（24–38Hz）调制基频
-    const vib = this.oscSource(ctx, shot, 'sine', rnd(5.5, 9), now, stopAt);
-    const vibDepth = this.amp(ctx, shot, f0 * 0.05, now);
+    // 喉部慢颤与粗糙抖动调制基频
+    const vib = this.oscSource(ctx, shot, 'sine', kind === 'dancer' ? rnd(6.2, 8.4) : rnd(5.5, 9), now, stopAt);
+    const vibDepth = this.amp(ctx, shot, f0 * (kind === 'dancer' ? 0.075 : 0.05), now);
     vib.connect(vibDepth);
     vibDepth.connect(glottis.frequency);
-    const rough = this.oscSource(ctx, shot, 'triangle', rnd(24, 38), now, stopAt);
-    const roughDepth = this.amp(ctx, shot, f0 * 0.16, now);
+    const rough = this.oscSource(ctx, shot, 'triangle', kind === 'chomper' ? rnd(15, 23) : rnd(24, 38), now, stopAt);
+    const roughDepth = this.amp(ctx, shot, f0 * (kind === 'dancer' ? 0.04 : kind === 'chomper' ? 0.24 : 0.16), now);
     rough.connect(roughDepth);
     roughDepth.connect(glottis.frequency);
 
-    // 次谐波 f0/2：胸腔"咕噜"感
-    const sub = this.oscSource(ctx, shot, 'square', f0 * 0.5, now, stopAt);
-    sub.frequency.exponentialRampToValueAtTime(f0 * 0.5 * 0.62, end);
+    // 次谐波 f0/2：胸腔咕噜感
+    const sub = this.oscSource(ctx, shot, kind === 'dancer' ? 'sine' : 'square', f0 * 0.5, now, stopAt);
+    sub.frequency.exponentialRampToValueAtTime(f0 * 0.5 * 0.65, end);
     roughDepth.connect(sub.frequency);
-    const subG = this.amp(ctx, shot, 0.32, now);
+    const subG = this.amp(ctx, shot, kind === 'dancer' ? 0.18 : kind === 'chomper' ? 0.42 : 0.32, now);
     sub.connect(subG);
 
-    // 混合 + 振幅撕裂抖动（28–46Hz，模拟声带嘶裂）
+    // 混合 + 振幅撕裂抖动（模拟声带嘶裂或肉腔翻涌）
     const mix = this.amp(ctx, shot, 0.65, now);
-    const fry = this.oscSource(ctx, shot, 'sine', rnd(28, 46), now, stopAt);
-    const fryDepth = this.amp(ctx, shot, 0.35, now);
+    const fry = this.oscSource(ctx, shot, 'sine', kind === 'chomper' ? rnd(16, 26) : rnd(28, 46), now, stopAt);
+    const fryDepth = this.amp(ctx, shot, kind === 'dancer' ? 0.16 : 0.38, now);
     fry.connect(fryDepth);
     fryDepth.connect(mix.gain);
     glottis.connect(mix);
     subG.connect(mix);
 
-    // 气声：粉噪带通 → 嘶哑喘息
+    // 气声：粉噪带通 → 嘶哑喘息（野人呼吸声更重）
     if (this.pinkBuf) {
       const breath = this.noiseSource(ctx, shot, this.pinkBuf, now, dur + 0.05);
-      const breathBP = this.filt(ctx, shot, 'bandpass', rnd(1400, 2000), 0.9, now);
-      const breathG = this.amp(ctx, shot, 0.9, now);
+      const breathBP = this.filt(ctx, shot, 'bandpass', kind === 'stalker' ? rnd(1150, 1750) : rnd(1400, 2000), 0.9, now);
+      const breathG = this.amp(ctx, shot, kind === 'stalker' ? 1.15 : kind === 'dancer' ? 0.45 : 0.88, now);
       breath.connect(breathBP);
       breathBP.connect(breathG);
       breathG.connect(mix);
@@ -4018,43 +4038,98 @@ class SoundEngine {
           ]
         : kind === 'banshee'
         ? [
-            { f: rnd(260, 390), q: 7, g: 2.2 },
-            { f: rnd(720, 1080), q: 9, g: 1.5 },
-            { f: rnd(1800, 2450), q: 12, g: 0.9 },
+            { f: rnd(260, 390), q: 7, g: 2.1 },
+            { f: rnd(760, 1140), q: 9, g: 1.6 },
+            { f: rnd(1950, 2650), q: 11, g: 1.05 },
+          ]
+        : kind === 'dancer'
+        ? [
+            { f: rnd(560, 740), q: 7.5, g: 1.65 },
+            { f: rnd(1580, 1980), q: 9.5, g: 1.25 },
+            { f: rnd(2650, 3150), q: 11, g: 0.65 },
+          ]
+        : kind === 'chomper'
+        ? [
+            { f: rnd(240, 360), q: 5.0, g: 2.2 },
+            { f: rnd(680, 960), q: 7.5, g: 1.55 },
+            { f: rnd(1650, 2200), q: 8.5, g: 0.75 },
           ]
         : [
-            { f: rnd(380, 520), q: 6, g: 2.0 },
-            { f: rnd(900, 1250), q: 8, g: 1.3 },
-            { f: rnd(2250, 2700), q: 10, g: 0.6 },
+            { f: rnd(360, 510), q: 6, g: 2.0 },
+            { f: rnd(880, 1240), q: 8, g: 1.35 },
+            { f: rnd(2200, 2680), q: 10, g: 0.65 },
           ];
     for (let i = 0; i < formants.length; i++) {
       const fm = formants[i];
       const bp = this.filt(ctx, shot, 'bandpass', fm.f * 0.85, fm.q, now);
-      bp.frequency.linearRampToValueAtTime(fm.f * 1.08, now + dur * 0.35);
-      bp.frequency.linearRampToValueAtTime(fm.f * 0.9, end);
+      bp.frequency.linearRampToValueAtTime(fm.f * (kind === 'chomper' ? 1.22 : 1.08), now + dur * 0.35);
+      bp.frequency.linearRampToValueAtTime(fm.f * 0.88, end);
       const fg = this.amp(ctx, shot, fm.g, now);
       mix.connect(bp);
       bp.connect(fg);
       fg.connect(env);
     }
     const chest = this.filt(ctx, shot, 'lowpass', 240, 0.7, now);
-    const chestG = this.amp(ctx, shot, 0.22, now);
+    const chestG = this.amp(ctx, shot, kind === 'dancer' ? 0.1 : 0.22, now);
     mix.connect(chest);
     chest.connect(chestG);
     chestG.connect(env);
 
+    // 物种标志性附加声学细节
+    if (kind === 'banshee') {
+      // 群鸦女妖失谐双高频裂颅尖啸泛音
+      const shF = rnd(1120, 1560);
+      const sh1 = this.oscSource(ctx, shot, 'sawtooth', shF * 0.92, now + 0.04, stopAt);
+      const sh2 = this.oscSource(ctx, shot, 'sine', shF * 1.035, now + 0.04, stopAt);
+      sh1.frequency.exponentialRampToValueAtTime(shF * 1.18, now + dur * 0.42);
+      sh1.frequency.exponentialRampToValueAtTime(shF * 0.78, end);
+      sh2.frequency.exponentialRampToValueAtTime(shF * 1.22, now + dur * 0.42);
+      const shBP = this.filt(ctx, shot, 'bandpass', shF * 1.1, 4.5, now + 0.04);
+      const shG = this.amp(ctx, shot, 0.0001, now + 0.04);
+      shG.gain.linearRampToValueAtTime(vol * (0.28 + effectiveProx * 0.24), now + dur * 0.36);
+      shG.gain.exponentialRampToValueAtTime(0.0001, end);
+      sh1.connect(shBP);
+      sh2.connect(shBP);
+      shBP.connect(shG);
+      shG.connect(route.input);
+    } else if (kind === 'dancer' && this.whiteBuf) {
+      // 腐裙舞者旋转时关节错位咔哒声
+      const clicks = 2;
+      for (let c = 0; c < clicks; c++) {
+        const ct = now + dur * (0.22 + c * 0.34);
+        if (ct < end - 0.04) {
+          this.mechClick(ctx, shot, route.input, ct, vol * 0.42, rnd(1650, 2350), 0.016);
+        }
+      }
+    } else if (kind === 'chomper' && this.whiteBuf) {
+      // 裂口怪利齿急促咬合声
+      const snapT = now + dur * 0.58;
+      if (snapT < end - 0.05) {
+        this.mechClick(ctx, shot, route.input, snapT, vol * 0.65, rnd(1200, 1680), 0.022);
+      }
+    }
+
     if (kind === 'hound') {
       env.gain.linearRampToValueAtTime(vol, now + 0.035);
       env.gain.linearRampToValueAtTime(vol * 0.18, now + dur * 0.38);
-      env.gain.linearRampToValueAtTime(vol * 0.68, now + dur * 0.48);
+      env.gain.linearRampToValueAtTime(vol * 0.72, now + dur * 0.48);
     } else if (kind === 'banshee') {
       env.gain.linearRampToValueAtTime(vol * 0.32, now + dur * 0.18);
       env.gain.linearRampToValueAtTime(vol, now + dur * 0.38);
-      env.gain.linearRampToValueAtTime(vol * 0.2, now + dur * 0.52);
-      env.gain.linearRampToValueAtTime(vol * 0.72, now + dur * 0.67);
+      env.gain.linearRampToValueAtTime(vol * 0.22, now + dur * 0.52);
+      env.gain.linearRampToValueAtTime(vol * 0.74, now + dur * 0.67);
+    } else if (kind === 'dancer') {
+      env.gain.linearRampToValueAtTime(vol * 0.62, now + dur * 0.24);
+      env.gain.linearRampToValueAtTime(vol * 0.35, now + dur * 0.52);
+      env.gain.linearRampToValueAtTime(vol * 0.58, now + dur * 0.76);
+    } else if (kind === 'chomper') {
+      env.gain.linearRampToValueAtTime(vol * 0.92, now + 0.04);
+      env.gain.linearRampToValueAtTime(vol * 0.45, now + dur * 0.48);
+      env.gain.linearRampToValueAtTime(vol * 0.85, now + dur * 0.62);
     } else {
       env.gain.linearRampToValueAtTime(vol, now + 0.05);
-      env.gain.linearRampToValueAtTime(vol * 0.8, now + dur * 0.6);
+      env.gain.linearRampToValueAtTime(vol * 0.38, now + dur * 0.36);
+      env.gain.linearRampToValueAtTime(vol * 0.82, now + dur * 0.62);
     }
     env.gain.exponentialRampToValueAtTime(0.0001, end);
     env.connect(route.input);
@@ -4941,6 +5016,9 @@ class SoundEngine {
         return Promise.resolve(null);
       }
     }
+    // 小工具构建模式下完全剥离网络 fetch 分支（100% 走内置程序化物理雨声引擎）
+    const miniBuild = typeof __MINITOOL__ !== 'undefined' && __MINITOOL__;
+    if (miniBuild) return Promise.resolve(null);
     if (typeof fetch !== 'function') return Promise.resolve(null);
     return fetch(url)
       .then((r) => (r.ok ? r.arrayBuffer() : null))

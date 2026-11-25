@@ -52,6 +52,8 @@ export const THOUGHT_TEXT = {
   generator: '灯灭了。黑暗在靠近。',
   nightOutside: '天黑了。我不该还在外面。',
   nightInside: '天黑了。守住这点光。',
+  scratchingWall: '木板后面有指甲在抓挠……别进来。',
+  stalkerWhisper: '门外有什么东西在学人低语……',
   legs: '我的腿快撑不住了。',
   bleed: '血止不住……我得找东西包扎。',
 } as const;

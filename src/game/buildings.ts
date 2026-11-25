@@ -502,17 +502,43 @@ function scalePoint(point: Vec2, cx: number, cy: number, factor: number) {
   point.y = cy + (point.y - cy) * factor;
 }
 
+function scaleRectKeepSize(
+  rect: { x: number; y: number; w: number; h: number },
+  cx: number,
+  cy: number,
+  posFactor: number,
+  sizeFactor: number
+) {
+  const rcx = rect.x + rect.w * 0.5;
+  const rcy = rect.y + rect.h * 0.5;
+  const ncx = cx + (rcx - cx) * posFactor;
+  const ncy = cy + (rcy - cy) * posFactor;
+  const nw = rect.w * sizeFactor;
+  const nh = rect.h * sizeFactor;
+  rect.x = ncx - nw * 0.5;
+  rect.y = ncy - nh * 0.5;
+  rect.w = nw;
+  rect.h = nh;
+}
+
 function scaleBuildingGeometry(b: Building, factor: number) {
   const cx = b.x + b.w * 0.5;
   const cy = b.y + b.h * 0.5;
+  const propSizeFactor = Math.min(1.18, factor);
   scaleRect(b, cx, cy, factor);
   b.t *= factor;
   scalePoint(b.entryOut, cx, cy, factor);
   scalePoint(b.entryIn, cx, cy, factor);
   for (const r of b.rooms) scaleRect(r, cx, cy, factor);
   for (const w of b.windows) scaleRect(w, cx, cy, factor);
-  for (const p of b.props) scaleRect(p, cx, cy, factor);
-  for (const w of b.walls) scaleRect(w, cx, cy, factor);
+  for (const p of b.props) {
+    if (p.solid > 0) scaleRectKeepSize(p, cx, cy, factor, propSizeFactor);
+    else scaleRect(p, cx, cy, factor);
+  }
+  for (const w of b.walls) {
+    if (w.id.includes('_p')) scaleRectKeepSize(w, cx, cy, factor, propSizeFactor);
+    else scaleRect(w, cx, cy, factor);
+  }
   for (const d of b.doorSpecs) scaleRect(d, cx, cy, factor);
   for (const l of b.lightSpecs) {
     scalePoint(l, cx, cy, factor);
@@ -522,9 +548,9 @@ function scaleBuildingGeometry(b: Building, factor: number) {
   }
   for (const c of b.containerSpecs) {
     scalePoint(c, cx, cy, factor);
-    c.r *= factor;
+    c.r *= Math.min(1.12, factor);
   }
-  for (const m of b.movableSpecs) scaleRect(m, cx, cy, factor);
+  for (const m of b.movableSpecs) scaleRectKeepSize(m, cx, cy, factor, propSizeFactor);
 }
 
 function yard(list: BuildingProp[], walls: RectObstacle[], kind: string, x: number, y: number, w: number, h: number, rot = 0) {
@@ -543,46 +569,46 @@ function yard(list: BuildingProp[], walls: RectObstacle[], kind: string, x: numb
 function buildHideout(rect: RectLike): Building {
   const b = newBuilding('h_in', '庇护所', '庇护所', 'hideout', rect.x, rect.y, rect.w, rect.h, 'timber', true, 18);
   b.externalRoof = true;
-  // 本地坐标：lx = 世界 x + 280，ly = 世界 y + 240（外框 560 × 380）
-  // 西翼隔墙（主屋 | 卧室/储藏间），门洞在世界 y -50..0
-  partV(b, 128, 18, 362, [{ at: 190, len: 50, kind: 'doorway' }], 12);
-  // 西翼横墙（卧室 | 储藏间），可开关木门在世界 x -198..-156
-  partH(b, 120, 18, 128, [{ at: 82, len: 42, kind: 'door', open: false, hinge: 1, swing: -1 }], 12);
-  // 东翼隔墙（主屋 | 工作间），门洞在世界 y -10..40
-  partV(b, 420, 18, 362, [{ at: 230, len: 50, kind: 'doorway' }], 12);
+  // 本地坐标：lx = 世界 x + 400，ly = 世界 y + 400（外框 800 × 540，面积超原两倍）
+  // 西翼隔墙（主屋 | 卧室/储藏间），宽敞门洞 64px 位于世界 y -140..-76
+  partV(b, 210, 18, 522, [{ at: 260, len: 64, kind: 'doorway' }], 12);
+  // 西翼横墙（储藏间 | 卧室），可开关木门 52px 位于世界 x -268..-216
+  partH(b, 190, 18, 210, [{ at: 132, len: 52, kind: 'door', open: false, hinge: 1, swing: -1 }], 12);
+  // 东翼隔墙（主屋 | 工作间），宽敞门洞 64px 位于世界 y -100..-36
+  partV(b, 580, 18, 522, [{ at: 300, len: 64, kind: 'doorway' }], 12);
 
-  room(b, 'main', '主屋', 'living', 'plank', 140, 18, 420, 362);
-  room(b, 'bed', '卧室', 'bedroom', 'plank', 18, 132, 128, 362);
-  room(b, 'store', '储藏间', 'storage', 'dirt', 18, 18, 128, 120);
-  room(b, 'work', '工作间', 'workshop', 'stone', 432, 18, 542, 362);
+  room(b, 'main', '主屋', 'living', 'plank', 222, 18, 580, 522);
+  room(b, 'bed', '卧室', 'bedroom', 'plank', 18, 202, 210, 522);
+  room(b, 'store', '储藏间', 'storage', 'dirt', 18, 18, 210, 190);
+  room(b, 'work', '工作间', 'workshop', 'stone', 592, 18, 782, 522);
 
-  // 灯（与发电机联动）
-  lamp(b, 'bed', 'pendant', 73, 245, 120, 176, true, false, true);
-  lamp(b, 'store', 'pendant', 73, 69, 120, 90, true, true, true);
-  lamp(b, 'work', 'pendant', 487, 200, 440, 218, true, false, true, true);
+  // 灯（与发电机联动，照射半径随房间扩大适度加宽）
+  lamp(b, 'bed', 'pendant', 114, 360, 198, 250, true, false, true);
+  lamp(b, 'store', 'pendant', 114, 104, 198, 128, true, true, true);
+  lamp(b, 'work', 'pendant', 686, 260, 602, 290, true, false, true, true);
 
-  // 卧室：衣柜、床头柜、蜡烛、旧照片、空酒瓶、散落信纸、小地毯
-  prop(b, 'wardrobe', 22, 134, 36, 18);
-  prop(b, 'desk', 92, 328, 18, 18);
-  prop(b, 'candles', 96, 330, 10, 10);
-  prop(b, 'photo', 70, 300, 12, 9, 0.3);
-  prop(b, 'bottle', 100, 270, 6, 14, 1.2);
-  prop(b, 'papers', 40, 270, 18, 14, -0.4);
-  prop(b, 'rug', 34, 200, 66, 52, 0.05);
-  prop(b, 'cross_wall', 60, 346, 12, 14);
+  // 卧室：衣柜、床头柜、蜡烛、旧照片、空酒瓶、散落信纸、小地毯（避开西窗 ly 239..301 与西南角铁床）
+  prop(b, 'wardrobe', 24, 206, 42, 20);
+  prop(b, 'desk', 158, 476, 24, 22);
+  prop(b, 'candles', 164, 480, 10, 10);
+  prop(b, 'photo', 118, 430, 14, 10, 0.3);
+  prop(b, 'bottle', 150, 390, 7, 15, 1.2);
+  prop(b, 'papers', 60, 395, 22, 16, -0.4);
+  prop(b, 'rug', 56, 305, 92, 72, 0.05);
+  prop(b, 'cross_wall', 96, 504, 14, 16);
   // 储藏间：高货架、成摞木箱、麻袋、地窖入口
-  prop(b, 'shelf', 18, 22, 14, 92);
-  prop(b, 'crates', 82, 22, 30, 26);
-  prop(b, 'sack', 44, 30, 18, 14, 0.4);
-  prop(b, 'sack', 50, 50, 16, 13, -0.5);
-  prop(b, 'hatch', 52, 72, 30, 26);
-  prop(b, 'jars', 20, 24, 12, 86);
-  // 工作间：墙挂工具、锯木马、油污、零件
-  prop(b, 'tools_rack', 450, 20, 70, 8);
-  prop(b, 'sawhorse', 470, 300, 34, 14);
-  prop(b, 'oil_stain', 500, 120, 30, 20);
-  prop(b, 'wires', 438, 40, 90, 60);
-  prop(b, 'chair_fallen', 455, 270, 16, 16, 1.1);
+  prop(b, 'shelf', 20, 24, 16, 128);
+  prop(b, 'crates', 132, 24, 38, 32);
+  prop(b, 'sack', 62, 38, 22, 16, 0.4);
+  prop(b, 'sack', 72, 66, 20, 15, -0.5);
+  prop(b, 'hatch', 76, 112, 36, 32);
+  prop(b, 'jars', 22, 28, 12, 116);
+  // 工作间：墙挂工具、锯木马、油污、零件（避开东门 ly 237..303 与东南角火炉）
+  prop(b, 'tools_rack', 636, 20, 96, 8);
+  prop(b, 'sawhorse', 636, 442, 42, 16);
+  prop(b, 'oil_stain', 710, 175, 38, 26);
+  prop(b, 'wires', 610, 110, 125, 80);
+  prop(b, 'chair_fallen', 626, 388, 18, 18, 1.1);
   return b;
 }
 
@@ -595,7 +621,7 @@ function buildSawmillShell(rect: RectLike): Building {
 }
 
 function buildFarmhouse(): Building {
-  const b = newBuilding('farm_house', '农舍', '荒芜农庄', 'farm', -1640, -230, 260, 200, 'timber', true, 16);
+  const b = newBuilding('farm_house', '农舍', '荒芜农庄', 'farm', -1780, -340, 260, 200, 'timber', true, 16);
   ext(b, 'n', [
     { at: 40, len: 40, kind: 'window', boarded: 2 },
     { at: 180, len: 40, kind: 'window', boarded: 0 },
@@ -643,7 +669,7 @@ function buildFarmhouse(): Building {
 }
 
 function buildBarn(): Building {
-  const b = newBuilding('farm_barn', '谷仓', '荒芜农庄', 'farm', -1350, -250, 240, 180, 'timber', false, 16);
+  const b = newBuilding('farm_barn', '谷仓', '荒芜农庄', 'farm', -1320, -350, 240, 180, 'timber', false, 16);
   ext(b, 's', [{ at: 50, len: 70, kind: 'doorway' }]);
   ext(b, 'e', [{ at: 60, len: 40, kind: 'window', boarded: 2 }]);
   ext(b, 'n', [
@@ -670,7 +696,7 @@ function buildBarn(): Building {
 }
 
 function buildVillageHouse1(): Building {
-  const b = newBuilding('vil_h1', '村落民居 · 东欧木屋', '林中村落', 'village', -260, 1380, 220, 170, 'timber', true, 16);
+  const b = newBuilding('vil_h1', '村落民居 · 东欧木屋', '林中村落', 'village', -390, 1300, 220, 170, 'timber', true, 16);
   ext(b, 'n', [
     { at: 40, len: 44, kind: 'door', open: false, hinge: 1, swing: 1 },
     { at: 150, len: 36, kind: 'window', boarded: 1 },
@@ -707,7 +733,7 @@ function buildVillageHouse1(): Building {
 }
 
 function buildVillageHouse2(): Building {
-  const b = newBuilding('vil_h2', '村落民居 · 双坡屋', '林中村落', 'village', 60, 1360, 180, 200, 'timber', true, 16);
+  const b = newBuilding('vil_h2', '村落民居 · 双坡屋', '林中村落', 'village', 140, 1280, 180, 200, 'timber', true, 16);
   ext(b, 'n', [
     { at: 100, len: 44, kind: 'door', open: false, hinge: -1, swing: 1 },
     { at: 30, len: 36, kind: 'window', boarded: 2 },
@@ -740,7 +766,7 @@ function buildVillageHouse2(): Building {
 }
 
 function buildVillageHouse3(): Building {
-  const b = newBuilding('vil_h3', '村落焚毁民居', '林中村落', 'village', -120, 1640, 200, 150, 'ruin', false, 16);
+  const b = newBuilding('vil_h3', '村落焚毁民居', '林中村落', 'village', -120, 1730, 200, 150, 'ruin', false, 16);
   ext(b, 'n', [{ at: 40, len: 44, kind: 'doorway' }]);
   ext(b, 'w', [{ at: 60, len: 30, kind: 'doorway' }]);
   ext(b, 'e', [{ at: 70, len: 36, kind: 'window', boarded: 0 }]);
@@ -762,7 +788,7 @@ function buildVillageHouse3(): Building {
 }
 
 function buildChapel(): Building {
-  const b = newBuilding('chapel', '木教堂', '木教堂', 'church', -340, -1720, 180, 300, 'timber', false, 16);
+  const b = newBuilding('chapel', '木教堂', '木教堂', 'church', -400, -1720, 180, 300, 'timber', false, 16);
   ext(b, 's', [{ at: 68, len: 44, kind: 'door', open: false, hinge: 1, swing: -1 }]);
   ext(b, 'w', [
     { at: 110, len: 30, kind: 'window', boarded: 0 },
@@ -880,7 +906,7 @@ function buildDoctor(): Building {
 }
 
 function buildFishHut(): Building {
-  const b = newBuilding('fish_hut', '渔屋', '沼泽渔屋', 'fishing', 1560, 1400, 180, 140, 'timber', true, 16);
+  const b = newBuilding('fish_hut', '渔屋', '沼泽渔屋', 'fishing', 1590, 1400, 180, 140, 'timber', true, 16);
   ext(b, 'w', [{ at: 66, len: 44, kind: 'door', open: true, hinge: 1, swing: 1 }]);
   ext(b, 'n', [{ at: 110, len: 36, kind: 'window', boarded: 1 }]);
   ext(b, 's', [{ at: 30, len: 36, kind: 'window', boarded: 0 }]);
@@ -905,7 +931,7 @@ function buildFishHut(): Building {
 }
 
 function buildTowerHut(): Building {
-  const b = newBuilding('tower_hut', '配电小屋', '信号塔', 'radio', 1520, -1440, 200, 150, 'masonry', false, 16);
+  const b = newBuilding('tower_hut', '配电小屋', '信号塔', 'radio', 1550, -1430, 200, 150, 'masonry', false, 16);
   ext(b, 's', [{ at: 132, len: 44, kind: 'door', open: false, hinge: -1, swing: -1 }]);
   ext(b, 'n', [{ at: 30, len: 40, kind: 'window', boarded: 1 }]);
   ext(b, 'e', [{ at: 40, len: 40, kind: 'window', boarded: 0 }]);
@@ -933,7 +959,7 @@ function buildTowerHut(): Building {
 }
 
 function buildRailHut(): Building {
-  const b = newBuilding('rail_hut', '道班房', '旧铁道口', 'rail', 110, 1030, 150, 120, 'timber', true, 16);
+  const b = newBuilding('rail_hut', '道班房', '旧铁道口', 'rail', 110, 1075, 150, 120, 'timber', true, 16);
   ext(b, 'n', [{ at: 20, len: 44, kind: 'door', open: true, hinge: 1, swing: 1 }]);
   ext(b, 'e', [{ at: 30, len: 40, kind: 'window', boarded: 1 }]);
   ext(b, 's', [{ at: 30, len: 36, kind: 'window', boarded: 2 }]);
@@ -982,7 +1008,8 @@ export function createBuildingLayouts(hideoutRect: RectLike, sawmillRect: RectLi
     buildRailHut(),
   ];
   for (const b of buildings) {
-    if (b.hasEntry && Variants.val.homes !== 'a') scaleBuildingGeometry(b, 1.16);
+    // 将所有野外可进入房屋面积扩大至原 1.16 倍基准的 2 倍以上（1.66 / 1.16 ≈ 1.431，面积约 2.05×）
+    if (b.hasEntry) scaleBuildingGeometry(b, Variants.val.homes === 'a' ? 1.45 : 1.66);
   }
   let doorCursor = 0;
   let lightCursor = 0;
@@ -1054,15 +1081,15 @@ export function createBuildingLayouts(hideoutRect: RectLike, sawmillRect: RectLi
   for (let k = 0; k < 4; k++) {
     Y('boardwalk', 1300 + k * 64, 1470 + k * 1, 66, 34, 0.02);
   }
-  Y('rowboat', 1770, 1440, 26, 60);
+  Y('rowboat', 1830, 1440, 26, 60);
   // 旧铁道口：倒伏道闸、停字牌、遗弃的轨道手摇车
   Y('barrier', -60, 1030, 70, 8, 0.35);
   Y('stop_sign', 62, 950, 14, 14);
   Y('handcar', -665, 985, 50, 30);
   // 路标（label 写在 kind 后缀，渲染层解析）与倒伏栅栏、路边十字架
   Y('sign:林中村落 ↓', 64, 246, 16, 16);
-  Y('sign:医生之屋 →', 336, -104, 16, 16, 0.1);
-  Y('sign:坠毁货车 ↖', -392, -130, 16, 16);
+  Y('sign:医生之屋 →', 450, -180, 16, 16, 0.1);
+  Y('sign:坠毁货车 ↖', -475, -130, 16, 16);
   Y('sign:木教堂 ↑', -610, -830, 16, 16, -0.2);
   Y('sign:信号塔 ↗', 990, -740, 16, 16);
   Y('sign:沼泽渔屋 ↘', 1180, 1290, 16, 16, 0.1);

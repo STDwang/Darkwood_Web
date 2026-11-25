@@ -18,6 +18,8 @@
   --sr: env(safe-area-inset-right, 0px);
   --st: env(safe-area-inset-top, 0px);
   --sb: env(safe-area-inset-bottom, 0px);
+  /* 小红书原生右上角胶囊下缘额外避让偏移（常规浏览器恒为 0px，容器内动态测算） */
+  --xhs-cap-offset: 0px;
 
   --gl: max(20px, var(--sl));
   --gr: max(20px, var(--sr));
@@ -457,10 +459,10 @@ button.paper-hud:hover {
   letter-spacing: 0.02em;
 }
 
-/* 游戏中自定义光标：小号骨白圆环准星 + 暗描边 + 余烬中心点（内联 SVG data URI）；热点居中，回退 crosshair */
+/* 游戏中自定义光标：复刻《Darkwood》原作粗黑描边骨白实心圆点 + 外围断续蚀刻细环准星（内联 SVG data URI）；热点居中，回退 crosshair */
 .ember-cursor {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='5.5' stroke='%23000' stroke-opacity='0.7' stroke-width='3'/%3E%3Ccircle cx='12' cy='12' r='5.5' stroke='%23d9d1bf' stroke-opacity='0.92' stroke-width='1.1'/%3E%3Cpath d='M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3' stroke='%23000' stroke-opacity='0.7' stroke-width='2.6'/%3E%3Cpath d='M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3' stroke='%23d9d1bf' stroke-width='1'/%3E%3C/g%3E%3Ccircle cx='12' cy='12' r='1.1' fill='%23b87b3b'/%3E%3C/svg%3E")
-      12 12,
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 26 26'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Ccircle cx='13' cy='13' r='8.2' stroke='%23080706' stroke-opacity='0.65' stroke-width='2.2' stroke-dasharray='6.5 4.2'/%3E%3Ccircle cx='13' cy='13' r='8.2' stroke='%23d9d1bf' stroke-opacity='0.78' stroke-width='1.05' stroke-dasharray='6.5 4.2'/%3E%3C/g%3E%3Ccircle cx='13' cy='13' r='3.4' fill='%23070605' fill-opacity='0.92'/%3E%3Ccircle cx='13' cy='13' r='2.1' fill='%23e5decb'/%3E%3C/svg%3E")
+      13 13,
     crosshair;
 }
 
@@ -661,13 +663,14 @@ button.paper-hud:hover {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 10px rgba(0, 0, 0, 0.6);
 }
 
-/* 右上：墨线图标按钮 + 小地图（桌面：地图在上、按钮在下） */
+/* 右上：墨线图标按钮 + 小地图（桌面：地图在上、按钮在下；小工具容器内自动下移避让右上角原生胶囊） */
 .hud2-tr {
   flex-shrink: 0;
   display: flex;
   flex-direction: column-reverse;
   align-items: center;
   gap: 4px;
+  margin-top: var(--xhs-cap-offset, 0px);
 }
 .hud2-actions {
   display: flex;
@@ -867,10 +870,11 @@ button.paper-hud:hover {
   inset: 1px 1.5px;
   transition: clip-path 160ms linear;
 }
-/* 生命：暗血红 + 干涸墨斑 */
+/* 生命：深沉凝结暗血红 + 干涸墨斑边缘（对标《Darkwood》原作低彩度油画血槽） */
 .hud2-bar--hp .hud2-bar__fill {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Cfilter id='n' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.12 0 0 0 0 0.03 0 0 0 0 0.02 1.5 0 0 0 -0.58'/%3E%3C/filter%3E%3Crect width='100%' height='100%' filter='url(%23n)'/%3E%3C/svg%3E"), linear-gradient(180deg, #8c2c22 0%, #6e1f1a 52%, #4a1311 100%);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Cfilter id='n' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.14 0 0 0 0 0.03 0 0 0 0 0.02 1.55 0 0 0 -0.58'/%3E%3C/filter%3E%3Crect width='100%' height='100%' filter='url(%23n)'/%3E%3C/svg%3E"), linear-gradient(180deg, #983126 0%, #73201a 50%, #46110f 100%);
   background-size: 60px 60px, auto;
+  box-shadow: inset 0 1px 0 rgba(232, 146, 128, 0.18);
 }
 /* 体力：骨白 + 纸纹 */
 .hud2-bar--st .hud2-bar__track {

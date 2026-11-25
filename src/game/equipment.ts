@@ -22,6 +22,7 @@ import type { InteractPrompt, LootContainer, Particle } from './types';
 import { clamp, createRng, dist, expDecay, lerp, raySegmentIntersect } from './util';
 import type { Segment } from './util';
 import { collectOccluderSegments, getSurfaceAt, isPointInHideout, resolveWorldCollision } from './world';
+import { triggerXhsVibrate } from './xhsBridge';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -263,14 +264,14 @@ export const FLAME_PHYS = {
   whooshSpeed: 420,
 };
 
-/** 火把点光源参数（renderer 推入 GpuLight 时读取：浓郁暖橘近身光池，与冷白远射聚焦手电形成鲜明反差） */
+/** 火把点光源参数（renderer 推入 GpuLight 时读取：低彩度暖琥珀近身光池，防多光源过曝） */
 export const TORCH_LIGHT = {
-  radius: 188,
-  intensity: 1.55,
-  groundRadius: 158,
-  groundIntensity: 1.25,
-  muzzleRadius: 270,
-  muzzleIntensity: 3.2,
+  radius: 184,
+  intensity: 1.16,
+  groundRadius: 154,
+  groundIntensity: 0.98,
+  muzzleRadius: 265,
+  muzzleIntensity: 2.65,
   /** 被视为"照亮敌人"的半径 */
   revealRadius: 175,
 };
@@ -975,6 +976,7 @@ export function equipFire(engine: GameEngine, host: EquipHost): boolean {
   eq.recoil = 1;
   eq.muzzleFlash = 0.05;
   startGesture(eq, 'recoil');
+  triggerXhsVibrate('medium');
 
   const ca = Math.cos(p.angle);
   const sa = Math.sin(p.angle);

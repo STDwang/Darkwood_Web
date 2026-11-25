@@ -1,4 +1,5 @@
 // 3-tier graphics quality + dynamic framerate governor (desktop 60fps + mobile scaling)
+import { hydratePrefAsync, safePrefGet, safePrefSet } from './xhsBridge';
 
 export type QualityTier = 0 | 1 | 2; // 0 = 流畅 Smooth, 1 = 均衡 Balanced, 2 = 高 High
 
@@ -64,6 +65,16 @@ export const QUALITY_PRESETS: Record<QualityTier, QualityPreset> = {
 
 const STORAGE_KEY = 'blackwood_quality_v3';
 
+function hasForcedUrlQuality(): boolean {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const forced = params.get('quality');
+    return forced === '0' || forced === '1' || forced === '2';
+  } catch {
+    return false;
+  }
+}
+
 function detectInitialTier(): QualityTier {
   try {
     const params = new URLSearchParams(window.location.search);
@@ -71,7 +82,7 @@ function detectInitialTier(): QualityTier {
     if (forced === '0' || forced === '1' || forced === '2') {
       return Number(forced) as QualityTier;
     }
-    const saved = window.localStorage.getItem(STORAGE_KEY);
+    const saved = safePrefGet(STORAGE_KEY);
     if (saved === '0' || saved === '1' || saved === '2') {
       return Number(saved) as QualityTier;
     }
@@ -117,13 +128,18 @@ export const Quality = {
     slowFrames = 0;
     smoothSeconds = 0;
     if (persist) {
-      try {
-        window.localStorage.setItem(STORAGE_KEY, String(tier));
-      } catch {
-        // ignore
-      }
+      safePrefSet(STORAGE_KEY, String(tier));
     }
     listeners.forEach((fn) => fn());
+  },
+
+  hydrateFromContainer() {
+    if (hasForcedUrlQuality()) return;
+    hydratePrefAsync(STORAGE_KEY, (saved) => {
+      if (saved === '0' || saved === '1' || saved === '2') {
+        this.setTier(Number(saved) as QualityTier, false);
+      }
+    });
   },
 
   reportFrame(frameMs: number, jsMs: number) {

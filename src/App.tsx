@@ -33,6 +33,7 @@ import { GameRuntime } from './game/runtime';
 import { HudSnapshot, ResourceKey, TimePhase, WeatherKind } from './game/types';
 import { Variants } from './game/variants';
 import { CRAFT_RECIPES } from './game/world';
+import { applyXhsWindowMetrics, setXhsKeepScreenOn } from './game/xhsBridge';
 
 type LayerId = 'pause' | 'craft' | 'journal' | 'settings' | 'controls' | 'dev';
 
@@ -94,13 +95,27 @@ export default function App() {
     const u4 = Variants.subscribe(() => setVariantTick((n) => n + 1));
     const coarse = window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window;
     setIsTouch(Boolean(coarse));
+
+    // 小红书小工具容器适配：异步水合偏好存储 + 窗口安全区与右上角胶囊避让测算
+    I18n.hydrateFromContainer();
+    Quality.hydrateFromContainer();
+    AudioFX.hydrateFromContainer();
+    applyXhsWindowMetrics();
+    window.addEventListener('resize', applyXhsWindowMetrics);
+
     return () => {
       u1();
       u2();
       u3();
       u4();
+      window.removeEventListener('resize', applyXhsWindowMetrics);
     };
   }, []);
+
+  // 游玩态保持屏幕常亮（9.55+），防止黑夜守屋观察动静时手机自动息屏
+  useEffect(() => {
+    setXhsKeepScreenOn(hud?.mode === 'play');
+  }, [hud?.mode]);
 
   const syncEngineHold = useCallback((nextLayers: LayerId[]) => {
     const rt = runtimeRef.current;
@@ -476,7 +491,10 @@ export default function App() {
               <span className="text-xs tracking-widest text-[#a89f8e]/75 whitespace-nowrap">
                 {lang === 'zh' ? '东欧暗林恐怖生存 · 实时法线光影' : 'Eastern European Survival Horror'}
               </span>
-              <div className="flex items-center gap-3">
+              <div
+                className="flex items-center gap-3"
+                style={{ marginTop: 'var(--xhs-cap-offset, 0px)' }}
+              >
                 {isDev && (
                   <button
                     type="button"

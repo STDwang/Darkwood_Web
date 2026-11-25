@@ -1491,3 +1491,154 @@ export function isEnemyLitByBuildingLights(engine: GameEngine, e: Enemy): boolea
   }
   return false;
 }
+
+/**
+ * 对标《Darkwood》原作（截图 3 右上角）：全地图亮灯 POI 建筑窗户向屋外草地斜射的柔和暖枯黄体积窗光柱。
+ * - 未封板窗户投射被窗棂竖挺轻微分瓣的宽柔窗光束；钉板窗户按剩余缝隙投射错落窄条漏光。
+ * - 方向由室内最近亮灯 -> 窗心与外墙法线混合决定，昼弱夜强，每帧零对象分配（共享 shaftGrad）。
+ */
+export function drawBuildingWindowShafts(
+  ctx: CanvasRenderingContext2D,
+  engine: GameEngine,
+  viewL: number,
+  viewT: number,
+  viewR: number,
+  viewB: number,
+  shaftGrad: CanvasGradient,
+  nightAmt: number
+): void {
+  const phaseK = 0.025 + 0.28 * nightAmt;
+  if (phaseK < 0.01) return;
+
+  vL = viewL;
+  vT = viewT;
+  vR = viewR;
+  vB = viewB;
+  const world = engine.world;
+  const bl = world.buildings;
+  const lights = world.lights;
+  const gen = genPowered(engine);
+  const t = engine.simTime;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = shaftGrad;
+
+  for (let bi = 0; bi < bl.length; bi++) {
+    const b = bl[bi];
+    // 庇护所门窗已由 drawBarricadeLightShafts 专项绘制
+    if (b.id === 'h_in' || b.id === 'mill' || b.lightCount <= 0) continue;
+    if (!buildingVisible(b, 190)) continue;
+
+    // 检查该建筑是否有亮着的灯
+    let anyLit = false;
+    for (let li = b.lightStart; li < b.lightStart + b.lightCount; li++) {
+      const l = lights[li];
+      if (l && isLightLit(l, gen)) {
+        anyLit = true;
+        break;
+      }
+    }
+    if (!anyLit) continue;
+
+    const bcx = b.x + b.w * 0.5;
+    const bcy = b.y + b.h * 0.5;
+
+    for (let wi = 0; wi < b.windows.length; wi++) {
+      const w = b.windows[wi];
+      if (!rectVisible(w.x, w.y, w.w, w.h, 175)) continue;
+
+      const wx = w.x + w.w * 0.5;
+      const wy = w.y + w.h * 0.5;
+      const horiz = w.orientation === 'h';
+      const nx = horiz ? 0 : wx < bcx ? -1 : 1;
+      const ny = horiz ? (wy < bcy ? -1 : 1) : 0;
+      const tx = -ny;
+      const ty = nx;
+      const openLen = horiz ? w.w : w.h;
+
+      // 寻找距该窗户最近的亮灯及其实时闪烁值
+      let bestD2 = 1e9;
+      let nearL: BuildingLight | null = null;
+      let flick = 0;
+      for (let li = b.lightStart; li < b.lightStart + b.lightCount; li++) {
+        const l = lights[li];
+        if (!l || !isLightLit(l, gen)) continue;
+        const dx = wx - l.x;
+        const dy = wy - l.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2 && d2 < (l.radius * 1.45) * (l.radius * 1.45)) {
+          bestD2 = d2;
+          nearL = l;
+          flick = lightFlicker(l, t);
+        }
+      }
+      if (!nearL || flick < 0.06) continue;
+
+      const distAtten = Math.max(0.22, 1 - Math.sqrt(bestD2) / (nearL.radius * 1.5));
+      const baseA = Math.min(0.36, phaseK * flick * distAtten * Math.min(1.15, nearL.intensity * 0.72));
+      if (baseA < 0.005) continue;
+
+      // 方向 = 室内灯源 -> 窗户的真实斜射向量与外墙法线融合（复刻原作图 3 右上角的斜向平行窗光束）
+      let rdx = wx - nearL.x;
+      let rdy = wy - nearL.y;
+      const rdl = Math.hypot(rdx, rdy) || 1;
+      rdx /= rdl;
+      rdy /= rdl;
+      let ddx = rdx * 0.58 + nx * 0.42;
+      let ddy = rdy * 0.58 + ny * 0.42;
+      if (ddx * nx + ddy * ny < 0.48) {
+        ddx = ddx * 0.45 + nx * 0.55;
+        ddy = ddy * 0.45 + ny * 0.55;
+      }
+      const dn = Math.hypot(ddx, ddy) || 1;
+      ddx /= dn;
+      ddy /= dn;
+      const ang = Math.atan2(ddy, ddx);
+
+      // 钉板越少，光束越宽；未钉板时呈现被中央窗棂自然切开的两瓣宽柔窗光柱
+      const slitCount = w.boarded === 0 ? 2 : Math.max(1, 4 - w.boarded);
+      for (let s = 0; s < slitCount; s++) {
+        const offFrac =
+          w.boarded === 0
+            ? s === 0
+              ? -0.24
+              : 0.24
+            : slitCount === 1
+            ? (h01(w.seed, 21) - 0.5) * 0.4
+            : ((s + 0.5) / slitCount - 0.5) * 0.72 + (h01(w.seed, s + 31) - 0.5) * 0.08;
+        const sx = wx + tx * offFrac * openLen + nx * 3.5;
+        const sy = wy + ty * offFrac * openLen + ny * 3.5;
+        const len = (96 + 118 * nightAmt) * (0.78 + 0.28 * h01(w.seed, s + 41));
+        const w0 = w.boarded === 0 ? openLen * 0.21 : 1.6 + h01(w.seed, s + 51) * 2.2;
+        const w1 = w0 + (w.boarded === 0 ? 14 + 10 * nightAmt : 7 + 12 * h01(w.seed, s + 61));
+
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(ang);
+        ctx.scale(len, 1);
+        ctx.globalAlpha = baseA * 0.34;
+        ctx.beginPath();
+        ctx.moveTo(0, -w0 * 1.18);
+        ctx.lineTo(1, -w1);
+        ctx.lineTo(1, w1);
+        ctx.lineTo(0, w0 * 1.18);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.globalAlpha = baseA * (w.boarded === 0 ? 0.72 : 0.92);
+        ctx.beginPath();
+        ctx.moveTo(0, -w0 * 0.55);
+        ctx.lineTo(1, -w1 * 0.52);
+        ctx.lineTo(1, w1 * 0.52);
+        ctx.lineTo(0, w0 * 0.55);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}

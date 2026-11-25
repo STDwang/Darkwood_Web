@@ -36,23 +36,23 @@ import {
 export const WORLD_SIZE = 5600;
 export const WORLD_HALF = WORLD_SIZE / 2;
 
-/** 庇护所外框（第三轮扩大为 560 × 380，内分主屋/卧室/储藏间/工作间；南墙与南门位置不变） */
+/** 庇护所外框（扩大为 800 × 540，面积超过原 560 × 380 的两倍；保持南墙与南门位置不变） */
 export const HIDEOUT_RECT = {
-  x: -280,
-  y: -240,
-  w: 560,
-  h: 380,
+  x: -400,
+  y: -400,
+  w: 800,
+  h: 540,
 };
 
-/** 锯木厂残垣屋顶矩形（engine.SAWMILL_ROOF_RECT 引用此处，单源） */
-export const SAWMILL_RECT = { x: 620, y: -610, w: 220, h: 230 };
+/** 锯木厂残垣屋顶矩形（扩大至 320 × 330，面积超过原两倍；engine.SAWMILL_ROOF_RECT 引用此处，单源） */
+export const SAWMILL_RECT = { x: 570, y: -660, w: 320, h: 330 };
 
-export const GENERATOR_POS: Vec2 = { x: -118, y: -88 };
-/** 工作台移入东翼工作间 */
-export const WORKBENCH_POS: Vec2 = { x: 207, y: -182 };
+export const GENERATOR_POS: Vec2 = { x: -130, y: -230 };
+/** 工作台位于东翼工作间北部 */
+export const WORKBENCH_POS: Vec2 = { x: 295, y: -315 };
 export const SHELTER_LAMPS: Vec2[] = [
-  { x: -65, y: 15 },
-  { x: 75, y: 20 },
+  { x: -85, y: -85 },
+  { x: 95, y: -65 },
 ];
 // 活火源坐标（单源真相：渲染、动态点光与火星粒子共用，零碰撞死角）
 // 室内铸铁炭炉按外框内角推导（与 renderer.drawHideoutInterior 的 innerR-26 / innerB-24 一致）
@@ -461,8 +461,8 @@ export function createWorld(seed = 19847): WorldData {
     {
       id: 'furn_sofa',
       kind: 'sofa',
-      x: -134,
-      y: 48,
+      x: -152,
+      y: 36,
       w: 54,
       h: 26,
       hp: 110,
@@ -472,8 +472,8 @@ export function createWorld(seed = 19847): WorldData {
     {
       id: 'furn_cabinet',
       kind: 'cabinet',
-      x: 82,
-      y: -56,
+      x: 108,
+      y: -150,
       w: 32,
       h: 24,
       hp: 130,
@@ -483,8 +483,8 @@ export function createWorld(seed = 19847): WorldData {
     {
       id: 'furn_table',
       kind: 'table',
-      x: 68,
-      y: 52,
+      x: 84,
+      y: 40,
       w: 46,
       h: 26,
       hp: 95,
@@ -496,8 +496,8 @@ export function createWorld(seed = 19847): WorldData {
   // 3 件信号中继零件：坠毁货车（近）/ 木教堂圣器室（北）/ 信号塔配电小屋（东北），均避开墙体与容器
   const relayNodes: RelayNode[] = [
     { id: 'relay_truck', zone: '坠毁货车', x: -705, y: -518, collected: false },
-    { id: 'relay_chapel', zone: '木教堂', x: -290, y: -1684, collected: false },
-    { id: 'relay_tower', zone: '信号塔', x: 1584, y: -1356, collected: false },
+    { id: 'relay_chapel', zone: '木教堂', x: -376, y: -1751, collected: false },
+    { id: 'relay_tower', zone: '信号塔', x: 1597, y: -1343, collected: false },
   ];
 
   addHideoutCabin(walls, barricades, zones);
@@ -526,16 +526,16 @@ export function createWorld(seed = 19847): WorldData {
       { x: -620, y: 610 },
     ]),
     makePath(54, [
-      { x: 300, y: -50 },
-      { x: 440, y: -160 },
-      { x: 610, y: -340 },
+      { x: 425, y: -130 },
+      { x: 520, y: -230 },
+      { x: 640, y: -360 },
       { x: 740, y: -490 },
     ]),
     makePath(50, [
       { x: -60, y: 175 },
-      { x: -330, y: 180 },
-      { x: -420, y: -60 },
-      { x: -560, y: -330 },
+      { x: -440, y: 185 },
+      { x: -490, y: -80 },
+      { x: -580, y: -340 },
       { x: -680, y: -560 },
     ]),
     makePath(48, [
@@ -565,8 +565,8 @@ export function createWorld(seed = 19847): WorldData {
       { x: 1520, y: -1230 },
     ]),
     makePath(50, [
-      { x: 300, y: -50 },
-      { x: 700, y: 40 },
+      { x: 425, y: -130 },
+      { x: 740, y: 20 },
       { x: 1100, y: 200 },
       { x: 1400, y: 330 },
       { x: 1562, y: 345 },
@@ -659,17 +659,17 @@ export function createWorld(seed = 19847): WorldData {
     }
   );
 
-  // POI 2: Old Sawmill (NE) — ruined walls & rich wood/scrap
-  zones.push({ name: '废弃锯木厂', x: 590, y: -640, w: 300, h: 280, surface: 'wood' });
-  walls.push({ id: 'mill_w1', x: 620, y: -610, w: 220, h: 16, kind: 'ruin_wall', blocksLight: true });
-  walls.push({ id: 'mill_w2', x: 620, y: -610, w: 16, h: 155, kind: 'ruin_wall', blocksLight: true });
-  walls.push({ id: 'mill_w3', x: 824, y: -540, w: 16, h: 160, kind: 'ruin_wall', blocksLight: true });
-  walls.push({ id: 'mill_w4', x: 685, y: -395, w: 155, h: 16, kind: 'ruin_wall', blocksLight: true });
+  // POI 2: Old Sawmill (NE) — ruined walls & rich wood/scrap（同步扩大至 320 × 330）
+  zones.push({ name: '废弃锯木厂', x: 540, y: -690, w: 380, h: 390, surface: 'wood' });
+  walls.push({ id: 'mill_w1', x: 570, y: -660, w: 320, h: 16, kind: 'ruin_wall', blocksLight: true });
+  walls.push({ id: 'mill_w2', x: 570, y: -660, w: 16, h: 225, kind: 'ruin_wall', blocksLight: true });
+  walls.push({ id: 'mill_w3', x: 874, y: -565, w: 16, h: 235, kind: 'ruin_wall', blocksLight: true });
+  walls.push({ id: 'mill_w4', x: 660, y: -346, w: 230, h: 16, kind: 'ruin_wall', blocksLight: true });
   containers.push(
     {
       id: 'c_mill_1',
-      x: 675,
-      y: -560,
+      x: 645,
+      y: -590,
       r: 20,
       kind: 'logpile',
       zone: '废弃锯木厂',
@@ -680,8 +680,8 @@ export function createWorld(seed = 19847): WorldData {
     },
     {
       id: 'c_mill_2',
-      x: 780,
-      y: -555,
+      x: 810,
+      y: -585,
       r: 17,
       kind: 'toolbox',
       zone: '废弃锯木厂',
@@ -692,8 +692,8 @@ export function createWorld(seed = 19847): WorldData {
     },
     {
       id: 'c_mill_3',
-      x: 750,
-      y: -440,
+      x: 770,
+      y: -415,
       r: 18,
       kind: 'barrel',
       zone: '废弃锯木厂',
@@ -800,7 +800,7 @@ export function createWorld(seed = 19847): WorldData {
     },
     {
       id: 'c_yard_wood',
-      x: 330,
+      x: 455,
       y: 70,
       r: 19,
       kind: 'logpile',
@@ -824,7 +824,7 @@ export function createWorld(seed = 19847): WorldData {
     },
     {
       id: 'c_yard_barrel',
-      x: -335,
+      x: -455,
       y: 30,
       r: 17,
       kind: 'barrel',
@@ -1176,8 +1176,8 @@ function scatterWorldProps(
 
   // 0c. 5 处荒野破败露营地（废弃帆布帐篷 + 野外火堆 + 破败围栏 + 被铁链拴着的恶犬）
   const campSites = [
-    { x: 265, y: -235, ang: 0.45, lit: 1, hasDog: true },   // 庇护所东北近林缘营地（开局探索很快可见！）
-    { x: -320, y: -290, ang: -0.6, lit: 0, hasDog: true },  // 西北废弃猎人营地
+    { x: 495, y: -330, ang: 0.45, lit: 1, hasDog: true },   // 庇护所东北近林缘营地（开局探索很快可见！）
+    { x: -510, y: -340, ang: -0.6, lit: 0, hasDog: true },  // 西北废弃猎人营地
     { x: 540, y: 260, ang: 2.2, lit: 1, hasDog: true },     // 东南荒地燃火营地
     { x: -640, y: 420, ang: 1.1, lit: 0, hasDog: true },    // 西南沼泽边缘恶犬营地
     { x: 960, y: -120, ang: -1.4, lit: 0, hasDog: false },  // 东侧深林废营
@@ -1295,7 +1295,7 @@ function scatterWorldProps(
   // 0f. 苍蝇环绕、会蠕动的异化尸体（野外林间 3 具 + 荒废房屋房间内 4 具；靠近可能触发机关伏击！）
   const wildCorpses = [
     { x: 195, y: 265 },
-    { x: -395, y: -165 },
+    { x: -495, y: -185 },
     { x: 470, y: -310 },
   ];
   for (const wc of wildCorpses) {
@@ -1328,7 +1328,7 @@ function scatterWorldProps(
 
   // 0g. 诡异自摆跷跷板（2 座：庇护所西南荒院与农庄旁；无风自己上下动，光源照到 2s 后诡异停下！）
   const seesawSpots = [
-    { x: -245, y: 120, ang: 0.22 },
+    { x: -310, y: 210, ang: 0.22 },
     { x: 465, y: 185, ang: -0.35 },
   ];
   for (const ss of seesawSpots) {
@@ -1346,7 +1346,7 @@ function scatterWorldProps(
     }
   }
 
-  // 1. 残破木板桥（沿主要林间土路铺设 7 座，跨泥洼且与道路方向精准对齐）
+  // 1. 残破木板桥（沿主要林间土路铺设 7 座，跨泥洼且与道路方向精准对齐；长度扩大至原两倍以上）
   for (let pi = 0; pi < paths.length && pi < 7; pi++) {
     const pts = paths[pi].points;
     if (pts.length < 2) continue;
@@ -1363,14 +1363,14 @@ function scatterWorldProps(
       x: mx,
       y: my,
       angle: ang,
-      w: 96 + rng() * 38,
-      h: 48 + rng() * 10,
+      w: 210 + rng() * 76,
+      h: 54 + rng() * 12,
       seed: rng() * 100,
     });
     // 桥头旁常配一辆旧手推车或散落原木
     const side = rng() > 0.5 ? 1 : -1;
-    const px = mx + Math.cos(ang + Math.PI * 0.5 * side) * 58;
-    const py = my + Math.sin(ang + Math.PI * 0.5 * side) * 58;
+    const px = mx + Math.cos(ang + Math.PI * 0.5 * side) * 64;
+    const py = my + Math.sin(ang + Math.PI * 0.5 * side) * 64;
     if (!isIndoorsAny(px, py, 24) && !nearTree(px, py, 32)) {
       out.push({
         id: pid++,

@@ -44,6 +44,7 @@ import {
   drawBuildingFixtures,
   drawBuildingGround,
   drawBuildingOverhead,
+  drawBuildingWindowShafts,
   isEnemyLitByBuildingLights,
   pushBuildingLights,
 } from './render/buildingsDraw';
@@ -469,6 +470,52 @@ export class GameRenderer {
         ctx.beginPath();
         ctx.ellipse(0, 0, 11, 9, 0.1, 0, Math.PI * 2);
         ctx.fill();
+      } else if (evt.enemyKind === 'dancer') {
+        // 瘫倒铺散在暗血中的残破泥污白裙与散乱黑发
+        ctx.fillStyle = 'rgba(164, 158, 142, 0.84)';
+        ctx.strokeStyle = 'rgba(28, 24, 20, 0.85)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        for (let k = 0; k <= 10; k++) {
+          const a = (k / 10) * Math.PI * 2;
+          const r = 13 + (k % 2) * 3.5;
+          const px = Math.cos(a) * r;
+          const py = Math.sin(a) * (r * 0.82);
+          if (k === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(78, 16, 14, 0.65)';
+        ctx.beginPath();
+        ctx.ellipse(-3, 2, 6, 3.5, 0.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(18, 16, 15, 0.92)';
+        ctx.beginPath();
+        ctx.ellipse(4, -1, 5.5, 4.2, -0.2, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (evt.enemyKind === 'chomper') {
+        // 撕裂坍塌的暗红纵裂肉块与扭曲黑藤残须
+        ctx.strokeStyle = 'rgba(24, 22, 17, 0.9)';
+        ctx.lineWidth = 2.6;
+        for (let k = 0; k < 5; k++) {
+          const a = (k / 5) * Math.PI * 2 + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.quadraticCurveTo(Math.cos(a) * 11, Math.sin(a) * 9 + 3, Math.cos(a) * 19, Math.sin(a) * 15);
+          ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(72, 22, 19, 0.9)';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 13, 9.5, 0.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(212, 202, 178, 0.52)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(-7, -1);
+        ctx.lineTo(8, 1);
+        ctx.stroke();
       } else {
         // Twisted hunched Stalker limbs & torn burial coat
         ctx.strokeStyle = 'rgba(26, 28, 24, 0.88)';
@@ -686,19 +733,19 @@ export class GameRenderer {
   private getAmbientRGB(engine: GameEngine): { r: number; g: number; b: number } {
     const cold = Variants.val.palette !== 'a';
     if (this.isToneOn()) {
-      // Darkwood 昼夜基调：白昼阴郁清晰但保持锥内外明显明暗层次；黄昏冷青铁锈暮色；黑夜深邃压迫，靠火光与手电切开黑暗
+      // Darkwood 昼夜基调：白昼阴沉湿冷东欧林地（锥内外层次分明）；黄昏低彩铁锈青灰暮色；黑夜深邃压迫，靠旧手电与琥珀微光切开黑暗
       const t = engine.getPhaseProgress();
       if (engine.phase === 'day') {
         return cold
-          ? { r: lerp(0.56, 0.48, t), g: lerp(0.58, 0.49, t), b: lerp(0.54, 0.47, t) }
+          ? { r: lerp(0.51, 0.43, t), g: lerp(0.53, 0.45, t), b: lerp(0.50, 0.43, t) }
           : { r: lerp(0.48, 0.41, t), g: lerp(0.52, 0.44, t), b: lerp(0.45, 0.39, t) };
       }
       if (engine.phase === 'dusk') {
         return cold
-          ? { r: lerp(0.48, 0.19, t), g: lerp(0.44, 0.21, t), b: lerp(0.40, 0.25, t) }
+          ? { r: lerp(0.42, 0.17, t), g: lerp(0.41, 0.19, t), b: lerp(0.39, 0.22, t) }
           : { r: lerp(0.41, 0.16, t), g: lerp(0.39, 0.18, t), b: lerp(0.34, 0.21, t) };
       }
-      return cold ? { r: 0.13, g: 0.16, b: 0.19 } : { r: 0.11, g: 0.14, b: 0.17 };
+      return cold ? { r: 0.132, g: 0.152, b: 0.176 } : { r: 0.11, g: 0.14, b: 0.17 };
     }
     if (engine.phase === 'day') {
       const t = engine.getPhaseProgress();
@@ -1240,12 +1287,17 @@ export class GameRenderer {
         ctx.arc(topX, topY, t.trunkR * 1.45, 0, Math.PI * 2);
         ctx.fill();
 
-        // 2) 原作标志性的精致迎光树皮圆弧亮边（清晰勾勒树干底部轮廓）
+        // 2) 原作标志性的双层迎光树皮圆弧亮边（外缘粗糙受光树皮 + 内圈裂纹微光，雕塑般区分根部与上方暗干）
         ctx.lineCap = 'round';
-        ctx.strokeStyle = inTorch && !inCone ? `rgba(222, 184, 132, ${rimA.toFixed(3)})` : `rgba(196, 192, 168, ${rimA.toFixed(3)})`;
-        ctx.lineWidth = 1.65;
+        ctx.strokeStyle = inTorch && !inCone ? `rgba(210, 178, 134, ${rimA.toFixed(3)})` : `rgba(192, 186, 162, ${rimA.toFixed(3)})`;
+        ctx.lineWidth = 1.75;
         ctx.beginPath();
-        ctx.arc(t.x, t.y, rimR, toPlayerAng - 1.32, toPlayerAng + 1.32);
+        ctx.arc(t.x, t.y, rimR, toPlayerAng - 1.35, toPlayerAng + 1.35);
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(226, 218, 192, ${(rimA * 0.42).toFixed(3)})`;
+        ctx.lineWidth = 0.95;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, rimR * 0.72, toPlayerAng - 0.88, toPlayerAng + 0.88);
         ctx.stroke();
         ctx.restore();
       }
@@ -1640,12 +1692,12 @@ export class GameRenderer {
     const innerR = x + w - t;
     const innerB = y + h - t;
 
-    // 1. 精绘东欧波斯椭圆旧地毯（对标原版截图 3, 4）
+    // 1. 精绘东欧波斯椭圆旧地毯（对标原版截图 3, 4；随主屋扩建适度放大）
     const rug = this.getPersianRug();
     ctx.save();
-    ctx.translate(0, 24);
+    ctx.translate(0, -12);
     ctx.rotate(-0.04);
-    ctx.drawImage(rug, -78, -50, 156, 100);
+    ctx.drawImage(rug, -98, -62, 196, 124);
     ctx.restore();
 
     // 2. Snaking Black Power Cables from Generator to Shelter Lamps
@@ -1653,14 +1705,16 @@ export class GameRenderer {
     ctx.lineCap = 'round';
     for (let idx = 0; idx < SHELTER_LAMPS.length; idx++) {
       const lamp = SHELTER_LAMPS[idx];
+      const gx = GENERATOR_POS.x + 14;
+      const gy = GENERATOR_POS.y + 8;
       ctx.strokeStyle = 'rgba(8, 8, 8, 0.65)';
       ctx.lineWidth = 3.2;
       ctx.beginPath();
-      ctx.moveTo(GENERATOR_POS.x + 14, GENERATOR_POS.y + 8);
+      ctx.moveTo(gx, gy);
       if (idx === 0) {
-        ctx.bezierCurveTo(-110, -35, -92, -10, lamp.x, lamp.y);
+        ctx.bezierCurveTo(gx + 12, gy + 58, lamp.x - 24, lamp.y - 26, lamp.x, lamp.y);
       } else {
-        ctx.bezierCurveTo(-45, -62, 32, -38, lamp.x, lamp.y);
+        ctx.bezierCurveTo(gx + 75, gy + 26, lamp.x - 42, lamp.y - 58, lamp.x, lamp.y);
       }
       ctx.stroke();
 
@@ -3225,17 +3279,17 @@ export class GameRenderer {
 
       const coldPalette = Variants.val.palette !== 'a';
       const baseInt = hasBeam
-        ? (coldPalette ? 2.65 : 2.35) * p.flickerVal
-        : 1.32;
+        ? (coldPalette ? 1.88 : 2.35) * p.flickerVal
+        : 0.96;
       this.gpuLights.push({
         x: beamX - viewL,
         y: beamY - viewT,
         radius: coneLen,
         intensity: baseInt,
-        // 手电筒呈冷白微青聚焦电光，与火把的炽热暖橘形成鲜明反差
-        r: hasBeam ? 0.84 : 0.93,
-        g: hasBeam ? 0.94 : 0.96,
-        b: hasBeam ? 1.0 : 0.94,
+        // 手电筒呈旧钨丝微暖骨白聚焦电光，配合着色器枯黄羊皮色调，与冷石板灰锥外拉开鲜明层次
+        r: hasBeam ? (coldPalette ? 0.95 : 0.84) : 0.92,
+        g: hasBeam ? (coldPalette ? 0.93 : 0.94) : 0.94,
+        b: hasBeam ? (coldPalette ? 0.84 : 1.0) : 0.92,
         dirX: Math.cos(p.angle),
         dirY: Math.sin(p.angle),
         coneCos: Math.cos(effConeHalf),
@@ -3243,19 +3297,19 @@ export class GameRenderer {
       });
     }
 
-    // Channel B: 角色近身极微弱轮廓感知圈（手持火把时大幅压低无源暖光，让真实暖橘火把主导照明）
+    // Channel B: 角色近身轮廓感知圈（手持火把时压低无源微光，让火把与炭笔毛边光环自然融合）
     const holdingLitTorch = engine.equip.torchInHand && engine.equip.torchLight > 0.1;
-    const auraR = holdingLitTorch ? 72 : engine.phase === 'day' ? 96 : 82;
+    const auraR = holdingLitTorch ? 72 : engine.phase === 'day' ? 94 : 82;
     computeVisibilityPolygon(engine.world, p.x, p.y, auraR, this.auraPolyScratch);
     fillPoly(this.auraPolyScratch, '#0000ff');
     this.gpuLights.push({
       x: p.x - viewL,
       y: p.y - viewT,
       radius: auraR,
-      intensity: holdingLitTorch ? 0.44 : engine.phase === 'night' ? 0.86 : 1.05,
-      r: holdingLitTorch ? 0.88 : 0.86,
-      g: holdingLitTorch ? 0.88 : 0.90,
-      b: holdingLitTorch ? 0.92 : 0.92,
+      intensity: holdingLitTorch ? 0.34 : engine.phase === 'night' ? 0.72 : 0.86,
+      r: holdingLitTorch ? 0.90 : 0.88,
+      g: holdingLitTorch ? 0.88 : 0.89,
+      b: holdingLitTorch ? 0.84 : 0.88,
       dirX: 0,
       dirY: 0,
       coneCos: -2.0,
@@ -3310,10 +3364,10 @@ export class GameRenderer {
           x: lx - viewL,
           y: ly - viewT,
           radius: lampR,
-          intensity: (coldPalette ? 1.88 : 1.72) * sputter,
-          r: 1.0,
-          g: coldPalette ? 0.78 : 0.68,
-          b: coldPalette ? 0.48 : 0.34,
+          intensity: (coldPalette ? 1.34 : 1.72) * sputter,
+          r: coldPalette ? 0.96 : 1.0,
+          g: coldPalette ? 0.83 : 0.68,
+          b: coldPalette ? 0.62 : 0.34,
           dirX: 0,
           dirY: 0,
           coneCos: -2.0,
@@ -3322,11 +3376,11 @@ export class GameRenderer {
       }
     }
 
-    // 活篝火与生锈铁桶余烬火盆：不规则高频呼吸频闪暖色动态点光 + 柔和阴影摇曳
+    // 活篝火与生锈铁桶余烬火盆：不规则高频呼吸频闪低彩度暖色动态点光 + 柔和阴影摇曳
     const fireSources = [
-      { pos: HIDEOUT_BRAZIER_POS, r: 190, baseIntensity: 2.35, seed: 5.3, shadowed: true },
-      { pos: CAMPFIRE_POS, r: 230, baseIntensity: 2.85, seed: 1.7, shadowed: true },
-      { pos: HIDEOUT_STOVE_POS, r: 100, baseIntensity: 1.28, seed: 3.1, shadowed: false },
+      { pos: HIDEOUT_BRAZIER_POS, r: 185, baseIntensity: coldPalette ? 1.46 : 2.35, seed: 5.3, shadowed: true },
+      { pos: CAMPFIRE_POS, r: 225, baseIntensity: coldPalette ? 2.05 : 2.85, seed: 1.7, shadowed: true },
+      { pos: HIDEOUT_STOVE_POS, r: 96, baseIntensity: coldPalette ? 0.86 : 1.28, seed: 3.1, shadowed: false },
     ];
     for (const fire of fireSources) {
       if (this.gpuLights.length >= maxLights) break;
@@ -3350,9 +3404,9 @@ export class GameRenderer {
         y: fy - viewT,
         radius: fire.r,
         intensity: fire.baseIntensity * flicker,
-        r: 1.0,
-        g: 0.64,
-        b: 0.32,
+        r: coldPalette ? 0.96 : 1.0,
+        g: coldPalette ? 0.72 : 0.64,
+        b: coldPalette ? 0.46 : 0.32,
         dirX: 0,
         dirY: 0,
         coneCos: -2.0,
@@ -3655,10 +3709,22 @@ export class GameRenderer {
       ctx.restore();
     }
 
-    // 1b. 庇护所门窗木板缝隙的锐利条状漏光光束（参考 Darkwood ref_1_t4）
+    // 1b. 庇护所门窗木板缝隙与全地图亮灯 POI 建筑窗户透出的斜向体积漏光光束（对标原作图 3 右上角）
     ctx.save();
     ctx.translate(-viewL, -viewT);
     this.drawBarricadeLightSlits(ctx, engine, viewL, viewT, viewL + W, viewT + H);
+    if (this.cineOn) {
+      drawBuildingWindowShafts(
+        ctx,
+        engine,
+        viewL,
+        viewT,
+        viewL + W,
+        viewT + H,
+        this.getShaftGradient(ctx),
+        this.getNightAmount(engine)
+      );
+    }
 
     // 2. 雨幕：?v-cine=b = 俯视透视雨（从镜头方向落向地面，落点水花/积水涟漪/屋檐成串滴水）
     //    ?v-cine=a = release_v1 旧版双景深斜雨丝（柔化暗区纯白对比度：中景冷灰雾细雨 + 近景微冷雾色雨线）
@@ -5068,15 +5134,17 @@ export class GameRenderer {
     ctx.rotate(twist);
     ctx.translate(leanX, 0);
 
-    // 7a. 拖尾大衣下摆（随步幅与疾跑翻飞）
-    const hemK = moveW * (1 + sprintW * 0.6) + dodgeArc;
-    ctx.fillStyle = p.hitFlash > 0 ? '#7c241e' : '#2a3024';
-    ctx.strokeStyle = '#0e110c';
+    // 7a. 拖尾大衣双层下摆（随步幅、疾跑与蓄力拧腰分叉翻飞，增强厚重油布风衣垂坠感）
+    const hemK = moveW * (1 + sprintW * 0.65) + dodgeArc + chargeW * 0.35;
+    ctx.fillStyle = p.hitFlash > 0 ? '#7c241e' : '#262b21';
+    ctx.strokeStyle = '#0c0f0a';
     ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.moveTo(-4 - leanX * 0.5, -13);
-    ctx.quadraticCurveTo(-15 - hemK * 4 - leanX, -9 - stride * 2.5, -14 - hemK * 3 - leanX, 0 - stride * 2);
-    ctx.quadraticCurveTo(-15 - hemK * 4 - leanX, 9 - stride * 2.5, -4 - leanX * 0.5, 13);
+    ctx.moveTo(-4 - leanX * 0.5, -13.2);
+    ctx.quadraticCurveTo(-15.5 - hemK * 4.4 - leanX, -9.5 - stride * 2.8, -14.5 - hemK * 3.4 - leanX, -1.2 - stride * 2.2);
+    ctx.lineTo(-11.5 - hemK * 2.0 - leanX, 0 - stride * 1.6);
+    ctx.lineTo(-14.5 - hemK * 3.4 - leanX, 1.2 - stride * 2.2);
+    ctx.quadraticCurveTo(-15.5 - hemK * 4.4 - leanX, 9.5 - stride * 2.8, -4 - leanX * 0.5, 13.2);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
@@ -5238,6 +5306,17 @@ export class GameRenderer {
       ctx.strokeRect(0, -1.8, 11.5, 3.4);
       ctx.fillStyle = 'rgba(150, 152, 146, 0.5)';
       ctx.fillRect(1.2, -1.5, 9.4, 0.9);
+      // 瞄准态极克制的骨白渐隐短准线（提升俯视射击指向手感，不破坏暗黑油画感）
+      if (aimW > 0.45 && eqp.gesture === 'none') {
+        ctx.strokeStyle = `rgba(217, 209, 191, ${(0.18 * aimW).toFixed(3)})`;
+        ctx.lineWidth = 0.9;
+        ctx.setLineDash([4, 5]);
+        ctx.beginPath();
+        ctx.moveTo(14, 0);
+        ctx.lineTo(48, 0);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
       if (eqp.gesture === 'reload' && gProg > 0.2 && gProg < 0.62) {
         const k = (gProg - 0.2) / 0.42;
         ctx.globalAlpha = pistolA * (1 - k);
@@ -5396,15 +5475,25 @@ export class GameRenderer {
     ctx.fill();
     ctx.stroke();
 
-    // 风衣肩部自然折痕与垂坠暗线
-    ctx.strokeStyle = 'rgba(16, 16, 14, 0.42)';
-    ctx.lineWidth = 1.2;
+    // 风衣肩部自然折痕、竖起防风高领与暗铜领扣带（对标原作图 4 外乡人特写）
+    ctx.strokeStyle = 'rgba(16, 16, 14, 0.46)';
+    ctx.lineWidth = 1.25;
     ctx.beginPath();
     ctx.moveTo(-6, -9.5);
     ctx.quadraticCurveTo(0, -7.5, 5.5, -9);
     ctx.moveTo(-6, 9.5);
     ctx.quadraticCurveTo(0, 7.5, 5.5, 9);
     ctx.stroke();
+    // 竖起的高领外廓与旧皮风纪扣
+    ctx.fillStyle = p.hitFlash > 0 ? '#6e2620' : '#2f2d25';
+    ctx.strokeStyle = '#0e0e0c';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(1.2, 0, 8.6, -1.28, 1.28);
+    ctx.stroke();
+    ctx.fillStyle = '#9c8252';
+    ctx.fillRect(6.2, -5.8, 2.2, 1.6);
+    ctx.fillRect(6.2, 4.2, 2.2, 1.6);
     ctx.strokeStyle = 'rgba(204, 194, 172, 0.24)';
     ctx.lineWidth = 1.3;
     ctx.beginPath();
@@ -5607,8 +5696,8 @@ export class GameRenderer {
       ctx.lineTo(13 - stride * 6.5 + reachR * 0.5 + windE * 3, 11 + legOut);
       ctx.stroke();
 
-      // 瘦削躯干
-      ctx.fillStyle = flash ? '#b84239' : '#3b2821';
+      // 瘦削躯干 + 溃烂癞皮暗红伤疤与外露白骨肋排
+      ctx.fillStyle = flash ? '#b84239' : '#38261f';
       ctx.strokeStyle = '#100a08';
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -5622,30 +5711,51 @@ export class GameRenderer {
       ctx.fill();
       ctx.stroke();
 
-      ctx.strokeStyle = 'rgba(186, 162, 134, 0.34)';
-      ctx.lineWidth = 1.3;
+      // 癞皮撕裂血痂斑块
+      ctx.fillStyle = 'rgba(96, 22, 18, 0.62)';
       ctx.beginPath();
-      ctx.moveTo(-13, 0);
-      ctx.lineTo(7, 0);
-      ctx.moveTo(-7, -5.2);
-      ctx.lineTo(-8.5, 5.2);
-      ctx.moveTo(-3, -5.2);
-      ctx.lineTo(-4.5, 5.2);
-      ctx.moveTo(1, -5.2);
-      ctx.lineTo(-0.5, 5.2);
+      ctx.ellipse(2, -3.2, 4.2, 2.1, 0.3, 0, Math.PI * 2);
+      ctx.ellipse(-8, 2.4, 3.6, 1.8, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(196, 176, 148, 0.44)';
+      ctx.lineWidth = 1.35;
+      ctx.beginPath();
+      ctx.moveTo(-14, 0);
+      ctx.lineTo(8, 0);
+      ctx.moveTo(-8, -5.4);
+      ctx.lineTo(-9.5, 5.4);
+      ctx.moveTo(-4, -5.6);
+      ctx.lineTo(-5.5, 5.6);
+      ctx.moveTo(0, -5.4);
+      ctx.lineTo(-1.5, 5.4);
+      ctx.moveTo(4, -4.8);
+      ctx.lineTo(2.8, 4.8);
       ctx.stroke();
 
-      // 头部：前摇时缩颈后拉、扑击时前探；下颌随扑咬张合
+      // 头部：前摇时缩颈后拉、扑击时前探；下颌随扑咬大张并拉出粘稠涎水血丝
       ctx.save();
       ctx.translate(-windE * 2.2 + lungeW * 2, twitch * 0.15);
       const jawOpen = clawLunge * 0.35 + windE * 1.5;
       ctx.fillStyle = '#6c1614';
       ctx.beginPath();
-      ctx.ellipse(17 + jawOpen * 0.4, 0, 5.5 + jawOpen * 0.3, 3.6 + jawOpen * 0.2, 0, 0, Math.PI * 2);
+      ctx.ellipse(17 + jawOpen * 0.4, 0, 5.5 + jawOpen * 0.3, 3.6 + jawOpen * 0.25, 0, 0, Math.PI * 2);
       ctx.fill();
+      if (jawOpen > 0.35) {
+        ctx.strokeStyle = 'rgba(214, 206, 188, 0.48)';
+        ctx.lineWidth = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(18.5 + jawOpen * 0.3, -2.2);
+        ctx.lineTo(19.5 + jawOpen * 0.4, 2.2);
+        ctx.moveTo(21 + jawOpen * 0.4, -1.6);
+        ctx.lineTo(23 + jawOpen * 0.6, Math.sin(time * 17 + e.id) * 2.2);
+        ctx.stroke();
+      }
       ctx.fillStyle = '#e7dec4';
-      ctx.fillRect(19 + jawOpen * 0.4, -2.8, 2.2, 1.5);
-      ctx.fillRect(19 + jawOpen * 0.4, 1.3, 2.2, 1.5);
+      ctx.fillRect(19 + jawOpen * 0.4, -3.0, 2.3, 1.5);
+      ctx.fillRect(19 + jawOpen * 0.4, 1.5, 2.3, 1.5);
+      ctx.fillRect(16.2 + jawOpen * 0.2, -2.6, 1.8, 1.2);
+      ctx.fillRect(16.2 + jawOpen * 0.2, 1.4, 1.8, 1.2);
       ctx.fillStyle = flash ? '#c85046' : '#2d1e19';
       ctx.strokeStyle = '#0e0908';
       ctx.lineWidth = 1.6;
@@ -5661,23 +5771,36 @@ export class GameRenderer {
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = windE > 0.2 ? '#fff2c8' : '#f4e4b2';
+      ctx.fillStyle = windE > 0.2 ? '#fff4d2' : '#dfd8c2';
       ctx.fillRect(12.5, -3.8, 2.8, 2.1);
       ctx.fillRect(12.5, 1.7, 2.8, 2.1);
       ctx.restore();
     } else if (e.kind === 'dancer') {
-      // --- 白裙跳舞僵尸（树林中旋转起舞，可被打死并在其他方向重现） ---
+      // --- 腐裙舞者（树林中诡异旋转起舞：双层泥血撕裂长裙 + 反折枯白长臂 + 披散黑发） ---
       const spin = e.state === 'prowl' ? time * 2.2 + e.id : Math.sin(time * 7 + e.id) * 0.28;
       ctx.save();
       ctx.rotate(spin);
-      // 沾满泥污与暗血的残破惨白连衣裙摆（随旋转波浪起伏）
-      ctx.fillStyle = flash ? '#d88278' : '#c6c2b4';
-      ctx.strokeStyle = '#24221e';
+      // 底层污黄撕裂衬裙
+      ctx.fillStyle = flash ? '#a8524a' : '#7d7564';
+      ctx.beginPath();
+      for (let k = 0; k <= 14; k++) {
+        const a = (k / 14) * Math.PI * 2;
+        const r = 16.2 + Math.cos(a * 5 - time * 4.4 + e.id) * 2.6;
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      // 外层沾满泥污与暗血的残破惨白连衣裙摆（随旋转波浪起伏）
+      ctx.fillStyle = flash ? '#d88278' : '#c4bfb0';
+      ctx.strokeStyle = '#201e1a';
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       for (let k = 0; k <= 12; k++) {
         const a = (k / 12) * Math.PI * 2;
-        const frill = 14.5 + Math.sin(a * 4 + time * 5.2 + e.id) * 2.8 + Math.cos(a * 3) * 1.4;
+        const frill = 14.2 + Math.sin(a * 4 + time * 5.2 + e.id) * 2.9 + Math.cos(a * 3) * 1.5;
         const px = Math.cos(a) * frill;
         const py = Math.sin(a) * frill;
         if (k === 0) ctx.moveTo(px, py);
@@ -5686,90 +5809,135 @@ export class GameRenderer {
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-      // 裙摆暗红血污与泥渍
-      ctx.fillStyle = 'rgba(112, 24, 20, 0.56)';
-      ctx.beginPath();
-      ctx.ellipse(-4, 5, 5.5, 3.2, 0.4, 0, Math.PI * 2);
-      ctx.ellipse(5, -6, 4.2, 2.4, -0.5, 0, Math.PI * 2);
-      ctx.fill();
-      // 诡异张开舞动的苍白双臂
-      ctx.strokeStyle = flash ? '#d88278' : '#aba598';
-      ctx.lineWidth = 3.2;
-      ctx.lineCap = 'round';
-      for (let side = -1; side <= 1; side += 2) {
-        const sway = Math.sin(time * 4.2 + e.id + side) * 3.5;
+      // 裙摆放射状折痕与暗红血污
+      ctx.strokeStyle = 'rgba(42, 38, 32, 0.36)';
+      ctx.lineWidth = 0.9;
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * Math.PI * 2 + 0.2;
         ctx.beginPath();
-        ctx.moveTo(0, side * 5);
-        ctx.quadraticCurveTo(6, side * (13 + sway), 13 + reachR * 0.4, side * (17 + sway));
+        ctx.moveTo(Math.cos(a) * 4, Math.sin(a) * 4);
+        ctx.lineTo(Math.cos(a) * 12.5, Math.sin(a) * 12.5);
         ctx.stroke();
       }
-      // 苍白头顶与披散凌乱黑发
-      ctx.fillStyle = '#141312';
+      ctx.fillStyle = 'rgba(104, 20, 18, 0.60)';
       ctx.beginPath();
-      ctx.ellipse(-1.5, 0, 6.2, 5.4, 0, 0, Math.PI * 2);
+      ctx.ellipse(-4, 5, 5.8, 3.3, 0.4, 0, Math.PI * 2);
+      ctx.ellipse(5, -6, 4.4, 2.5, -0.5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#cfc7b6';
+      // 诡异反关节舞动的苍白枯臂与分叉细爪
+      ctx.strokeStyle = flash ? '#d88278' : '#b2aca0';
+      ctx.lineCap = 'round';
+      for (let side = -1; side <= 1; side += 2) {
+        const sway = Math.sin(time * 4.2 + e.id + side) * 3.8;
+        const hx = 13.5 + reachR * 0.42;
+        const hy = side * (17.2 + sway);
+        ctx.lineWidth = 3.0;
+        ctx.beginPath();
+        ctx.moveTo(0, side * 5);
+        ctx.quadraticCurveTo(6.5, side * (12.5 - sway * 0.4), hx, hy);
+        ctx.stroke();
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(hx, hy);
+        ctx.lineTo(hx + 4.2, hy + side * 2.2);
+        ctx.moveTo(hx, hy);
+        ctx.lineTo(hx + 4.6, hy - side * 1.4);
+        ctx.stroke();
+      }
+      // 苍白头顶与披散凌乱黑发丝
+      ctx.fillStyle = '#121110';
       ctx.beginPath();
-      ctx.arc(1.5, 0, 3.6, 0, Math.PI * 2);
+      ctx.ellipse(-1.8, 0, 6.6, 5.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#141312';
+      ctx.lineWidth = 1.3;
+      for (let h = -2; h <= 2; h++) {
+        ctx.beginPath();
+        ctx.moveTo(-4, h * 1.8);
+        ctx.lineTo(-10 - Math.abs(h), h * 2.8 + Math.sin(time * 6 + h) * 1.4);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#d2cab8';
+      ctx.beginPath();
+      ctx.arc(1.8, 0, 3.6, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     } else if (e.kind === 'chomper') {
-      // --- 扭曲爬行的异化食人花（盘绕黑藤触须 + 巨大开合血红锯齿花口） ---
-      ctx.strokeStyle = flash ? '#a6382f' : '#1b1d15';
+      // --- 纵裂裂口怪 Chomper（对标《Darkwood》招牌红肉爬行怪：肿胀暗红躯体 + 纵向撕裂锯齿巨口 + 蠕动触须） ---
+      ctx.strokeStyle = flash ? '#a6382f' : '#221a16';
       ctx.lineCap = 'round';
-      // 四周扭曲拖行的粗黑根茎触须
+      // 四周扭曲扒地的黑红肌腱触须与残肢
       for (let k = 0; k < 6; k++) {
         const a = (k / 6) * Math.PI * 2 + Math.PI * 0.16;
-        const wv = Math.sin(e.walkPhase * 1.4 + k * 1.5 + time * 3.2) * 5.2;
-        ctx.lineWidth = 3.0;
+        const wv = Math.sin(e.walkPhase * 1.5 + k * 1.5 + time * 3.4) * 5.4;
+        ctx.lineWidth = k % 2 === 0 ? 3.4 : 2.5;
         ctx.beginPath();
         ctx.moveTo(Math.cos(a) * 6, Math.sin(a) * 6);
         ctx.quadraticCurveTo(Math.cos(a) * 16 + wv * 0.5, Math.sin(a) * 16 - wv * 0.5, Math.cos(a) * 23 + wv, Math.sin(a) * 23 + wv * 0.4);
         ctx.stroke();
       }
-      // 巨大肉质锯齿花瓣（攻击/靠近时猛然张开！）
-      const jawOpen = clamp(0.32 + windE * 0.55 + lungeW * 0.65 + Math.sin(time * 5 + e.id) * 0.12, 0.2, 1.0);
+      // 不对称肿胀暗红肉块躯体
+      ctx.fillStyle = flash ? '#c44638' : '#4a1b17';
+      ctx.strokeStyle = '#120908';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.ellipse(-1, 0, 14.8, 12.2, Math.sin(time * 3 + e.id) * 0.08, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // 纵向从中撕裂的血红巨口与五瓣外翻肉唇（靠近/前摇/扑咬时狂暴大张！）
+      const jawOpen = clamp(0.34 + windE * 0.58 + lungeW * 0.68 + Math.sin(time * 5.2 + e.id) * 0.12, 0.22, 1.0);
       for (let petal = 0; petal < 5; petal++) {
         const pa = (petal / 5) * Math.PI * 2 + Math.sin(time * 2.4 + petal) * 0.08;
         ctx.save();
         ctx.rotate(pa);
-        ctx.fillStyle = flash ? '#c84a3c' : petal % 2 === 0 ? '#5b1e19' : '#3d241c';
-        ctx.strokeStyle = '#120d0a';
-        ctx.lineWidth = 1.4;
+        ctx.fillStyle = flash ? '#d04e40' : petal % 2 === 0 ? '#681f1a' : '#461d18';
+        ctx.strokeStyle = '#120a08';
+        ctx.lineWidth = 1.3;
         ctx.beginPath();
         ctx.moveTo(0, 0);
-        ctx.quadraticCurveTo(8 + jawOpen * 5, -6.5, 14 + jawOpen * 7, 0);
-        ctx.quadraticCurveTo(8 + jawOpen * 5, 6.5, 0, 0);
+        ctx.quadraticCurveTo(8 + jawOpen * 5.2, -6.2, 14.2 + jawOpen * 7.2, 0);
+        ctx.quadraticCurveTo(8 + jawOpen * 5.2, 6.2, 0, 0);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
         ctx.restore();
       }
-      // 中央血红肉口与一圈惨白尖牙
-      ctx.fillStyle = '#2a0907';
+      // 中央纵向深渊口腔 + 两侧交错惨白利齿 + 紧绷粘液肉丝
+      const mawW = 4.2 + jawOpen * 4.8;
+      ctx.fillStyle = '#220605';
       ctx.beginPath();
-      ctx.arc(2, 0, 5.5 + jawOpen * 3.0, 0, Math.PI * 2);
+      ctx.ellipse(2, 0, 9.5 + jawOpen * 2.5, mawW, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#ddd4bc';
-      for (let tooth = 0; tooth < 6; tooth++) {
-        const ta = (tooth / 6) * Math.PI * 2 + time * 0.6;
-        const tr = 4.6 + jawOpen * 2.2;
+      if (jawOpen > 0.4) {
+        ctx.strokeStyle = 'rgba(186, 72, 62, 0.55)';
+        ctx.lineWidth = 0.85;
         ctx.beginPath();
-        ctx.arc(2 + Math.cos(ta) * tr, Math.sin(ta) * tr, 1.25, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.moveTo(-2, -mawW * 0.7);
+        ctx.lineTo(0, mawW * 0.7);
+        ctx.moveTo(4, -mawW * 0.8);
+        ctx.lineTo(5, mawW * 0.8);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#e5dcc4';
+      for (let tIdx = -3; tIdx <= 3; tIdx++) {
+        const tx = 2 + tIdx * 2.3;
+        const ty = mawW * (1 - Math.abs(tIdx) * 0.16);
+        ctx.fillRect(tx - 0.7, -ty - 0.6, 1.4, 1.8);
+        ctx.fillRect(tx - 0.4, ty - 1.2, 1.4, 1.8);
       }
     } else if (e.kind === 'banshee') {
-      // --- ROOT-WEEPING BANSHEE ---
+      // --- 群鸦女妖 BANSHEE（对标原作图 11：破败裹尸兜帽长袍 + 鸦喙轮廓 + 尖啸五瓣裂颅血口 + 环飞黑羽） ---
+      const bloomOpen = clamp(0.18 + windE * 0.55 + lungeW * 0.6 + clawLunge * 0.015, 0, 1);
       ctx.strokeStyle = flash ? '#b84239' : '#1b1511';
       ctx.lineCap = 'round';
-      // 身后拖曳的根须触手：按 walkPhase 交替波动
-      ctx.lineWidth = 2.4;
+      // 身后拖曳的破布条与枯黑根须：按 walkPhase 交替波动
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       for (let k = -1; k <= 1; k++) {
         const wv = Math.sin(e.walkPhase + k * 2.1) * 4.5 * gaitAmp;
         const wv2 = Math.sin(e.walkPhase * 1.3 + k * 1.4) * 5 * gaitAmp;
         ctx.moveTo(-10, k * 5);
-        ctx.quadraticCurveTo(-18, k * 8 + wv, -27 - gaitAmp * 3, k * 11 + wv2);
+        ctx.quadraticCurveTo(-18, k * 8 + wv, -28 - gaitAmp * 3, k * 11 + wv2);
       }
       ctx.stroke();
       for (let side = -1; side <= 1; side += 2) {
@@ -5782,62 +5950,76 @@ export class GameRenderer {
         ctx.lineTo(-22, side * 10);
         ctx.stroke();
 
-        // 两对扭曲枝爪臂：步态交替摆动，前摇外张后拉，扑击/刮擦前伸
+        // 枯瘦鸦爪长臂：步态交替摆动，前摇外张后拉，尖啸时大幅张开
         const elbowX = 8 + stride * 3.5 * side - windE * 3;
-        const elbowY = side * (15 + twitch * 0.55 + spread);
+        const elbowY = side * (15 + twitch * 0.55 + spread + bloomOpen * 3);
         const handX = 22 + reach + Math.cos(time * 8 + side) * 3 * alive;
-        const handY = side * (17 - reach * 0.45 + twitch + spread * 1.4);
+        const handY = side * (17 - reach * 0.45 + twitch + spread * 1.4 + bloomOpen * 4);
         ctx.lineWidth = 3.6;
         ctx.beginPath();
         ctx.moveTo(1, side * 9);
         ctx.lineTo(elbowX, elbowY);
         ctx.lineTo(handX, handY);
         ctx.stroke();
-        ctx.lineWidth = 1.6;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(handX, handY);
-        ctx.lineTo(handX + 7, handY - side * 4);
+        ctx.lineTo(handX + 7.5, handY - side * 4.2);
         ctx.moveTo(handX, handY);
-        ctx.lineTo(handX + 8, handY + side * 2);
+        ctx.lineTo(handX + 8.5, handY);
+        ctx.moveTo(handX, handY);
+        ctx.lineTo(handX + 7.5, handY + side * 3.2);
         ctx.stroke();
       }
 
-      // 根须女妖周身暗影黑雾环绕与环飞黑羽微粒（Darkwood Banshee 压迫氛围）
+      // 女妖周身暗影黑雾漩涡与环飞鸦羽（裂颅尖啸时黑羽激增翻飞）
       if (alive > 0.2) {
-        const mistG = ctx.createRadialGradient(0, 0, 6, 0, 0, 32);
-        mistG.addColorStop(0, 'rgba(6, 7, 7, 0.52)');
-        mistG.addColorStop(0.65, 'rgba(10, 12, 12, 0.22)');
+        const mistR = 32 + bloomOpen * 10;
+        const mistG = ctx.createRadialGradient(0, 0, 6, 0, 0, mistR);
+        mistG.addColorStop(0, 'rgba(6, 7, 7, 0.56)');
+        mistG.addColorStop(0.65, 'rgba(10, 12, 12, 0.24)');
         mistG.addColorStop(1, 'rgba(8, 10, 10, 0)');
         ctx.fillStyle = mistG;
         ctx.beginPath();
-        ctx.arc(0, 0, 32, 0, Math.PI * 2);
+        ctx.arc(0, 0, mistR, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = 'rgba(9, 10, 10, 0.72)';
-        for (let f = 0; f < 4; f++) {
-          const fa = time * 1.9 + f * 1.57 + e.id;
-          const fr = 19 + Math.sin(time * 3.1 + f * 2) * 5;
+        ctx.fillStyle = 'rgba(8, 9, 10, 0.78)';
+        const featherCnt = bloomOpen > 0.45 ? 7 : 4;
+        for (let f = 0; f < featherCnt; f++) {
+          const fa = time * (2.0 + bloomOpen * 1.8) + f * 1.12 + e.id;
+          const fr = 18 + bloomOpen * 7 + Math.sin(time * 3.3 + f * 2) * 5;
           ctx.beginPath();
-          ctx.ellipse(Math.cos(fa) * fr, Math.sin(fa) * fr, 3.2, 1.3, fa + 1.2, 0, Math.PI * 2);
+          ctx.ellipse(Math.cos(fa) * fr, Math.sin(fa) * fr, 3.6, 1.3, fa + 1.2, 0, Math.PI * 2);
           ctx.fill();
         }
       }
 
+      // 破败灰褐裹尸布斗篷
       ctx.save();
       ctx.translate(-1, 0);
       if (Variants.val.creature !== 'a') ctx.rotate(Math.sin(time * 2.2 + e.id) * 0.08 + stride * 0.07);
-      ctx.fillStyle = flash ? '#9e3129' : '#171512';
+      ctx.fillStyle = flash ? '#9e3129' : '#23201b';
       ctx.strokeStyle = '#070706';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(12, -10);
-      ctx.quadraticCurveTo(16, 0, 12, 10);
-      ctx.lineTo(-4, 15);
-      ctx.lineTo(-16, 11 + stride * 2);
+      ctx.moveTo(12, -10.5);
+      ctx.quadraticCurveTo(16.5, 0, 12, 10.5);
+      ctx.lineTo(-4, 15.5);
+      ctx.lineTo(-17, 11.5 + stride * 2);
       ctx.lineTo(-12, 3);
-      ctx.lineTo(-19, -2 - stride * 2);
-      ctx.lineTo(-13, -12);
+      ctx.lineTo(-20, -2 - stride * 2);
+      ctx.lineTo(-13, -12.5);
       ctx.closePath();
       ctx.fill();
+      ctx.stroke();
+      // 斗篷腐朽麻布折痕
+      ctx.strokeStyle = 'rgba(72, 66, 54, 0.34)';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(6, -6);
+      ctx.lineTo(-12, -8);
+      ctx.moveTo(6, 6);
+      ctx.lineTo(-11, 9);
       ctx.stroke();
       ctx.restore();
 
@@ -5859,141 +6041,167 @@ export class GameRenderer {
         ctx.fill();
       } else {
         ctx.rotate(Math.sin(time * 3.1 + e.id) * 0.07 + twitch * 0.025);
-        const bloomOpen = clamp(0.18 + windE * 0.5 + lungeW * 0.55 + clawLunge * 0.012, 0, 1);
         ctx.translate(7, 0);
+        if (bloomOpen < 0.32) {
+          // 常态：阴森兜帽下探出的苍白鸟喙面具轮廓
+          ctx.fillStyle = '#1b1815';
+          ctx.beginPath();
+          ctx.ellipse(-1, 0, 7.2, 6.6, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#9c9482';
+          ctx.beginPath();
+          ctx.moveTo(3, -3.2);
+          ctx.lineTo(11.5, 0);
+          ctx.lineTo(3, 3.2);
+          ctx.closePath();
+          ctx.fill();
+        }
         for (let petal = 0; petal < 5; petal++) {
           ctx.save();
           ctx.rotate((petal * Math.PI * 2) / 5 + Math.sin(time * 1.7 + e.id + petal) * 0.05);
-          ctx.fillStyle = flash ? '#9e3129' : petal % 2 === 0 ? '#3d3024' : '#29261d';
-          ctx.strokeStyle = '#110e0b';
+          ctx.fillStyle = flash ? '#a8342c' : petal % 2 === 0 ? '#54201c' : '#33241d';
+          ctx.strokeStyle = '#110c0a';
           ctx.lineWidth = 1.2;
           ctx.beginPath();
           ctx.moveTo(0, 0);
-          ctx.quadraticCurveTo(5 + bloomOpen * 2, -3.2, 9 + bloomOpen * 5, 0);
-          ctx.quadraticCurveTo(5 + bloomOpen * 2, 3.2, 0, 0);
+          ctx.quadraticCurveTo(5 + bloomOpen * 2.6, -3.4, 8.8 + bloomOpen * 6.2, 0);
+          ctx.quadraticCurveTo(5 + bloomOpen * 2.6, 3.4, 0, 0);
           ctx.closePath();
           ctx.fill();
           ctx.stroke();
-          ctx.strokeStyle = 'rgba(177, 115, 77, 0.36)';
-          ctx.lineWidth = 0.8;
+          ctx.strokeStyle = 'rgba(186, 98, 72, 0.42)';
+          ctx.lineWidth = 0.85;
           ctx.beginPath();
           ctx.moveTo(1, 0);
-          ctx.lineTo(7 + bloomOpen * 2, 0);
+          ctx.lineTo(7 + bloomOpen * 3, 0);
           ctx.stroke();
           ctx.restore();
         }
-        ctx.fillStyle = '#120a08';
+        ctx.fillStyle = '#1c0706';
         ctx.beginPath();
-        ctx.ellipse(0, 0, 3.2 + bloomOpen * 2.5, 2.4 + bloomOpen * 1.5, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, 3.4 + bloomOpen * 3.0, 2.5 + bloomOpen * 2.0, 0, 0, Math.PI * 2);
         ctx.fill();
         const glow = (0.72 + Math.sin(time * 6 + e.id) * 0.28) * (dying ? alive : 1) + windE * 0.25;
-        ctx.fillStyle = `rgba(242, 106, 68, ${clamp(glow, 0, 1).toFixed(3)})`;
+        ctx.fillStyle = `rgba(236, 112, 74, ${clamp(glow, 0, 1).toFixed(3)})`;
         ctx.beginPath();
-        ctx.arc(0, -0.8, 1.05, 0, Math.PI * 2);
-        ctx.moveTo(1.05, 0.8);
-        ctx.arc(0, 0.8, 1.05, 0, Math.PI * 2);
+        ctx.arc(0, -0.9, 1.1, 0, Math.PI * 2);
+        ctx.moveTo(1.1, 0.9);
+        ctx.arc(0, 0.9, 1.1, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.restore();
     } else {
-      // --- TWISTED STALKER / CHOMPER ---
-      // 褴褛衣摆下交替迈出的双足
-      ctx.fillStyle = '#121310';
+      // --- 疯癫野人 SAVAGE / TWISTED STALKER（对标原作图 13：苍白血管光头 + 破麻布披肩 + 嶙峋脊椎肋骨 + 狂躁抓门双爪） ---
+      // 褴褛裤脚下交替迈出的赤足泥脚
+      ctx.fillStyle = '#4c463c';
       ctx.beginPath();
-      ctx.ellipse(stride * 5 - 2, -6.5 - crouch * 1.5, 4.2, 2.6, 0, 0, Math.PI * 2);
+      ctx.ellipse(stride * 5 - 2, -6.5 - crouch * 1.5, 4.2, 2.5, 0, 0, Math.PI * 2);
       ctx.moveTo(-stride * 5 - 2 + 4.2, 6.5 + crouch * 1.5);
-      ctx.ellipse(-stride * 5 - 2, 6.5 + crouch * 1.5, 4.2, 2.6, 0, 0, Math.PI * 2);
+      ctx.ellipse(-stride * 5 - 2, 6.5 + crouch * 1.5, 4.2, 2.5, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = flash ? '#942e27' : '#1b1f1a';
+      // 撕裂褴褛的粗麻布后摆
+      ctx.fillStyle = flash ? '#942e27' : '#26231c';
       ctx.beginPath();
-      ctx.moveTo(-6, -12);
-      ctx.lineTo(-17, -9 + stride * 2);
-      ctx.lineTo(-13, 0);
-      ctx.lineTo(-19, 8 - stride * 2);
-      ctx.lineTo(-6, 12);
+      ctx.moveTo(-5, -12);
+      ctx.lineTo(-17, -9.5 + stride * 2);
+      ctx.lineTo(-13, -1);
+      ctx.lineTo(-19, 8.5 - stride * 2);
+      ctx.lineTo(-5, 12);
       ctx.closePath();
       ctx.fill();
 
-      // 不对称两段长臂：步态交替摆动；前摇外张后拉；扑击/抓挠门板双臂交替前伸
+      // 不对称枯瘦长臂：步态交替摆动；抓挠门窗时剧烈痉挛前探，指端沾染暗红血痂
       ctx.lineCap = 'round';
       for (let side = -1; side <= 1; side += 2) {
         const reach = side === 1 ? reachR : reachL;
-        const reachBias = side === 1 ? 1.15 : 0.92;
+        const reachBias = side === 1 ? 1.15 : 0.94;
         const elbowX = 6 + stride * 4 * side - windE * 4 - crouch * 2;
         const elbowY = side * (13 * reachBias + spread);
-        const clawX = (18 + reach + stride * 4.5 * side) * reachBias - crouch * 3;
-        const clawY = side * (13.5 - reach * 0.4 + twitch * 0.8 + spread * 1.3);
-        ctx.strokeStyle = flash ? '#b84239' : '#2a2e28';
-        ctx.lineWidth = 3.5;
+        const clawX = (18.5 + reach + stride * 4.5 * side) * reachBias - crouch * 3;
+        const clawY = side * (13.5 - reach * 0.4 + twitch * 0.85 + spread * 1.3);
+        ctx.strokeStyle = flash ? '#b84239' : '#686256';
+        ctx.lineWidth = 3.3;
         ctx.beginPath();
         ctx.moveTo(1, side * 9);
         ctx.lineTo(elbowX, elbowY);
         ctx.lineTo(clawX, clawY);
         ctx.stroke();
-        ctx.strokeStyle = '#b4ab94';
-        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = '#9e2620';
+        ctx.lineWidth = 1.35;
         ctx.beginPath();
         ctx.moveTo(clawX, clawY);
-        ctx.lineTo(clawX + 5.5, clawY - side * 3);
+        ctx.lineTo(clawX + 5.8, clawY - side * 3.2);
         ctx.moveTo(clawX, clawY);
-        ctx.lineTo(clawX + 6, clawY + side * 1.5);
+        ctx.lineTo(clawX + 6.2, clawY);
+        ctx.moveTo(clawX, clawY);
+        ctx.lineTo(clawX + 5.8, clawY + side * 2.2);
         ctx.stroke();
       }
 
-      // 腐朽躯干体积明暗 + 外露佝偻脊椎骨节
+      // 干瘪灰白躯干 + 破麻布披肩 + 外露佝偻脊椎与肋骨
       const stGrad = ctx.createRadialGradient(2, -1, 2, -1, 1, 16);
       if (flash) {
         stGrad.addColorStop(0, '#c84b40');
         stGrad.addColorStop(1, '#681d18');
       } else {
-        stGrad.addColorStop(0, '#3a3e35');
-        stGrad.addColorStop(0.6, '#232721');
-        stGrad.addColorStop(1, '#111310');
+        stGrad.addColorStop(0, '#5e594e');
+        stGrad.addColorStop(0.55, '#3b3830');
+        stGrad.addColorStop(1, '#191815');
       }
       ctx.fillStyle = stGrad;
       ctx.strokeStyle = '#0b0c0b';
       ctx.lineWidth = 2.0;
       ctx.beginPath();
-      ctx.ellipse(-1, 0.8, 12.5, 15.2, 0.12 + stride * 0.05, 0, Math.PI * 2);
+      ctx.ellipse(-1, 0.8, 12.2, 14.8, 0.12 + stride * 0.05, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
 
+      // 斜披在右肩的肮脏粗麻破布与背后斜绑的木棒（对标原作野人经典持棒造型）
+      ctx.fillStyle = flash ? '#8c322a' : '#352d22';
+      ctx.beginPath();
+      ctx.ellipse(1, -5.5, 9.5, 6.2, -0.25, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#47321f';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(-11, -9);
+      ctx.lineTo(5, 11);
+      ctx.stroke();
+
       // 脊柱凸起骨节与干涸污血斑
-      ctx.fillStyle = 'rgba(156, 148, 130, 0.34)';
-      for (let v = -8; v <= 2; v += 3.5) {
+      ctx.fillStyle = 'rgba(182, 172, 152, 0.44)';
+      for (let v = -8; v <= 2; v += 3.2) {
         ctx.beginPath();
         ctx.ellipse(v, 0.6 + stride * 0.4, 1.4, 2.1, 0, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.fillStyle = 'rgba(88, 16, 15, 0.72)';
+      ctx.fillStyle = 'rgba(92, 18, 16, 0.74)';
       ctx.beginPath();
-      ctx.ellipse(3, -5, 5.2, 4.1, 0.4, 0, Math.PI * 2);
+      ctx.ellipse(3, -4.8, 5.2, 4.0, 0.4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Darkwood 标志性 Chomper 裂颚头骨：常态痉挛抽搐，前摇与扑咬瞬间头颅撕裂成血红花瓣巨口！
+      // 疯癫野人苍白紫灰血管光头：常态神经质抽搐，扑击/重抓时裂嘴狂嚎！
       const mawSplit = clamp(windE * 0.9 + lungeW * 1.1 + clawLunge * 0.04, 0, 1);
       ctx.save();
-      ctx.translate(6.5 - windE * 2.5 + lungeW * 3.0 - crouch * 1.5, twitch * 0.4);
-      ctx.rotate(twitch * 0.1);
-      if (mawSplit > 0.16) {
-        // 裂开的四瓣血红颚骨 + 惨白利齿
-        ctx.fillStyle = '#5e1010';
+      ctx.translate(6.8 - windE * 2.5 + lungeW * 3.0 - crouch * 1.5, twitch * 0.42);
+      ctx.rotate(twitch * 0.11);
+      if (mawSplit > 0.18) {
+        ctx.fillStyle = '#681412';
         ctx.strokeStyle = '#120808';
         ctx.lineWidth = 1.4;
         for (let side = -1; side <= 1; side += 2) {
           ctx.save();
-          ctx.rotate(side * (0.28 + mawSplit * 0.55));
+          ctx.rotate(side * (0.26 + mawSplit * 0.52));
           ctx.beginPath();
           ctx.ellipse(2.5, side * 1.2, 7.8, 3.6, 0, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
-          // 锯齿状惨白尖牙
           ctx.fillStyle = '#ede3c8';
           for (let t = 2; t <= 7; t += 2.3) {
             ctx.fillRect(t, side * -1.4, 1.5, 1.4);
           }
-          ctx.fillStyle = '#5e1010';
+          ctx.fillStyle = '#681412';
           ctx.restore();
         }
         ctx.fillStyle = '#240505';
@@ -6001,20 +6209,31 @@ export class GameRenderer {
         ctx.ellipse(4.5, 0, 4.2, 3.2 * mawSplit, 0, 0, Math.PI * 2);
         ctx.fill();
       } else {
-        ctx.fillStyle = '#625e52';
-        ctx.strokeStyle = '#121310';
+        // 惨白灰紫光头 + 头皮暗红血痂血管线 + 深陷黑眼窝白瞳
+        ctx.fillStyle = '#8b8476';
+        ctx.strokeStyle = '#141411';
         ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.ellipse(0, 0, 7.6, 6.2, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, 7.8, 6.4, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
-        ctx.fillStyle = '#310d0c';
+        ctx.strokeStyle = 'rgba(108, 32, 34, 0.52)';
+        ctx.lineWidth = 0.85;
         ctx.beginPath();
-        ctx.ellipse(5.4, 0, 3.2, 2.6, 0, 0, Math.PI * 2);
+        ctx.moveTo(-4, -2.5);
+        ctx.lineTo(1, -1);
+        ctx.lineTo(2, -3.5);
+        ctx.moveTo(-3, 2.2);
+        ctx.lineTo(1.5, 1.5);
+        ctx.stroke();
+        ctx.fillStyle = '#1d1412';
+        ctx.beginPath();
+        ctx.arc(3.4, -2.8, 1.9, 0, Math.PI * 2);
+        ctx.arc(3.4, 2.8, 1.9, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#efe7cb';
-        ctx.fillRect(2.2, -3.8, 2.4, 1.9);
-        ctx.fillRect(2.2, 1.9, 2.4, 1.9);
+        ctx.fillRect(3.0, -3.4, 1.6, 1.3);
+        ctx.fillRect(3.0, 2.1, 1.6, 1.3);
       }
       ctx.restore();
     }
@@ -6293,8 +6512,9 @@ export class GameRenderer {
   ) {
     const eq = engine.equip;
     const t = engine.simTime;
-    // 火把与手电鲜明区分：浓郁炽热暖橘/琥珀火焰光（多频自然跳动 + 光心微摇曳，驱动真实墙影晃动）
-    const dayK = engine.phase === 'night' ? 1.08 : engine.phase === 'dusk' ? 0.92 : 0.72;
+    const cold = Variants.val.palette !== 'a';
+    // 火把：低彩度暖琥珀/松脂火焰光（多频自然跳动 + 光心微摇曳，驱动真实墙影晃动，防纯艳橙色偏）
+    const dayK = engine.phase === 'night' ? 1.02 : engine.phase === 'dusk' ? 0.82 : 0.58;
 
     if (eq.muzzleFlash > 0 && this.gpuLights.length < maxLights) {
       const mf = clamp(eq.muzzleFlash / 0.05, 0, 1);
@@ -6306,8 +6526,8 @@ export class GameRenderer {
         radius: TORCH_LIGHT.muzzleRadius,
         intensity: TORCH_LIGHT.muzzleIntensity * mf,
         r: 1.0,
-        g: 0.84,
-        b: 0.58,
+        g: 0.86,
+        b: 0.64,
         dirX: 0,
         dirY: 0,
         coneCos: -2.0,
@@ -6335,10 +6555,10 @@ export class GameRenderer {
         y: ly - viewT,
         radius: rad,
         intensity: TORCH_LIGHT.intensity * eq.torchLight * clamp(flick, 0.58, 1.15) * dayK,
-        // 明灭同步色温微变：亮时偏暖琥珀，暗时偏深橘红
-        r: 1.0,
-        g: clamp(0.46 + (flick - 0.82) * 0.35, 0.36, 0.56),
-        b: clamp(0.13 + (flick - 0.82) * 0.15, 0.08, 0.19),
+        // 东欧油画松脂暖琥珀色温（cold 调色板下适度去艳，保留温暖火感但绝不荧光刺眼）
+        r: cold ? 0.96 : 1.0,
+        g: cold ? clamp(0.68 + (flick - 0.82) * 0.25, 0.60, 0.76) : clamp(0.46 + (flick - 0.82) * 0.35, 0.36, 0.56),
+        b: cold ? clamp(0.40 + (flick - 0.82) * 0.15, 0.34, 0.48) : clamp(0.13 + (flick - 0.82) * 0.15, 0.08, 0.19),
         dirX: 0,
         dirY: 0,
         coneCos: -2.0,
@@ -6362,9 +6582,9 @@ export class GameRenderer {
         y: ly - viewT,
         radius: rad,
         intensity: TORCH_LIGHT.groundIntensity * gt.flameH * flick * dayK,
-        r: 1.0,
-        g: 0.46,
-        b: 0.13,
+        r: cold ? 0.96 : 1.0,
+        g: cold ? 0.68 : 0.46,
+        b: cold ? 0.40 : 0.13,
         dirX: 0,
         dirY: 0,
         coneCos: -2.0,
