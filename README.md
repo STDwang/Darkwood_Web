@@ -16,9 +16,9 @@
 
 | Title Screen (Live Rainy Forest) | Daytime Forest Exploration |
 | :---: | :---: |
-| ![Title](./docs/art/release_v1/0_title.png) | ![Day Forest](./docs/art/release_v1/2_day_forest.png) |
+| ![Title](./docs/screenshots/0_title.png) | ![Day Forest](./docs/screenshots/2_day_forest.png) |
 | **Night Flashlight & Visibility Cone** | **Hideout Generator & Door-Crack Light Shafts** |
-| ![Night Forest](./docs/art/release_v1/4_night_forest.png) | ![Night Hideout](./docs/art/release_v1/5_night_hideout.png) |
+| ![Night Forest](./docs/screenshots/4_night_forest.png) | ![Night Hideout](./docs/screenshots/5_night_hideout.png) |
 
 ---
 

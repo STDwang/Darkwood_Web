@@ -6,6 +6,7 @@ release-minitool/
 coverage/
 .qw_backup/
 .workbuddy/
+docs/art/
 *.mp4
 Blackwood_Ember.html
 *.zip
