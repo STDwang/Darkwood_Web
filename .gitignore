@@ -5,6 +5,8 @@ dist-minitool/
 release-minitool/
 coverage/
 .qw_backup/
+.workbuddy/
+*.mp4
 Blackwood_Ember.html
 *.zip
 *.log
